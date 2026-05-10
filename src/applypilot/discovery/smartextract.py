@@ -1045,13 +1045,15 @@ def build_scrape_targets(
     - "search" sites get expanded: 1 URL per query from search config
     - "static" sites get scraped once as-is
 
-    Placeholders in URLs:
-      {query_encoded} -> URL-encoded search query
-      {location_encoded} -> URL-encoded location
-      {query} -> raw search query (for simple substitution)
-      {distance} -> search radius in miles from searches.yaml defaults.distance
-      {distance_encoded} -> URL-encoded search radius in miles
-    """
+	Placeholders in URLs:
+	  {query_encoded} -> URL-encoded search query
+	  {location_encoded} -> URL-encoded location
+	  {query} -> raw search query (for simple substitution)
+	  {distance} -> search radius in miles from searches.yaml defaults.distance
+	  {distance_encoded} -> URL-encoded search radius in miles
+	  {remote_param} -> optional per-site remote query fragment (from sites.yaml)
+	  {remote_flag} -> optional per-site remote flag value (from sites.yaml)
+	"""
     if sites is None:
         sites = load_sites()
     if search_cfg is None:
@@ -1076,32 +1078,109 @@ def build_scrape_targets(
         site_type = site.get("type", "static")
 
         no_headful = site.get("no_headful", False)
+
+        # Search sites: expand across all queries *and* all configured locations,
+        # passing the remote flag through to per-site templates via {remote_param}
+        # and {remote_flag}.
         if site_type == "search" and queries:
-            for query in queries:
-                expanded_url = site_url
-                expanded_url = expanded_url.replace("{query_encoded}", quote_plus(query))
-                expanded_url = expanded_url.replace("{query}", quote_plus(query))
-                expanded_url = expanded_url.replace("{location_encoded}", quote_plus(default_location))
-                expanded_url = expanded_url.replace("{distance}", default_distance_str)
-                expanded_url = expanded_url.replace("{distance_encoded}", quote_plus(default_distance_str))
-                targets.append(
-                    {
-                        "name": site_name,
-                        "url": expanded_url,
-                        "query": query,
-                        "no_headful": no_headful,
-                    }
-                )
+            if locs:
+                for query in queries:
+                    for loc in locs:
+                        location_str = loc.get("location", "")
+                        remote = bool(loc.get("remote", False))
+
+                        # Allow per-location distance override, falling back to defaults
+                        loc_distance_cfg = loc.get("distance", default_distance)
+                        try:
+                            loc_distance = max(0, int(loc_distance_cfg))
+                        except (TypeError, ValueError):
+                            loc_distance = default_distance
+                        loc_distance_str = str(loc_distance)
+
+                        remote_param_cfg = site.get("remote_param", {}) or {}
+                        remote_param = remote_param_cfg.get(
+                            "when_remote" if remote else "when_not_remote", ""
+                        )
+
+                        remote_flag_cfg = site.get("remote_flag", {}) or {}
+                        remote_flag = remote_flag_cfg.get(
+                            "when_remote" if remote else "when_not_remote", ""
+                        )
+
+                        expanded_url = site_url
+                        expanded_url = expanded_url.replace("{query_encoded}", quote_plus(query))
+                        expanded_url = expanded_url.replace("{query}", quote_plus(query))
+                        expanded_url = expanded_url.replace(
+                            "{location_encoded}", quote_plus(location_str)
+                        )
+                        expanded_url = expanded_url.replace("{distance}", loc_distance_str)
+                        expanded_url = expanded_url.replace(
+                            "{distance_encoded}", quote_plus(loc_distance_str)
+                        )
+                        expanded_url = expanded_url.replace("{remote_param}", remote_param)
+                        expanded_url = expanded_url.replace("{remote_flag}", remote_flag)
+
+                        targets.append(
+                            {
+                                "name": site_name,
+                                "url": expanded_url,
+                                "query": query,
+                                "location": location_str,
+                                "remote": remote,
+                                "no_headful": no_headful,
+                            }
+                        )
+            else:
+                # No locations configured: fall back to legacy behaviour using only
+                # the default location string and distance.
+                for query in queries:
+                    expanded_url = site_url
+                    expanded_url = expanded_url.replace("{query_encoded}", quote_plus(query))
+                    expanded_url = expanded_url.replace("{query}", quote_plus(query))
+                    expanded_url = expanded_url.replace(
+                        "{location_encoded}", quote_plus(default_location)
+                    )
+                    expanded_url = expanded_url.replace("{distance}", default_distance_str)
+                    expanded_url = expanded_url.replace(
+                        "{distance_encoded}", quote_plus(default_distance_str)
+                    )
+                    expanded_url = expanded_url.replace("{remote_param}", "")
+                    expanded_url = expanded_url.replace("{remote_flag}", "")
+
+                    targets.append(
+                        {
+                            "name": site_name,
+                            "url": expanded_url,
+                            "query": query,
+                            "location": default_location,
+                            "remote": False,
+                            "no_headful": no_headful,
+                        }
+                    )
         else:
+            # Static sites: scrape once as-is using the default location/distance.
+            remote_param_cfg = site.get("remote_param", {}) or {}
+            remote_param = remote_param_cfg.get("when_not_remote", "")
+            remote_flag_cfg = site.get("remote_flag", {}) or {}
+            remote_flag = remote_flag_cfg.get("when_not_remote", "")
+
             expanded_url = site_url
-            expanded_url = expanded_url.replace("{location_encoded}", quote_plus(default_location))
+            expanded_url = expanded_url.replace(
+                "{location_encoded}", quote_plus(default_location)
+            )
             expanded_url = expanded_url.replace("{distance}", default_distance_str)
-            expanded_url = expanded_url.replace("{distance_encoded}", quote_plus(default_distance_str))
+            expanded_url = expanded_url.replace(
+                "{distance_encoded}", quote_plus(default_distance_str)
+            )
+            expanded_url = expanded_url.replace("{remote_param}", remote_param)
+            expanded_url = expanded_url.replace("{remote_flag}", remote_flag)
             targets.append(
                 {
                     "name": site_name,
                     "url": expanded_url,
                     "query": None,
+                    "location": default_location,
+                    "remote": False,
                     "no_headful": no_headful,
                 }
             )
