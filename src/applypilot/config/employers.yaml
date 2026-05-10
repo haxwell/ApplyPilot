@@ -818,7 +818,7 @@ employers:
     name: Kustomer
     tenant: kustomer
     site_id: Kustomer
-    base_url: https://kustomer.wd1.myworkdayjobs.com
+    base_url: https://www.kustomer.com/careers/#open-roles
   cognigy:
     name: Cognigy
     tenant: cognigy
