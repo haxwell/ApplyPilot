@@ -167,6 +167,38 @@ class TestAssembleResumeTextWithJsonBullets:
         assert "- Led team" in result
         assert "- Reduced costs" in result
 
+    def test_omits_projects_section_when_empty(self, sample_profile):
+        """PROJECTS header should not render when there are no project entries."""
+        data = {
+            "title": "Software Engineer",
+            "summary": "Test summary",
+            "skills": {"Languages": "Python"},
+            "experience": [],
+            "projects": [],
+            "education": "BS Computer Science",
+        }
+
+        result = assemble_resume_text(data, sample_profile)
+
+        assert "\nPROJECTS\n" not in result
+        assert "\nEDUCATION\n" in result
+
+    def test_keeps_projects_section_when_project_content_exists(self, sample_profile):
+        """PROJECTS header should render when at least one project has content."""
+        data = {
+            "title": "Software Engineer",
+            "summary": "Test summary",
+            "skills": {"Languages": "Python"},
+            "experience": [],
+            "projects": [{"header": "Project X", "subtitle": "", "bullets": []}],
+            "education": "BS Computer Science",
+        }
+
+        result = assemble_resume_text(data, sample_profile)
+
+        assert "\nPROJECTS\n" in result
+        assert "Project X" in result
+
 
 class TestWatchlistSkillStripping:
     """Test stripping disallowed watchlist skills from generated payloads."""

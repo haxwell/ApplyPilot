@@ -319,6 +319,29 @@ def _strip_disallowed_watchlist_skills(data: dict, profile: dict) -> list[str]:
     return removed
 
 
+def _collect_renderable_project_entries(data: dict) -> list[dict]:
+    """Return project entries that contain at least one renderable field."""
+
+    raw_projects = data.get("projects", [])
+    if not isinstance(raw_projects, list):
+        return []
+
+    renderable: list[dict] = []
+    for entry in raw_projects:
+        if not isinstance(entry, dict):
+            continue
+        header = sanitize_text(str(entry.get("header", ""))).strip()
+        subtitle = sanitize_text(str(entry.get("subtitle", ""))).strip()
+        bullets = []
+        for b in entry.get("bullets", []):
+            bullet_text = _normalize_bullet(b)
+            if bullet_text and sanitize_text(bullet_text).strip():
+                bullets.append(bullet_text)
+        if header or subtitle or bullets:
+            renderable.append(entry)
+    return renderable
+
+
 def _build_tailored_prefix(job: dict) -> str:
     """Build a deterministic, collision-resistant filename prefix for a job."""
 
@@ -389,17 +412,19 @@ def assemble_resume_text(data: dict, profile: dict) -> str:
                 lines.append(f"- {sanitize_text(bullet_text)}")
         lines.append("")
 
-    # Projects
-    lines.append("PROJECTS")
-    for entry in data.get("projects", []):
-        lines.append(sanitize_text(entry.get("header", "")))
-        if entry.get("subtitle"):
-            lines.append(sanitize_text(entry["subtitle"]))
-        for b in entry.get("bullets", []):
-            bullet_text = _normalize_bullet(b)
-            if bullet_text:
-                lines.append(f"- {sanitize_text(bullet_text)}")
-        lines.append("")
+    # Projects (only include section when there is content)
+    project_entries = _collect_renderable_project_entries(data)
+    if project_entries:
+        lines.append("PROJECTS")
+        for entry in project_entries:
+            lines.append(sanitize_text(entry.get("header", "")))
+            if entry.get("subtitle"):
+                lines.append(sanitize_text(entry["subtitle"]))
+            for b in entry.get("bullets", []):
+                bullet_text = _normalize_bullet(b)
+                if bullet_text:
+                    lines.append(f"- {sanitize_text(bullet_text)}")
+            lines.append("")
 
     # Education
     lines.append("EDUCATION")
@@ -532,6 +557,11 @@ def tailor_resume(
 
         # Layer 1: Validate JSON fields
         validation = validate_json_fields(data, profile, mode=validation_mode)
+        if not _collect_renderable_project_entries(data):
+            warnings = validation.setdefault("warnings", [])
+            project_warning = "No projects available to list on resume."
+            if project_warning not in warnings:
+                warnings.append(project_warning)
         report["validator"] = validation
 
         if not validation["passed"]:
