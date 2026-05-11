@@ -72,7 +72,6 @@ base_urls:
   "TopStartups": "https://topstartups.io"
   "Jobspresso": "https://jobspresso.co"
   "FlexJobs": "https://www.flexjobs.com"
-  "Otta": "https://otta.com"
   "Remotive": "https://remotive.com"
   "Working Nomads": "https://www.workingnomads.com"
   "Remote.co": "https://remote.co"
@@ -98,19 +97,26 @@ sites:
     type: search
 
   - name: "PowerToFly"
-    url: "https://powertofly.com/jobs/?keywords={query_encoded}&remote=true"
+    url: "https://powertofly.com/jobs/?keywords={query_encoded}{remote_param}"
     type: search
+    remote_param:
+      when_remote: "&remote=true"
+      when_not_remote: ""
 
   - name: "Techstars Jobs"
     url: "https://jobs.techstars.com/jobs?keywords={query_encoded}"
     type: search
 
   - name: "Startup.jobs"
-    url: "https://startup.jobs/?q={query_encoded}&remote=true"
+    url: "https://startup.jobs/?q={query_encoded}{remote_param}"
     type: search
+    remote_param:
+      when_remote: "&remote=true"
+      when_not_remote: ""
 
   - name: "WelcomeToTheJungle"
-    url: "https://www.welcometothejungle.com/en/jobs?query={query_encoded}&refinementList%5Bremote%5D%5B%5D=fulltime"
+    # No stable remote-only query parameter validated; keep query-only template.
+    url: "https://www.welcometothejungle.com/en/jobs?query={query_encoded}"
     type: search
 
   # ── Static sites (no query params, scraped once) ─────────────────────
@@ -124,7 +130,7 @@ sites:
     type: static
 
   - name: "Remotive"
-    url: "https://remotive.com/remote-jobs/software-dev"
+    url: "https://remotive.com/remote-jobs/software-development"
     type: static
 
   - name: "JustRemote"
@@ -152,7 +158,7 @@ sites:
     type: static
 
   - name: "4DayWeek"
-    url: "https://4dayweek.io/remote-jobs/software-engineer"
+    url: "https://4dayweek.io/remote-engineering-jobs"
     type: static
 
   # General tech (no search param)
@@ -169,7 +175,7 @@ sites:
     type: static
 
   - name: "Arc.dev"
-    url: "https://arc.dev/remote-jobs/developer"
+    url: "https://arc.dev/remote-jobs"
     type: static
 
   - name: "Jobgether"
@@ -181,13 +187,9 @@ sites:
     type: static
 
   - name: "Jobspresso"
-    url: "https://jobspresso.co/remote-work/remote-software-development/"
+    url: "https://jobspresso.co/remote-work/"
     type: static
 
   - name: "FlexJobs"
     url: "https://www.flexjobs.com/remote-jobs/computer-it"
     type: static
-
-  - name: "Otta"
-    url: "https://otta.com/jobs/all?title=software+engineer&remote=true"
-    type: search
