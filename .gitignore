@@ -47,6 +47,7 @@ build/
 # IDE
 .vscode/
 .idea/
+*.iml
 *.swp
 *.swo
 
