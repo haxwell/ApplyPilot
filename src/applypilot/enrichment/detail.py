@@ -72,7 +72,7 @@ def set_proxy(proxy_str: str | None):
     """Set proxy config from an external caller."""
     global _PROXY_CONFIG
     if proxy_str:
-        from applypilot.discovery.jobspy import parse_proxy
+        from applypilot.discovery.sources.jobspy.jobspy import parse_proxy
 
         _PROXY_CONFIG = parse_proxy(proxy_str)
 
@@ -81,7 +81,7 @@ def set_proxy(proxy_str: str | None):
 
 
 def _load_base_urls() -> dict[str, str | None]:
-    """Load site base URLs from config/sites.yaml."""
+    """Load site base URLs from the smartextract source config."""
     from applypilot.config import load_base_urls
 
     return load_base_urls()
@@ -503,7 +503,7 @@ def extract_with_llm(page, url: str) -> dict:
         elapsed = time.time() - t0
         log.info("LLM: %d chars in, %.1fs", len(prompt), elapsed)
 
-        from applypilot.discovery.smartextract import extract_json
+        from applypilot.discovery.sources.smartextract.smartextract import extract_json
 
         result = extract_json(raw)
         desc = result.get("full_description")

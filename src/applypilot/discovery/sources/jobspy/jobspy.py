@@ -61,7 +61,7 @@ except Exception:
 from applypilot import config
 from applypilot.database import commit_with_retry, get_connection, init_db
 
-log = logging.getLogger(__name__)
+log = logging.getLogger("applypilot.discovery.jobspy")
 _SCRAPE_JOBS_PARAMS = set(inspect.signature(scrape_jobs).parameters)
 _HOURS_OLD_SUPPORTED = "hours_old" in _SCRAPE_JOBS_PARAMS
 _HOURS_OLD_WARNING_EMITTED = False

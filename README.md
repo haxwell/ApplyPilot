@@ -163,16 +163,16 @@ ApplyPilot intentionally separates its AI work into two different layers:
 Canonical auto-apply settings stay on `AUTO_APPLY_*`. Compatibility aliases such as `APPLY_BACKEND`, `APPLY_CLAUDE_MODEL`, `APPLY_OPENCODE_MODEL`, and `APPLY_OPENCODE_AGENT` are accepted for merged-branch compatibility, but they are not the primary interface.
 
 ### Package configs (shipped with ApplyPilot)
-- `config/employers.yaml` - Workday employer registry (48 preconfigured)
-- `config/sites.yaml` - Direct career sites (30+), blocked sites, base URLs, manual ATS domains
-- `config/searches.example.yaml` - Example search configuration
+- `discovery/sources/workday/employers.yaml` - Workday employer registry (48 preconfigured)
+- `discovery/sources/smartextract/sites.yaml` - Direct career sites (30+), blocked sites, base URLs, manual ATS domains
+- `discovery/sources/common/searches.example.yaml` - Example shared search configuration
 
 ---
 
 ## How Stages Work
 
 ### Discover
-Queries Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google Jobs via JobSpy. Scrapes 48 Workday employer portals (configurable in `employers.yaml`). Queries Greenhouse employer boards from `config/greenhouse.yaml`. Hits 30 direct career sites with custom extractors. Deduplicates by URL.
+Queries Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google Jobs via JobSpy. Scrapes 48 Workday employer portals (configurable in `discovery/sources/workday/employers.yaml`). Queries Greenhouse employer boards from `discovery/sources/greenhouse/greenhouse.yaml`. Hits 30 direct career sites with custom extractors (`discovery/sources/smartextract/sites.yaml`). Deduplicates by URL.
 
 ### Enrich
 Visits each job URL and extracts the full description. 3-tier cascade: JSON-LD structured data, then CSS selector patterns, then AI-powered extraction for unknown layouts.

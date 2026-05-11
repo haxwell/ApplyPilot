@@ -189,7 +189,15 @@ def _render_targets_for_selected_sites(selected_names: set[str]) -> list[dict]:
 
 
 def _load_sites_config() -> dict:
-    path = REPO_ROOT / "src" / "applypilot" / "config" / "sites.yaml"
+    path = (
+        REPO_ROOT
+        / "src"
+        / "applypilot"
+        / "discovery"
+        / "sources"
+        / "smartextract"
+        / "sites.yaml"
+    )
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
 

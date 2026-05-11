@@ -561,7 +561,7 @@ def build_prompt(job: dict, tailored_resume: str,
     # Phone digits only (for fields with country prefix)
     phone_digits = "".join(c for c in personal.get("phone", "") if c.isdigit())
 
-    # SSO domains the agent cannot sign into (loaded from config/sites.yaml)
+    # SSO domains the agent cannot sign into (loaded from smartextract source config)
     from applypilot.config import load_blocked_sso
     load_blocked_sso()
 

@@ -24,6 +24,7 @@ from applypilot.resume_json import (
     normalize_profile_settings,
     settings_from_resume_json,
 )
+from applypilot.discovery.sources.paths import COMMON_SEARCHES_EXAMPLE_PATH, SMARTEXTRACT_SITES_PATH
 
 # User data directory — all user-specific files live here
 APP_DIR = Path(os.environ.get("APPLYPILOT_DIR", Path.home() / ".applypilot"))
@@ -266,8 +267,8 @@ def load_search_config() -> dict:
     import yaml
 
     if not SEARCH_CONFIG_PATH.exists():
-        # Fall back to package-shipped example
-        example = CONFIG_DIR / "searches.example.yaml"
+        # Fall back to package-shipped example used by shared discovery sources.
+        example = COMMON_SEARCHES_EXAMPLE_PATH
         if example.exists():
             return yaml.safe_load(example.read_text(encoding="utf-8")) or {}
         return {}
@@ -275,10 +276,13 @@ def load_search_config() -> dict:
 
 
 def load_sites_config() -> dict:
-    """Load sites.yaml configuration (sites list, manual_ats, blocked, etc.)."""
+    """Load smartextract site configuration (sites list, manual_ats, blocked, etc.)."""
     import yaml
 
-    path = CONFIG_DIR / "sites.yaml"
+    path = SMARTEXTRACT_SITES_PATH
+    legacy_path = CONFIG_DIR / "smartextract.sites.yaml"
+    if not path.exists() and legacy_path.exists():
+        path = legacy_path
     if not path.exists():
         return {}
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}

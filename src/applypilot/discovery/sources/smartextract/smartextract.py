@@ -8,7 +8,8 @@ Two-phase approach:
 
 JSON-LD and API strategies execute directly from stored data -- no LLM needed.
 
-Sites are loaded from config/sites.yaml, with {query_encoded} and {location_encoded}
+Sites are loaded from discovery/sources/smartextract/sites.yaml,
+with {query_encoded} and {location_encoded}
 placeholders replaced from the user's search configuration.
 """
 
@@ -28,10 +29,11 @@ from playwright.sync_api import sync_playwright
 
 from applypilot import config
 from applypilot.config import CONFIG_DIR
+from applypilot.discovery.sources.paths import SMARTEXTRACT_SITES_PATH
 from applypilot.database import init_db, get_stats
 from applypilot.llm import get_client
 
-log = logging.getLogger(__name__)
+log = logging.getLogger("applypilot.discovery.smartextract")
 
 
 def _exception_summary(exc: Exception) -> str:
@@ -87,10 +89,13 @@ def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> 
 
 
 def load_sites() -> list[dict]:
-    """Load scraping target sites from config/sites.yaml."""
-    path = CONFIG_DIR / "sites.yaml"
+    """Load scraping target sites from per-source smart extract config."""
+    path = SMARTEXTRACT_SITES_PATH
+    legacy_path = CONFIG_DIR / "smartextract.sites.yaml"
+    if not path.exists() and legacy_path.exists():
+        path = legacy_path
     if not path.exists():
-        log.warning("sites.yaml not found at %s", path)
+        log.warning("sites.yaml not found at %s", SMARTEXTRACT_SITES_PATH)
         return []
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     return data.get("sites", [])
@@ -1051,8 +1056,8 @@ def build_scrape_targets(
 	  {query} -> raw search query (for simple substitution)
 	  {distance} -> search radius in miles from searches.yaml defaults.distance
 	  {distance_encoded} -> URL-encoded search radius in miles
-	  {remote_param} -> optional per-site remote query fragment (from sites.yaml)
-	  {remote_flag} -> optional per-site remote flag value (from sites.yaml)
+	  {remote_param} -> optional per-site remote query fragment (from smartextract source config)
+	  {remote_flag} -> optional per-site remote flag value (from smartextract source config)
 	"""
     if sites is None:
         sites = load_sites()
@@ -1272,7 +1277,7 @@ def run_smart_extract(
 ) -> dict:
     """Main entry point for AI-powered smart extraction.
 
-    Loads sites from config/sites.yaml and search queries from the user's
+    Loads sites from the smartextract source config and search queries from the user's
     search config, then runs the extraction pipeline on all targets.
 
     Args:
@@ -1288,7 +1293,7 @@ def run_smart_extract(
     targets = build_scrape_targets(sites=sites, search_cfg=search_cfg)
 
     if not targets:
-        log.warning("No scrape targets configured. Create config/sites.yaml and searches.yaml.")
+        log.warning("No scrape targets configured. Create sites.yaml and searches.yaml.")
         return {"total_new": 0, "total_existing": 0, "passed": 0, "total": 0}
 
     search_sites = sum(1 for s in (sites or load_sites()) if s.get("type") == "search")

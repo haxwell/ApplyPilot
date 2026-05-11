@@ -24,6 +24,7 @@ from rich.table import Table
 
 from applypilot.config import load_env, ensure_dirs, LOG_DIR
 from applypilot.database import init_db, get_connection, get_stats
+from applypilot.discovery.sources import SOURCE_REGISTRY, source_descriptions
 
 log = logging.getLogger(__name__)
 console = Console()
@@ -83,16 +84,7 @@ _UPSTREAM: dict[str, str | None] = {
 # ---------------------------------------------------------------------------
 
 # Canonical name → description. Order determines default execution order.
-DISCOVERY_SOURCES: dict[str, str] = {
-    "jobspy":       "JobSpy aggregator (LinkedIn, Indeed, ZipRecruiter)",
-    "linkedin":     "LinkedIn only (via JobSpy)",
-    "indeed":       "Indeed only (via JobSpy)",
-    "ziprecruiter": "ZipRecruiter only (via JobSpy)",
-    "workday":      "Workday corporate career sites",
-    "greenhouse":   "Greenhouse ATS career sites",
-    "smartextract": "Smart extract (AI-powered scraping, incl. Dice via sites.yaml)",
-    "hackernews":   "Hacker News 'Who is Hiring?' thread",
-}
+DISCOVERY_SOURCES: dict[str, str] = source_descriptions()
 
 # Alias → canonical name for CLI convenience
 _SOURCE_ALIASES: dict[str, str] = {
@@ -101,14 +93,6 @@ _SOURCE_ALIASES: dict[str, str] = {
     "dice":          "smartextract",   # dice is scraped via smartextract + sites.yaml
     "zip_recruiter": "ziprecruiter",
 }
-
-# Sources that are jobspy with a specific site filter
-_JOBSPY_SITE_SOURCES: dict[str, list[str]] = {
-    "linkedin":     ["linkedin"],
-    "indeed":       ["indeed"],
-    "ziprecruiter": ["zip_recruiter"],
-}
-
 
 def resolve_source_names(names: list[str]) -> list[str]:
     """Resolve source aliases and validate names. Returns canonical names."""
@@ -141,75 +125,28 @@ def _run_discover(workers: int = 1, sources: list[str] | None = None) -> dict:
     active = list(DISCOVERY_SOURCES.keys()) if run_all else sources
     stats: dict = {s: None for s in active}
 
-    if "jobspy" in active:
-        console.print("  [cyan]JobSpy full crawl...[/cyan]")
-        try:
-            from applypilot.discovery.jobspy import run_discovery
-            run_discovery()
-            stats["jobspy"] = "ok"
-        except Exception as e:
-            log.error("JobSpy crawl failed: %s", e)
-            console.print(f"  [red]JobSpy error:[/red] {e}")
-            stats["jobspy"] = f"error: {e}"
+    for source_name in active:
+        source = SOURCE_REGISTRY.get(source_name)
+        if source is None:
+            stats[source_name] = "error: source_not_registered"
+            continue
 
-    # Site-specific JobSpy sources (dice, linkedin, indeed)
-    for source_name, sites in _JOBSPY_SITE_SOURCES.items():
-        if source_name in active:
-            console.print(f"  [cyan]JobSpy ({source_name})...[/cyan]")
-            try:
-                from applypilot.discovery.jobspy import run_discovery
-                run_discovery(sites_override=sites)
+        console.print(f"  [cyan]{source.description}...[/cyan]")
+        try:
+            result = source.execute(workers=workers)
+            if source_name == "greenhouse":
+                stats[source_name] = f"ok ({result.get('new', 0)} new, {result.get('existing', 0)} existing)"
+            elif source_name == "hackernews":
+                new = result.get("new", 0)
+                thread = result.get("thread_title", "?")
+                console.print(f"  [dim]HN: {new} new jobs from '{thread}'[/dim]")
                 stats[source_name] = "ok"
-            except Exception as e:
-                log.error("JobSpy (%s) crawl failed: %s", source_name, e)
-                console.print(f"  [red]JobSpy ({source_name}) error:[/red] {e}")
-                stats[source_name] = f"error: {e}"
-
-    if "workday" in active:
-        console.print("  [cyan]Workday corporate scraper...[/cyan]")
-        try:
-            from applypilot.discovery.workday import run_workday_discovery
-            run_workday_discovery(workers=workers)
-            stats["workday"] = "ok"
+            else:
+                stats[source_name] = "ok"
         except Exception as e:
-            log.error("Workday scraper failed: %s", e)
-            console.print(f"  [red]Workday error:[/red] {e}")
-            stats["workday"] = f"error: {e}"
-
-    if "smartextract" in active:
-        console.print("  [cyan]Smart extract (AI-powered scraping)...[/cyan]")
-        try:
-            from applypilot.discovery.smartextract import run_smart_extract
-            run_smart_extract(workers=workers)
-            stats["smartextract"] = "ok"
-        except Exception as e:
-            log.error("Smart extract failed: %s", e)
-            console.print(f"  [red]Smart extract error:[/red] {e}")
-            stats["smartextract"] = f"error: {e}"
-
-    if "hackernews" in active:
-        console.print("  [cyan]Hacker News 'Who is Hiring?' thread...[/cyan]")
-        try:
-            from applypilot.discovery.hackernews import run_hn_discovery
-            hn_result = run_hn_discovery()
-            new = hn_result.get("new", 0)
-            console.print(f"  [dim]HN: {new} new jobs from '{hn_result.get('thread_title', '?')}'[/dim]")
-            stats["hackernews"] = "ok"
-        except Exception as e:
-            log.error("HN discovery failed: %s", e)
-            console.print(f"  [red]HN error:[/red] {e}")
-            stats["hackernews"] = f"error: {e}"
-
-    if "greenhouse" in active:
-        console.print("  [cyan]Greenhouse ATS scraper (AI startups)...[/cyan]")
-        try:
-            from applypilot.discovery.greenhouse import search_all
-            new, existing = search_all("", workers=workers)
-            stats["greenhouse"] = f"ok ({new} new, {existing} existing)"
-        except Exception as e:
-            log.error("Greenhouse scraper failed: %s", e)
-            console.print(f"  [red]Greenhouse error:[/red] {e}")
-            stats["greenhouse"] = f"error: {e}"
+            log.error("%s discovery failed: %s", source_name, e)
+            console.print(f"  [red]{source_name} error:[/red] {e}")
+            stats[source_name] = f"error: {e}"
 
     return stats
 

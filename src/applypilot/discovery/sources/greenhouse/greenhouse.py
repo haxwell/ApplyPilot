@@ -17,8 +17,9 @@ import yaml
 from applypilot import config
 from applypilot.config import APP_DIR, CONFIG_DIR
 from applypilot.database import get_connection
+from applypilot.discovery.sources.paths import GREENHOUSE_EMPLOYERS_PATH
 
-log = logging.getLogger(__name__)
+log = logging.getLogger("applypilot.discovery.greenhouse")
 
 # Greenhouse Job Board API endpoint
 GREENHOUSE_API_BASE = "https://boards-api.greenhouse.io/v1/boards"
@@ -64,7 +65,7 @@ def load_employers() -> dict:
     """Load Greenhouse employer registry.
 
     Tries user config first (~/.applypilot/greenhouse.yaml),
-    falls back to package config.
+    falls back to discovery/sources/greenhouse/greenhouse.yaml.
     """
     # Try user config
     user_path = APP_DIR / "greenhouse.yaml"
@@ -74,9 +75,12 @@ def load_employers() -> dict:
         return _validate_employer_registry(data or {}, str(user_path))
 
     # Fall back to package config
-    package_path = CONFIG_DIR / "greenhouse.yaml"
+    package_path = GREENHOUSE_EMPLOYERS_PATH
+    legacy_path = CONFIG_DIR / "greenhouse.yaml"
+    if not package_path.exists() and legacy_path.exists():
+        package_path = legacy_path
     if not package_path.exists():
-        log.warning("greenhouse.yaml not found at %s", package_path)
+        log.warning("greenhouse.yaml not found at %s", GREENHOUSE_EMPLOYERS_PATH)
         return {}
 
     data = yaml.safe_load(package_path.read_text(encoding="utf-8"))

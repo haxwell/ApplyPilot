@@ -3,7 +3,7 @@
 Scrapes Workday-powered career sites (TD, RBC, NVIDIA, Salesforce, etc.)
 via the undocumented CXS JSON API. Zero LLM, zero browser -- pure HTTP.
 
-Employer registry is loaded from config/employers.yaml instead of being
+Employer registry is loaded from discovery/sources/workday/employers.yaml instead of being
 hardcoded. Supports sequential search + detail fetching with proxy.
 """
 
@@ -21,9 +21,10 @@ import yaml
 
 from applypilot import config
 from applypilot.config import CONFIG_DIR
+from applypilot.discovery.sources.paths import WORKDAY_EMPLOYERS_PATH
 from applypilot.database import commit_with_retry, get_connection, init_db
 
-log = logging.getLogger(__name__)
+log = logging.getLogger("applypilot.discovery.workday")
 _QUARANTINE_HTTP_STATUSES = {401, 404, 422}
 
 
@@ -45,10 +46,13 @@ class WorkdayEmployerFailure(RuntimeError):
 # -- Employer registry from YAML --------------------------------------------
 
 def load_employers() -> dict:
-    """Load Workday employer registry from config/employers.yaml."""
-    path = CONFIG_DIR / "employers.yaml"
+    """Load Workday employer registry from the workday source directory."""
+    path = WORKDAY_EMPLOYERS_PATH
+    legacy_path = CONFIG_DIR / "employers.yaml"
+    if not path.exists() and legacy_path.exists():
+        path = legacy_path
     if not path.exists():
-        log.warning("employers.yaml not found at %s", path)
+        log.warning("employers.yaml not found at %s", WORKDAY_EMPLOYERS_PATH)
         return {}
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     return data.get("employers", {})
@@ -584,7 +588,7 @@ def scrape_employers(
 def run_workday_discovery(employers: dict | None = None, workers: int = 1) -> dict:
     """Main entry point for Workday-based corporate job discovery.
 
-    Loads employer registry from config/employers.yaml (or uses the provided
+    Loads employer registry from the workday source config (or uses the provided
     dict), then loads search queries from the user's search config to run
     a full crawl across all employers.
 
@@ -599,7 +603,7 @@ def run_workday_discovery(employers: dict | None = None, workers: int = 1) -> di
         employers = load_employers()
 
     if not employers:
-        log.warning("No employers configured. Create config/employers.yaml.")
+        log.warning("No employers configured. Create discovery/sources/workday/employers.yaml.")
         return {"found": 0, "new": 0, "existing": 0, "queries": 0}
 
     search_cfg = config.load_search_config()

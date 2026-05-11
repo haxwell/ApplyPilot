@@ -35,12 +35,16 @@ def _load_config(config_path: Optional[Path] = None) -> dict:
     if config_path is None:
         # Try user config first, then package config
         from applypilot.config import APP_DIR, CONFIG_DIR
+        from applypilot.discovery.sources.paths import GREENHOUSE_EMPLOYERS_PATH
 
         user_path = APP_DIR / "greenhouse.yaml"
         if user_path.exists():
             config_path = user_path
         else:
-            config_path = CONFIG_DIR / "greenhouse.yaml"
+            config_path = GREENHOUSE_EMPLOYERS_PATH
+            legacy_path = CONFIG_DIR / "greenhouse.yaml"
+            if not config_path.exists() and legacy_path.exists():
+                config_path = legacy_path
 
     if not config_path.exists():
         console.print(f"[red]Config not found:[/red] {config_path}")
@@ -336,7 +340,11 @@ def add_job(
     
     # Fetch all jobs for this company
     console.print("⬇️  Fetching job data...")
-    from applypilot.discovery.greenhouse import fetch_jobs_api, parse_api_response, _store_jobs
+    from applypilot.discovery.sources.greenhouse.greenhouse import (
+        _store_jobs,
+        fetch_jobs_api,
+        parse_api_response,
+    )
     
     data = fetch_jobs_api(company_slug, content=True)
     

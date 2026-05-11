@@ -28,7 +28,7 @@ from applypilot import config
 from applypilot.database import commit_with_retry, init_db
 from applypilot.llm import get_client
 
-log = logging.getLogger(__name__)
+log = logging.getLogger("applypilot.discovery.hackernews")
 
 # HN API endpoints
 _ALGOLIA_SEARCH = "https://hn.algolia.com/api/v1/search_by_date"

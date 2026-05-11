@@ -46,7 +46,7 @@ from applypilot.database import get_connection
 
 logger = logging.getLogger(__name__)
 
-# Blocked sites loaded from config/sites.yaml
+# Blocked sites loaded from smartextract source config
 def _load_blocked():
     from applypilot.config import load_blocked_sites
     return load_blocked_sites()

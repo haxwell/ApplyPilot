@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from applypilot.discovery.greenhouse import (
+from applypilot.discovery.sources.greenhouse.greenhouse import (
     GREENHOUSE_API_BASE,
     _location_ok,
     _store_jobs,
@@ -33,9 +33,10 @@ class TestLoadEmployers:
 
     def test_returns_empty_dict_if_file_missing(self, tmp_path):
         """Test graceful handling of missing config file."""
-        with patch("applypilot.discovery.greenhouse.CONFIG_DIR", tmp_path):
-            employers = load_employers()
-            assert employers == {}
+        with patch("applypilot.discovery.sources.greenhouse.greenhouse.GREENHOUSE_EMPLOYERS_PATH", tmp_path / "missing.yaml"):
+            with patch("applypilot.discovery.sources.greenhouse.greenhouse.CONFIG_DIR", tmp_path):
+                employers = load_employers()
+                assert employers == {}
 
     def test_raises_for_malformed_registry_shape(self, tmp_path):
         bad_config = tmp_path / "greenhouse.yaml"
@@ -48,9 +49,10 @@ class TestLoadEmployers:
             encoding="utf-8",
         )
 
-        with patch("applypilot.discovery.greenhouse.CONFIG_DIR", tmp_path):
-            with pytest.raises(ValueError, match="unexpected top-level keys"):
-                load_employers()
+        with patch("applypilot.discovery.sources.greenhouse.greenhouse.GREENHOUSE_EMPLOYERS_PATH", bad_config):
+            with patch("applypilot.discovery.sources.greenhouse.greenhouse.CONFIG_DIR", tmp_path):
+                with pytest.raises(ValueError, match="unexpected top-level keys"):
+                    load_employers()
 
 
 class TestLocationFiltering:
@@ -256,7 +258,7 @@ class TestParseGreenhouseJobs:
 class TestFetchJobsAPI:
     """Tests for HTTP fetching functions using the API client."""
 
-    @patch("applypilot.discovery.greenhouse.httpx.Client")
+    @patch("applypilot.discovery.sources.greenhouse.greenhouse.httpx.Client")
     def test_successful_fetch(self, mock_client_class):
         """Test successful API fetch returning JSON."""
         mock_response = Mock()
@@ -276,7 +278,7 @@ class TestFetchJobsAPI:
         assert result == {"jobs": []}
         mock_client.get.assert_called_once()
 
-    @patch("applypilot.discovery.greenhouse.httpx.Client")
+    @patch("applypilot.discovery.sources.greenhouse.greenhouse.httpx.Client")
     def test_failed_fetch_returns_none(self, mock_client_class):
         """Test that failed fetches return None gracefully."""
         mock_client = Mock()
@@ -299,8 +301,8 @@ class TestFetchJobsAPI:
 class TestSearchEmployer:
     """Tests for employer search function."""
 
-    @patch("applypilot.discovery.greenhouse.fetch_jobs_api")
-    @patch("applypilot.discovery.greenhouse.parse_api_response")
+    @patch("applypilot.discovery.sources.greenhouse.greenhouse.fetch_jobs_api")
+    @patch("applypilot.discovery.sources.greenhouse.greenhouse.parse_api_response")
     def test_search_with_location_filter(self, mock_parse, mock_fetch):
         """Test searching with location filter enabled."""
         # fetch_jobs_api returns API dict, parse_api_response returns normalized job list
@@ -330,7 +332,7 @@ class TestSearchEmployer:
         mock_fetch.assert_called_once_with("test", content=True)
         mock_parse.assert_called_once_with({"jobs": []}, "Test Company", "engineer")
 
-    @patch("applypilot.discovery.greenhouse.fetch_jobs_api")
+    @patch("applypilot.discovery.sources.greenhouse.greenhouse.fetch_jobs_api")
     def test_search_no_api_returns_empty(self, mock_fetch):
         """Test that empty result is returned if API fetch fails."""
         mock_fetch.return_value = None
@@ -378,7 +380,7 @@ class TestStoreJobs:
             }
         ]
 
-        with patch("applypilot.discovery.greenhouse.get_connection", return_value=conn):
+        with patch("applypilot.discovery.sources.greenhouse.greenhouse.get_connection", return_value=conn):
             new, existing = _store_jobs(jobs)
 
         assert new == 1
@@ -424,7 +426,7 @@ class TestStoreJobs:
             }
         ]
 
-        with patch("applypilot.discovery.greenhouse.get_connection", return_value=conn):
+        with patch("applypilot.discovery.sources.greenhouse.greenhouse.get_connection", return_value=conn):
             # Store first time
             new, existing = _store_jobs(jobs)
             assert new == 1
@@ -475,7 +477,7 @@ class TestStoreJobs:
             },
         ]
 
-        with patch("applypilot.discovery.greenhouse.get_connection", return_value=conn):
+        with patch("applypilot.discovery.sources.greenhouse.greenhouse.get_connection", return_value=conn):
             new, existing = _store_jobs(jobs)
 
         assert new == 2
@@ -488,8 +490,8 @@ class TestStoreJobs:
 class TestIntegration:
     """Integration-style tests."""
 
-    @patch("applypilot.discovery.greenhouse.fetch_jobs_api")
-    @patch("applypilot.discovery.greenhouse.get_connection")
+    @patch("applypilot.discovery.sources.greenhouse.greenhouse.fetch_jobs_api")
+    @patch("applypilot.discovery.sources.greenhouse.greenhouse.get_connection")
     def test_end_to_end_search_and_store(self, mock_get_conn, mock_fetch, tmp_path):
         """Test full flow from fetch to parse to store using the API client."""
         # Setup mock API response
@@ -538,7 +540,7 @@ class TestIntegration:
         assert jobs[0]["title"] == "ML Engineer"
 
         # Manually store jobs to test _store_jobs integration
-        from applypilot.discovery.greenhouse import _store_jobs
+        from applypilot.discovery.sources.greenhouse.greenhouse import _store_jobs
 
         new, existing = _store_jobs(jobs)
 

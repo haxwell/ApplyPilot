@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 
-from applypilot.discovery import greenhouse, smartextract, workday
+from applypilot.discovery.sources.greenhouse import greenhouse
+from applypilot.discovery.sources.smartextract import smartextract
+from applypilot.discovery.sources.workday import workday
 
 
 def test_workday_logs_omit_search_text_and_proxy_credentials(caplog, monkeypatch) -> None:

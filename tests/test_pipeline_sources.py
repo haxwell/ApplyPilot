@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from applypilot import pipeline
+from applypilot.discovery.sources.jobspy.jobspy_source import JobSpySiteSource
+from applypilot.discovery.sources.registry import SOURCE_REGISTRY
 
 
 def test_ziprecruiter_source_is_resolvable() -> None:
@@ -10,4 +12,6 @@ def test_ziprecruiter_source_is_resolvable() -> None:
 
 
 def test_ziprecruiter_maps_to_jobspy_site_override() -> None:
-    assert pipeline._JOBSPY_SITE_SOURCES["ziprecruiter"] == ["zip_recruiter"]
+    source = SOURCE_REGISTRY["ziprecruiter"]
+    assert isinstance(source, JobSpySiteSource)
+    assert source.sites_override == ("zip_recruiter",)

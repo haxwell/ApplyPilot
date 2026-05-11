@@ -32,7 +32,7 @@ class TestDeobfuscateEmail(unittest.TestCase):
     """_deobfuscate_email handles common HN obfuscation patterns."""
 
     def _run(self, text: str) -> str:
-        from applypilot.discovery.hackernews import _deobfuscate_email
+        from applypilot.discovery.sources.hackernews.hackernews import _deobfuscate_email
         return _deobfuscate_email(text)
 
     def test_bracket_at(self):
@@ -60,7 +60,7 @@ class TestIsEmail(unittest.TestCase):
     """_is_email correctly identifies email addresses (including obfuscated)."""
 
     def _run(self, text: str) -> bool:
-        from applypilot.discovery.hackernews import _is_email
+        from applypilot.discovery.sources.hackernews.hackernews import _is_email
         return _is_email(text)
 
     def test_plain_email(self):
@@ -86,7 +86,7 @@ class TestStoreHnJob(unittest.TestCase):
         self.conn = _make_db()
 
     def _store(self, job: dict) -> bool:
-        from applypilot.discovery.hackernews import _store_hn_job
+        from applypilot.discovery.sources.hackernews.hackernews import _store_hn_job
         return _store_hn_job(self.conn, job, "Who is Hiring? (March 2026)")
 
     def _get_url(self, title: str) -> str | None:
