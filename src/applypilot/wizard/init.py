@@ -62,6 +62,14 @@ _PROVIDER_MODEL_PROMPTS = {
 }
 
 
+def _strip_wrapping_single_quotes(value: str) -> str:
+    """Remove one layer of wrapping single quotes from a title-like value."""
+    text = value.strip()
+    if len(text) >= 2 and text[0] == "'" and text[-1] == "'":
+        return text[1:-1].strip()
+    return text
+
+
 # ---------------------------------------------------------------------------
 # Resume
 # ---------------------------------------------------------------------------
@@ -665,7 +673,8 @@ def _setup_searches() -> None:
     roles_raw = Prompt.ask(
         "Target job titles (comma-separated, e.g. 'Backend Engineer, Full Stack Developer')"
     )
-    roles = [r.strip() for r in roles_raw.split(",") if r.strip()]
+    roles = [_strip_wrapping_single_quotes(r) for r in roles_raw.split(",")]
+    roles = [r for r in roles if r]
 
     if not roles:
         console.print("[yellow]No roles provided. Using a default set.[/yellow]")
