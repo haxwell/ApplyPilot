@@ -40,6 +40,13 @@ from applypilot.scoring.validator import (
 log = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 5  # max cross-run retries before giving up
+_DEFAULT_MAX_RESUME_PAGES = 2.5
+_DEFAULT_LINES_PER_PAGE = 52
+_JOB_KEYWORD_STOPWORDS = {
+    "with", "from", "that", "this", "they", "their", "there", "about", "into", "your",
+    "will", "have", "has", "had", "our", "you", "for", "and", "the", "are", "but",
+    "not", "all", "any", "can", "was", "were", "job", "role", "team", "work", "using",
+}
 
 
 # ── Prompt Builders (profile-driven) ──────────────────────────────────────
@@ -645,29 +652,141 @@ def _build_tailored_prefix(job: dict) -> str:
 
 # ── Resume Assembly (profile-driven header) ──────────────────────────────
 
-def assemble_resume_text(data: dict, profile: dict) -> str:
-    """Convert JSON resume data to formatted plain text.
+def _normalize_company_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
 
-    Header (name, location, contact) is ALWAYS code-injected from the profile,
-    never LLM-generated. All text fields are sanitized.
 
-    Args:
-        data: Parsed JSON resume from the LLM.
-        profile: User profile dict from load_profile().
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
 
-    Returns:
-        Formatted resume text.
+
+def _coerce_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _get_tailored_max_lines(profile: dict) -> int:
+    """Compute line budget from tailoring_config max pages settings.
+
+    Supports:
+      - tailoring_config.global_rules.max_resume_pages
+      - tailoring_config.global_rules.formatting.lines_per_page
     """
+    tailoring_config = profile.get("tailoring_config", {}) or {}
+    global_rules = tailoring_config.get("global_rules", {}) or {}
+    formatting = global_rules.get("formatting", {}) or {}
+
+    max_pages = _coerce_float(global_rules.get("max_resume_pages"), _DEFAULT_MAX_RESUME_PAGES)
+    lines_per_page = _coerce_int(formatting.get("lines_per_page"), _DEFAULT_LINES_PER_PAGE)
+
+    return max(60, int(round(max_pages * lines_per_page)))
+
+
+def _company_in_entry(entry: dict, company: str) -> bool:
+    company_norm = _normalize_company_text(company)
+    if not company_norm:
+        return False
+    entry_text = " ".join(
+        str(entry.get(key, ""))
+        for key in ("header", "company", "subtitle")
+    )
+    return company_norm in _normalize_company_text(entry_text)
+
+
+def _extract_job_keywords(job_text: str) -> set[str]:
+    tokens = re.findall(r"[a-zA-Z0-9\+\#\-]{4,}", job_text.lower())
+    return {t for t in tokens if t not in _JOB_KEYWORD_STOPWORDS}
+
+
+def _select_relevant_highlights(highlights: list[str], job_text: str, *, limit: int) -> list[str]:
+    if not highlights:
+        return []
+
+    keywords = _extract_job_keywords(job_text)
+    if not keywords:
+        return highlights[:limit]
+
+    def score(text: str) -> tuple[int, int]:
+        words = set(re.findall(r"[a-zA-Z0-9\+\#\-]{4,}", text.lower()))
+        overlap = len(words & keywords)
+        return overlap, len(text)
+
+    ranked = sorted(highlights, key=score, reverse=True)
+    return ranked[:limit]
+
+
+def _build_role_date_range(role: dict) -> str:
+    start = str(role.get("start_date", "")).strip()
+    end = str(role.get("end_date", "")).strip()
+    end_display = end if end else "Present"
+    if start and end_display:
+        return f"{start} - {end_display}"
+    return start or end_display
+
+
+def _build_profile_full_entry(role: dict, job_text: str) -> dict:
+    company = str(role.get("company", "")).strip()
+    position = str(role.get("position", "")).strip() or "Software Engineer"
+    highlights = [sanitize_text(str(h)) for h in role.get("highlights", []) if str(h).strip()]
+    selected = _select_relevant_highlights(highlights, job_text, limit=3)
+    if not selected and role.get("summary"):
+        selected = [sanitize_text(str(role.get("summary", "")))]
+    return {
+        "header": f"{position}",
+        "subtitle": f"{company} | {_build_role_date_range(role)}".strip(),
+        "bullets": selected,
+    }
+
+
+def _build_profile_compact_entry(role: dict, job_text: str) -> dict:
+    company = str(role.get("company", "")).strip()
+    position = str(role.get("position", "")).strip() or "Software Engineer"
+    highlights = [sanitize_text(str(h)) for h in role.get("highlights", []) if str(h).strip()]
+    selected = _select_relevant_highlights(highlights, job_text, limit=1)
+    if not selected and role.get("summary"):
+        selected = [sanitize_text(str(role.get("summary", "")))]
+    return {
+        "header": f"{position} | {company}".strip(" |"),
+        "subtitle": _build_role_date_range(role),
+        "bullets": selected,
+    }
+
+
+def _sanitize_experience_entry(entry: dict) -> dict:
+    sanitized = {
+        "header": sanitize_text(str(entry.get("header", ""))).strip(),
+        "subtitle": sanitize_text(str(entry.get("subtitle", ""))).strip(),
+        "bullets": [],
+    }
+    for bullet in entry.get("bullets", []):
+        bullet_text = _normalize_bullet(bullet)
+        if bullet_text:
+            clean = sanitize_text(bullet_text).strip()
+            if clean:
+                sanitized["bullets"].append(clean)
+    return sanitized
+
+
+def _render_resume_lines(
+    data: dict,
+    profile: dict,
+    experience_entries: list[dict],
+    selected_entries: list[dict],
+) -> list[str]:
+    """Render deterministic resume lines from structured sections."""
     personal = profile.get("personal", {})
     lines: list[str] = []
 
     # Header -- always code-injected from profile
     lines.append(personal.get("full_name", ""))
     lines.append(sanitize_text(data.get("title", "Software Engineer")))
-
-    # Location from search config or profile -- leave blank if not available
-    # The location line is optional; the original used a hardcoded city.
-    # We omit it here; the LLM prompt can include it if the user sets it.
 
     # Contact line
     contact_parts: list[str] = []
@@ -697,15 +816,24 @@ def assemble_resume_text(data: dict, profile: dict) -> str:
 
     # Experience
     lines.append("EXPERIENCE")
-    for entry in data.get("experience", []):
-        lines.append(sanitize_text(entry.get("header", "")))
+    for entry in experience_entries:
+        lines.append(entry.get("header", ""))
         if entry.get("subtitle"):
-            lines.append(sanitize_text(entry["subtitle"]))
-        for b in entry.get("bullets", []):
-            bullet_text = _normalize_bullet(b)
-            if bullet_text:
-                lines.append(f"- {sanitize_text(bullet_text)}")
+            lines.append(entry["subtitle"])
+        for bullet in entry.get("bullets", []):
+            lines.append(f"- {bullet}")
         lines.append("")
+
+    # Selected Experience
+    if selected_entries:
+        lines.append("SELECTED EXPERIENCE")
+        for entry in selected_entries:
+            lines.append(entry.get("header", ""))
+            if entry.get("subtitle"):
+                lines.append(entry["subtitle"])
+            for bullet in entry.get("bullets", []):
+                lines.append(f"- {bullet}")
+            lines.append("")
 
     # Projects (only include section when there is content)
     project_entries = _collect_renderable_project_entries(data)
@@ -724,6 +852,90 @@ def assemble_resume_text(data: dict, profile: dict) -> str:
     # Education
     lines.append("EDUCATION")
     lines.append(sanitize_text(str(data.get("education", ""))))
+
+    return lines
+
+
+def assemble_resume_text(data: dict, profile: dict, job: dict | None = None) -> str:
+    """Convert JSON resume data to formatted plain text.
+
+    Header (name, location, contact) is ALWAYS code-injected from the profile,
+    never LLM-generated. All text fields are sanitized.
+
+    Args:
+        data: Parsed JSON resume from the LLM.
+        profile: User profile dict from load_profile().
+
+    Returns:
+        Formatted resume text.
+    """
+    job = job or {}
+    job_text = " ".join(
+        str(job.get(key, "")).strip()
+        for key in ("title", "full_description", "description")
+    ).strip()
+
+    profile_roles = profile.get("work", [])
+    generated_experience = data.get("experience", []) if isinstance(data.get("experience"), list) else []
+
+    experience_bundles: list[dict] = []
+    if profile_roles:
+        for role in profile_roles:
+            company = str(role.get("company", "")).strip()
+            matched = None
+            for entry in generated_experience:
+                if isinstance(entry, dict) and company and _company_in_entry(entry, company):
+                    matched = entry
+                    break
+
+            if isinstance(matched, dict):
+                full_entry = _sanitize_experience_entry(matched)
+                if not full_entry.get("header"):
+                    full_entry = _build_profile_full_entry(role, job_text)
+            else:
+                full_entry = _build_profile_full_entry(role, job_text)
+
+            experience_bundles.append({"role": role, "entry": full_entry})
+    else:
+        for entry in generated_experience:
+            if isinstance(entry, dict):
+                experience_bundles.append({"role": None, "entry": _sanitize_experience_entry(entry)})
+
+    full_entries = [bundle["entry"] for bundle in experience_bundles]
+    selected_entries: list[dict] = []
+    max_lines = _get_tailored_max_lines(profile)
+
+    lines = _render_resume_lines(data, profile, full_entries, selected_entries)
+
+    # Keep all jobs represented: compress oldest roles into "Selected Experience"
+    # until the assembled resume fits the approximate maximum length.
+    while len(lines) > max_lines and experience_bundles:
+        bundle = experience_bundles.pop()
+        role = bundle.get("role")
+        if isinstance(role, dict):
+            selected_entries.insert(0, _build_profile_compact_entry(role, job_text))
+        else:
+            entry = bundle.get("entry", {})
+            compact = {
+                "header": str(entry.get("header", "")).strip(),
+                "subtitle": str(entry.get("subtitle", "")).strip(),
+                "bullets": list(entry.get("bullets", []))[:1],
+            }
+            selected_entries.insert(0, compact)
+
+        full_entries = [item["entry"] for item in experience_bundles]
+        lines = _render_resume_lines(data, profile, full_entries, selected_entries)
+
+    # If still over budget, further compress selected entries while preserving
+    # one-line role identity per job.
+    if len(lines) > max_lines and selected_entries:
+        for entry in selected_entries:
+            if len(lines) <= max_lines:
+                break
+            entry["bullets"] = list(entry.get("bullets", []))[:1]
+            if len(lines) > max_lines and entry.get("subtitle"):
+                entry["subtitle"] = ""
+            lines = _render_resume_lines(data, profile, full_entries, selected_entries)
 
     return "\n".join(lines)
 
@@ -866,12 +1078,12 @@ def tailor_resume(
             if attempt < max_retries:
                 continue
             # Last attempt — assemble whatever we got
-            tailored = assemble_resume_text(data, profile)
+            tailored = assemble_resume_text(data, profile, job=job)
             report["status"] = "failed_validation"
             return tailored, report
 
         # Assemble text (header injected by code, em dashes auto-fixed)
-        tailored = assemble_resume_text(data, profile)
+        tailored = assemble_resume_text(data, profile, job=job)
 
         # Layer 2: LLM judge (catches subtle fabrication) — skipped in lenient mode
         if validation_mode == "lenient":

@@ -6,6 +6,7 @@
 
 import pytest
 from applypilot.scoring.tailor import (
+    _get_tailored_max_lines,
     _normalize_bullet,
     _strip_disallowed_watchlist_skills,
     assemble_resume_text,
@@ -74,6 +75,37 @@ class TestAssembleResumeTextWithJsonBullets:
     @pytest.fixture
     def sample_profile(self):
         return {"personal": {"full_name": "Test User", "email": "test@example.com"}}
+
+    @pytest.fixture
+    def profile_with_work(self):
+        return {
+            "personal": {"full_name": "Test User", "email": "test@example.com"},
+            "work": [
+                {
+                    "company": "Alpha Corp",
+                    "position": "Senior Backend Engineer",
+                    "start_date": "2025-01",
+                    "end_date": "2026-01",
+                    "summary": "Built backend APIs.",
+                    "highlights": [
+                        "Built Spring Boot APIs for payment workflows.",
+                        "Integrated Kafka event streams for billing events.",
+                        "Improved CI/CD reliability across service deployments.",
+                    ],
+                },
+                {
+                    "company": "Beta Systems",
+                    "position": "Software Engineer",
+                    "start_date": "2023-01",
+                    "end_date": "2024-12",
+                    "summary": "Backend and integrations.",
+                    "highlights": [
+                        "Implemented REST integrations with external systems.",
+                        "Reduced release preparation from days to hours.",
+                    ],
+                },
+            ],
+        }
 
     def test_experience_with_json_bullets(self, sample_profile):
         """Experience bullets with JSON should be cleaned in final output."""
@@ -199,6 +231,74 @@ class TestAssembleResumeTextWithJsonBullets:
         assert "\nPROJECTS\n" in result
         assert "Project X" in result
 
+    def test_includes_profile_jobs_omitted_by_llm(self, profile_with_work):
+        """Assembler should include jobs from profile even when LLM omits them."""
+        data = {
+            "title": "Senior Backend Engineer",
+            "summary": "Test summary",
+            "skills": {"Languages": "Python, Java"},
+            "experience": [
+                {
+                    "header": "Senior Backend Engineer",
+                    "subtitle": "Alpha Corp | 2025-01 - 2026-01",
+                    "bullets": ["Built payment APIs"],
+                }
+            ],
+            "projects": [],
+            "education": "BS Computer Science",
+        }
+
+        result = assemble_resume_text(data, profile_with_work, job={"title": "Backend Engineer"})
+
+        assert "Alpha Corp" in result
+        assert "Beta Systems" in result
+        assert "\nEXPERIENCE\n" in result
+
+    def test_adds_selected_experience_when_length_over_budget(self, sample_profile):
+        """Oldest roles should be compressed into SELECTED EXPERIENCE when over budget."""
+        many_roles = []
+        for idx in range(26):
+            many_roles.append(
+                {
+                    "company": f"Company {idx}",
+                    "position": "Software Engineer",
+                    "start_date": f"{2008 + idx}-01",
+                    "end_date": f"{2008 + idx}-12",
+                    "summary": "Platform engineering.",
+                    "highlights": [
+                        f"Built backend service {idx} using Java and Spring Boot.",
+                        f"Integrated event workflow {idx} with Kafka and SQL.",
+                        f"Automated CI/CD pipeline {idx} and improved reliability.",
+                        f"Reduced manual release overhead for service {idx}.",
+                    ],
+                }
+            )
+
+        profile = {
+            "personal": {"full_name": "Test User", "email": "test@example.com"},
+            "work": list(reversed(many_roles)),  # newest first
+        }
+        data = {
+            "title": "Senior Software Engineer",
+            "summary": "Test summary",
+            "skills": {"Languages": "Python, Java", "Backend": "Spring Boot, APIs"},
+            "experience": [
+                {
+                    "header": "Software Engineer",
+                    "subtitle": "Company 25 | 2033-01 - 2033-12",
+                    "bullets": ["Led backend modernization for service mesh migration."],
+                }
+            ],
+            "projects": [],
+            "education": "BS Computer Science",
+        }
+
+        result = assemble_resume_text(data, profile, job={"title": "Senior Backend Engineer"})
+
+        assert "\nSELECTED EXPERIENCE\n" in result
+        for idx in range(26):
+            assert f"Company {idx}" in result
+
 
 class TestWatchlistSkillStripping:
     """Test stripping disallowed watchlist skills from generated payloads."""
@@ -228,3 +328,20 @@ class TestWatchlistSkillStripping:
 
         assert removed == ["Rust"]
         assert data["skills"]["Languages"] == "Python"
+
+
+class TestTailorLineBudget:
+    def test_default_line_budget(self):
+        profile = {"tailoring_config": {}}
+        assert _get_tailored_max_lines(profile) == 130
+
+    def test_configurable_max_pages_budget(self):
+        profile = {
+            "tailoring_config": {
+                "global_rules": {
+                    "max_resume_pages": 3.0,
+                    "formatting": {"lines_per_page": 50},
+                }
+            }
+        }
+        assert _get_tailored_max_lines(profile) == 150
