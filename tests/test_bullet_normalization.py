@@ -7,6 +7,7 @@
 import pytest
 from applypilot.scoring.tailor import (
     _get_tailored_max_lines,
+    _missing_profile_companies_in_generated_experience,
     _normalize_bullet,
     _strip_disallowed_watchlist_skills,
     assemble_resume_text,
@@ -231,8 +232,8 @@ class TestAssembleResumeTextWithJsonBullets:
         assert "\nPROJECTS\n" in result
         assert "Project X" in result
 
-    def test_includes_profile_jobs_omitted_by_llm(self, profile_with_work):
-        """Assembler should include jobs from profile even when LLM omits them."""
+    def test_does_not_reinsert_profile_jobs_omitted_by_llm(self, profile_with_work):
+        """Assembler should not reinsert roles omitted by the model."""
         data = {
             "title": "Senior Backend Engineer",
             "summary": "Test summary",
@@ -251,44 +252,63 @@ class TestAssembleResumeTextWithJsonBullets:
         result = assemble_resume_text(data, profile_with_work, job={"title": "Backend Engineer"})
 
         assert "Alpha Corp" in result
-        assert "Beta Systems" in result
+        assert "Beta Systems" not in result
         assert "\nEXPERIENCE\n" in result
+
+    def test_prefers_model_content_when_role_present(self, profile_with_work):
+        """Assembler should preserve model-tailored bullets for matched roles."""
+        data = {
+            "title": "Senior Backend Engineer",
+            "summary": "Test summary",
+            "skills": {"Languages": "Python, Java"},
+            "experience": [
+                {
+                    "header": "Senior Backend Engineer",
+                    "subtitle": "Alpha Corp | 2025-01 - 2026-01",
+                    "bullets": ["Built GraphQL APIs for partner integrations."],
+                },
+                {
+                    "header": "Software Engineer",
+                    "subtitle": "Beta Systems | 2023-01 - 2024-12",
+                    "bullets": ["Implemented event-driven billing workflows with Kafka."],
+                },
+            ],
+            "projects": [],
+            "education": "BS Computer Science",
+        }
+
+        result = assemble_resume_text(data, profile_with_work, job={"title": "Backend Engineer"})
+
+        assert "Built GraphQL APIs for partner integrations." in result
+        assert "Implemented event-driven billing workflows with Kafka." in result
+        assert "Built Spring Boot APIs for payment workflows." not in result
 
     def test_adds_selected_experience_when_length_over_budget(self, sample_profile):
         """Oldest roles should be compressed into SELECTED EXPERIENCE when over budget."""
-        many_roles = []
+        generated_experience = []
         for idx in range(26):
-            many_roles.append(
+            year = 2033 - idx
+            generated_experience.append(
                 {
-                    "company": f"Company {idx}",
-                    "position": "Software Engineer",
-                    "start_date": f"{2008 + idx}-01",
-                    "end_date": f"{2008 + idx}-12",
-                    "summary": "Platform engineering.",
-                    "highlights": [
+                    "header": "Software Engineer",
+                    "subtitle": f"Company {idx} | {year}-01 - {year}-12",
+                    "bullets": [
                         f"Built backend service {idx} using Java and Spring Boot.",
                         f"Integrated event workflow {idx} with Kafka and SQL.",
                         f"Automated CI/CD pipeline {idx} and improved reliability.",
-                        f"Reduced manual release overhead for service {idx}.",
                     ],
                 }
             )
 
         profile = {
             "personal": {"full_name": "Test User", "email": "test@example.com"},
-            "work": list(reversed(many_roles)),  # newest first
+            "work": [],
         }
         data = {
             "title": "Senior Software Engineer",
             "summary": "Test summary",
             "skills": {"Languages": "Python, Java", "Backend": "Spring Boot, APIs"},
-            "experience": [
-                {
-                    "header": "Software Engineer",
-                    "subtitle": "Company 25 | 2033-01 - 2033-12",
-                    "bullets": ["Led backend modernization for service mesh migration."],
-                }
-            ],
+            "experience": generated_experience,
             "projects": [],
             "education": "BS Computer Science",
         }
@@ -298,6 +318,47 @@ class TestAssembleResumeTextWithJsonBullets:
         assert "\nSELECTED EXPERIENCE\n" in result
         for idx in range(26):
             assert f"Company {idx}" in result
+
+    def test_moves_oldest_roles_to_selected_experience_first(self):
+        roles = []
+        for idx in range(12):
+            year = 2025 - idx
+            roles.append(
+                {
+                    "company": f"Company {idx}",
+                    "position": "Engineer",
+                    "start_date": f"{year}-01",
+                    "end_date": f"{year}-12" if idx else "",
+                }
+            )
+        profile = {
+            "personal": {"full_name": "Test User", "email": "test@example.com"},
+            "tailoring_config": {"global_rules": {"max_resume_pages": 1.2, "formatting": {"lines_per_page": 50}}},
+            "work": roles,
+        }
+        generated_experience = []
+        for idx in range(12):
+            year = 2025 - idx
+            generated_experience.append(
+                {
+                    "header": "Engineer",
+                    "subtitle": f"Company {idx} | {year}-01 - {year}-12" if idx else f"Company {idx} | {year}-01 - Present",
+                    "bullets": [f"Built service {idx}.", f"Improved workflow {idx}."],
+                }
+            )
+        data = {
+            "title": "Senior Software Engineer",
+            "summary": "Test summary",
+            "skills": {"Languages": "Python, Java", "Backend": "Spring Boot, APIs"},
+            "experience": generated_experience,
+            "projects": [],
+            "education": "BS Computer Science",
+        }
+
+        result = assemble_resume_text(data, profile, job={"title": "Senior Backend Engineer"})
+
+        assert "\nSELECTED EXPERIENCE\n" in result
+        assert "Company 11" in result
 
 
 class TestWatchlistSkillStripping:
@@ -345,3 +406,22 @@ class TestTailorLineBudget:
             }
         }
         assert _get_tailored_max_lines(profile) == 150
+
+
+class TestMissingCompanyDetection:
+    def test_reports_missing_profile_companies_in_generated_experience(self):
+        profile = {
+            "work": [
+                {"company": "Alpha Corp"},
+                {"company": "Beta Systems"},
+            ]
+        }
+        data = {
+            "experience": [
+                {"header": "Senior Backend Engineer", "subtitle": "Alpha Corp | 2025-01 - 2026-01", "bullets": ["Built APIs."]},
+            ]
+        }
+
+        missing = _missing_profile_companies_in_generated_experience(data, profile)
+
+        assert missing == ["Beta Systems"]
