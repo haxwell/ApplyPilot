@@ -68,6 +68,27 @@ def _build_education_block(education_list: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _build_work_history_block(profile: dict) -> str:
+    """Build a compact work-history inventory for the prompt."""
+
+    work_entries = profile.get("work", [])
+    if not isinstance(work_entries, list) or not work_entries:
+        return "N/A"
+
+    lines: list[str] = []
+    for role in work_entries:
+        if not isinstance(role, dict):
+            continue
+        company = str(role.get("company", "")).strip()
+        position = str(role.get("position", "")).strip() or "Software Engineer"
+        start = str(role.get("start_date", "")).strip()
+        end = str(role.get("end_date", "")).strip() or "Present"
+        if company:
+            lines.append(f"- {company} | {position} | {start} - {end}".strip())
+
+    return "\n".join(lines) if lines else "N/A"
+
+
 def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
     """Build the resume tailoring system prompt from the user's profile.
 
@@ -96,6 +117,7 @@ def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
     education = profile.get("experience", {})
     education_level = education.get("education_level", "")
     education_block = _build_education_block(profile.get("education", []))
+    work_history_block = _build_work_history_block(profile)
     if education_block == "N/A" and education_level:
         education_block = f"{school} | {education_level}" if school else education_level
     del resume_text
@@ -165,7 +187,7 @@ def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
 
     ## SUMMARY
 
-    Write 3-5 sentences.
+    Write 4-6 sentences.
 
     The summary should be specific, grounded, and senior.
 
@@ -209,23 +231,22 @@ def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
 
     Do not bury the most important must-have skills.
 
-    ## EXPERIENCE SELECTION
+    ## EXPERIENCE COVERAGE
 
-    Use the most recent and most relevant roles.
+    Keep EVERY real employer from the source work history in the JSON experience list.
 
-    Usually include:
-    - Charles Schwab
-    - Savvato Software
-    - Coinme
-    - SquareTrade
-    - Sling TV / Dish if relevant
-    - An Earlier Experience section when it preserves seniority or highly relevant older proof
+    Do not remove roles. Do not merge two different employers into one entry.
 
-    Do not make the resume look shallow by dropping all older experience.
+    Source profile work history (newest first):
+    {work_history_block}
 
-    If the target job values backend scale, Kafka, APIs, ETL, workflow systems, team leadership, or high-traffic systems, include compressed earlier evidence from roles like Charter, IHS Markit, Health Language, IQNavigator, and Fox Interactive Media.
-
-    Use an "Earlier Experience (Selected)" section when appropriate. It may contain compact bullets or compact role summaries.
+    Hard requirements:
+    - The experience array MUST have exactly one entry per profile company.
+    - len(experience) MUST equal the number of profile companies in source work history.
+    - Every profile company string MUST appear in exactly one experience entry
+      (header, subtitle, or company field text).
+    - No duplicate company entries in experience.
+    - If any profile company is missing, output is invalid.
 
     ## BULLET STRATEGY
 
@@ -372,7 +393,7 @@ def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
     Must fit approximately 2 pages, and never more than 2.5 pages.
 
     Prefer:
-    - 3-5 sentence summary
+    - 4-6 sentence summary
     - compact skills section
     - 4 bullets max for the most relevant recent roles
     - 2-3 bullets for less relevant roles
@@ -393,6 +414,8 @@ def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
     6. Did I avoid inventing tools, responsibilities, or outcomes?
     7. Did I avoid rewriting strong bullets merely to make them different?
     8. Would this sound credible to a senior engineer reading it?
+    9. Does len(experience) equal the profile company count from source work history?
+    10. Does each profile company appear exactly once in experience?
 
     ## OUTPUT
 
@@ -405,7 +428,7 @@ def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
 
     {{
       "title": "Role Title",
-      "summary": "3-5 tailored sentences.",
+      "summary": "4-6 tailored sentences.",
       "skills": {{
         "Languages": "...",
         "Backend": "...",
@@ -700,6 +723,20 @@ def _company_in_entry(entry: dict, company: str) -> bool:
     return company_norm in _normalize_company_text(entry_text)
 
 
+def _missing_profile_companies_in_generated_experience(data: dict, profile: dict) -> list[str]:
+    """Return profile companies absent from LLM-generated experience entries."""
+
+    work_companies = get_profile_company_names(profile)
+    generated_experience = data.get("experience", []) if isinstance(data.get("experience"), list) else []
+    matched_companies: set[str] = set()
+
+    for company in work_companies:
+        if any(isinstance(entry, dict) and _company_in_entry(entry, company) for entry in generated_experience):
+            matched_companies.add(company)
+
+    return [company for company in work_companies if company not in matched_companies]
+
+
 def _extract_job_keywords(job_text: str) -> set[str]:
     tokens = re.findall(r"[a-zA-Z0-9\+\#\-]{4,}", job_text.lower())
     return {t for t in tokens if t not in _JOB_KEYWORD_STOPWORDS}
@@ -772,6 +809,24 @@ def _sanitize_experience_entry(entry: dict) -> dict:
             if clean:
                 sanitized["bullets"].append(clean)
     return sanitized
+
+
+def _find_matching_profile_role(entry: dict, profile_roles: list[dict]) -> dict | None:
+    for role in profile_roles:
+        if not isinstance(role, dict):
+            continue
+        company = str(role.get("company", "")).strip()
+        if company and _company_in_entry(entry, company):
+            return role
+    return None
+
+
+def _build_compact_entry_from_generated(entry: dict) -> dict:
+    return {
+        "header": str(entry.get("header", "")).strip(),
+        "subtitle": str(entry.get("subtitle", "")).strip(),
+        "bullets": list(entry.get("bullets", []))[:1],
+    }
 
 
 def _render_resume_lines(
@@ -875,31 +930,20 @@ def assemble_resume_text(data: dict, profile: dict, job: dict | None = None) -> 
         for key in ("title", "full_description", "description")
     ).strip()
 
-    profile_roles = profile.get("work", [])
+    raw_profile_roles = profile.get("work", [])
+    profile_roles = [role for role in raw_profile_roles if isinstance(role, dict)]
     generated_experience = data.get("experience", []) if isinstance(data.get("experience"), list) else []
 
+    # Start from model-generated ordering/content only.
     experience_bundles: list[dict] = []
-    if profile_roles:
-        for role in profile_roles:
-            company = str(role.get("company", "")).strip()
-            matched = None
-            for entry in generated_experience:
-                if isinstance(entry, dict) and company and _company_in_entry(entry, company):
-                    matched = entry
-                    break
-
-            if isinstance(matched, dict):
-                full_entry = _sanitize_experience_entry(matched)
-                if not full_entry.get("header"):
-                    full_entry = _build_profile_full_entry(role, job_text)
-            else:
-                full_entry = _build_profile_full_entry(role, job_text)
-
-            experience_bundles.append({"role": role, "entry": full_entry})
-    else:
-        for entry in generated_experience:
-            if isinstance(entry, dict):
-                experience_bundles.append({"role": None, "entry": _sanitize_experience_entry(entry)})
+    for entry in generated_experience:
+        if not isinstance(entry, dict):
+            continue
+        sanitized = _sanitize_experience_entry(entry)
+        if not sanitized.get("header") and not sanitized.get("subtitle") and not sanitized.get("bullets"):
+            continue
+        role = _find_matching_profile_role(sanitized, profile_roles)
+        experience_bundles.append({"role": role, "entry": sanitized})
 
     full_entries = [bundle["entry"] for bundle in experience_bundles]
     selected_entries: list[dict] = []
@@ -907,20 +951,32 @@ def assemble_resume_text(data: dict, profile: dict, job: dict | None = None) -> 
 
     lines = _render_resume_lines(data, profile, full_entries, selected_entries)
 
-    # Keep all jobs represented: compress oldest roles into "Selected Experience"
+    role_order: dict[str, int] = {}
+    for idx, role in enumerate(profile_roles):
+        company = _normalize_company_text(str(role.get("company", "")))
+        if company and company not in role_order:
+            role_order[company] = idx
+
+    # Keep all jobs represented: move oldest roles into "SELECTED EXPERIENCE"
     # until the assembled resume fits the approximate maximum length.
-    while len(lines) > max_lines and experience_bundles:
-        bundle = experience_bundles.pop()
+    while len(lines) > max_lines and len(experience_bundles) > 1:
+        move_idx = len(experience_bundles) - 1
+        oldest_order = -1
+        for idx, bundle in enumerate(experience_bundles):
+            role = bundle.get("role")
+            if isinstance(role, dict):
+                company = _normalize_company_text(str(role.get("company", "")))
+                order_val = role_order.get(company, -1)
+                if order_val >= oldest_order:
+                    oldest_order = order_val
+                    move_idx = idx
+
+        bundle = experience_bundles.pop(move_idx)
         role = bundle.get("role")
         if isinstance(role, dict):
             selected_entries.insert(0, _build_profile_compact_entry(role, job_text))
         else:
-            entry = bundle.get("entry", {})
-            compact = {
-                "header": str(entry.get("header", "")).strip(),
-                "subtitle": str(entry.get("subtitle", "")).strip(),
-                "bullets": list(entry.get("bullets", []))[:1],
-            }
+            compact = _build_compact_entry_from_generated(bundle.get("entry", {}))
             selected_entries.insert(0, compact)
 
         full_entries = [item["entry"] for item in experience_bundles]
@@ -1064,6 +1120,15 @@ def tailor_resume(
 
         # Layer 1: Validate JSON fields
         validation = validate_json_fields(data, profile, mode=validation_mode)
+        missing_companies = _missing_profile_companies_in_generated_experience(data, profile)
+        if missing_companies:
+            missing_msg = "ERROR: LLM omitted required experience companies: " + ", ".join(missing_companies)
+            log.error("%s", missing_msg)
+            warning_prefixes = tuple(f"Company '{company}' missing from experience" for company in missing_companies)
+            warnings = validation.setdefault("warnings", [])
+            validation["warnings"] = [w for w in warnings if not w.startswith(warning_prefixes)]
+            validation.setdefault("errors", []).append(missing_msg)
+            validation["passed"] = False
         if not _collect_renderable_project_entries(data):
             warnings = validation.setdefault("warnings", [])
             project_warning = "No projects available to list on resume."
