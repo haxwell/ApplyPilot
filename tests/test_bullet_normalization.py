@@ -265,6 +265,42 @@ class TestAssembleResumeTextWithJsonBullets:
                 {
                     "header": "Senior Backend Engineer",
                     "subtitle": "Alpha Corp | 2025-01 - 2026-01",
+                    "bullets": [
+                        "Built GraphQL APIs for partner integrations.",
+                        "Improved deployment reliability for backend services.",
+                        "Collaborated with product teams on API design.",
+                    ],
+                },
+                {
+                    "header": "Software Engineer",
+                    "subtitle": "Beta Systems | 2023-01 - 2024-12",
+                    "bullets": [
+                        "Implemented event-driven billing workflows with Kafka.",
+                        "Reduced release preparation time through deployment tooling.",
+                        "Built and maintained service integrations.",
+                    ],
+                },
+            ],
+            "projects": [],
+            "education": "BS Computer Science",
+        }
+
+        result = assemble_resume_text(data, profile_with_work, job={"title": "Backend Engineer"})
+
+        assert "Built GraphQL APIs for partner integrations." in result
+        assert "Implemented event-driven billing workflows with Kafka." in result
+        assert "Built Spring Boot APIs for payment workflows." not in result
+
+    def test_enriches_thin_matched_roles_before_compaction(self, profile_with_work):
+        """Thin generated roles should be expanded from profile highlights before compaction."""
+        data = {
+            "title": "Senior Backend Engineer",
+            "summary": "Test summary",
+            "skills": {"Languages": "Python, Java"},
+            "experience": [
+                {
+                    "header": "Senior Backend Engineer",
+                    "subtitle": "Alpha Corp | 2025-01 - 2026-01",
                     "bullets": ["Built GraphQL APIs for partner integrations."],
                 },
                 {
@@ -280,8 +316,14 @@ class TestAssembleResumeTextWithJsonBullets:
         result = assemble_resume_text(data, profile_with_work, job={"title": "Backend Engineer"})
 
         assert "Built GraphQL APIs for partner integrations." in result
-        assert "Implemented event-driven billing workflows with Kafka." in result
-        assert "Built Spring Boot APIs for payment workflows." not in result
+        assert any(
+            snippet in result
+            for snippet in (
+                "Built Spring Boot APIs for payment workflows.",
+                "Integrated Kafka event streams for billing events.",
+                "Improved CI/CD reliability across service deployments.",
+            )
+        )
 
     def test_adds_selected_experience_when_length_over_budget(self, sample_profile):
         """Oldest roles should be compressed into SELECTED EXPERIENCE when over budget."""
