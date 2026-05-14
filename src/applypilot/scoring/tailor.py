@@ -128,9 +128,9 @@ def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
     Take the base resume and target job description. Return a tailored resume as a JSON object.
 
     Your goal is NOT to aggressively rewrite the resume.
-    Your goal is to produce a credible, recruiter-ready, human-sounding resume by selecting, ordering, compressing, and lightly tailoring the strongest real evidence from the source resume.
+    Your goal is to produce a credible, recruiter-ready, human-sounding resume by selecting, ordering, and lightly tailoring the strongest real evidence from the source resume.
 
-    The resume should feel like a polished two-page senior-engineer resume tailored to this job, not like generic AI-generated resume text.
+    The resume should feel like a polished senior-engineer resume tailored to this job, not like generic AI-generated resume text.
 
     ## RECRUITER SCAN, 6 SECONDS
 
@@ -140,7 +140,7 @@ def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
     2. Summary proves the candidate has done this kind of work.
     3. Skills show the must-haves for this job near the top.
     4. First 3 bullets of the most relevant recent role show concrete work, technologies, and outcomes.
-    5. The candidate's seniority and depth are visible without requiring a five-page resume.
+    5. The candidate's seniority and depth are immediately visible.
 
     ## SOURCE OF TRUTH
 
@@ -247,6 +247,8 @@ def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
       (header, subtitle, or company field text).
     - No duplicate company entries in experience.
     - If any profile company is missing, output is invalid.
+    - Provide full role detail: each experience entry should include 3-4 concise, concrete bullets
+      grounded in source resume evidence.
 
     ## BULLET STRATEGY
 
@@ -345,7 +347,7 @@ def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
 
     Reorder projects by relevance.
 
-    Drop irrelevant projects if space is tight.
+    Drop irrelevant projects when they do not improve targeting for this job.
 
     For this candidate:
     - TribeApp is relevant for backend, product, mobile, Spring Boot, MySQL, rules/attributes, discovery, and full-stack ownership.
@@ -359,7 +361,7 @@ def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
 
     The candidate has deep senior engineering experience.
 
-    The resume should not read like a mid-level engineer with only four jobs.
+    The resume should not read like a mid-level engineer.
 
     Preserve signals such as:
     - mentoring engineers
@@ -372,7 +374,7 @@ def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
     - supporting high-traffic or high-volume systems
     - improving delivery workflows
 
-    Use older roles selectively to prove depth.
+    Use role content to preserve depth.
 
     ## COMPANY, SCHOOL, AND CERTIFICATION RULES
 
@@ -387,20 +389,6 @@ def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
     Do not invent degrees. If education is coursework, keep it as coursework.
 
     Do not invent certifications.
-
-    ## LENGTH
-
-    Must fit approximately 2 pages, and never more than 2.5 pages.
-
-    Prefer:
-    - 4-6 sentence summary
-    - compact skills section
-    - 4 bullets max for the most relevant recent roles
-    - 2-3 bullets for less relevant roles
-    - compact Earlier Experience section when useful
-    - concise education/certifications
-
-    Do not include every source bullet.
 
     ## FINAL QUALITY CHECK BEFORE OUTPUT
 
@@ -829,6 +817,52 @@ def _build_compact_entry_from_generated(entry: dict) -> dict:
     }
 
 
+def _merge_unique_bullets(primary: list[str], fallback: list[str], *, max_items: int) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for bullet in primary + fallback:
+        normalized = sanitize_text(str(bullet)).strip()
+        if not normalized:
+            continue
+        dedupe_key = normalized.lower()
+        if dedupe_key in seen:
+            continue
+        merged.append(normalized)
+        seen.add(dedupe_key)
+        if len(merged) >= max_items:
+            break
+    return merged
+
+
+def _enrich_full_entry_from_profile(role: dict, entry: dict, job_text: str) -> dict:
+    """Enrich thin generated entries using role highlights before compaction."""
+
+    enriched = {
+        "header": str(entry.get("header", "")).strip(),
+        "subtitle": str(entry.get("subtitle", "")).strip(),
+        "bullets": list(entry.get("bullets", [])),
+    }
+
+    fallback = _build_profile_full_entry(role, job_text)
+    if not enriched["header"]:
+        enriched["header"] = fallback.get("header", "")
+    if not enriched["subtitle"]:
+        enriched["subtitle"] = fallback.get("subtitle", "")
+
+    bullets = [sanitize_text(str(b)).strip() for b in enriched.get("bullets", []) if str(b).strip()]
+    fallback_bullets = [sanitize_text(str(b)).strip() for b in fallback.get("bullets", []) if str(b).strip()]
+
+    # Build fuller role detail before downstream length-based compaction.
+    min_full_bullets = 3
+    max_full_bullets = 4
+    target_count = max(min_full_bullets, min(max_full_bullets, len(bullets)))
+    if len(bullets) < min_full_bullets:
+        target_count = min_full_bullets
+
+    enriched["bullets"] = _merge_unique_bullets(bullets, fallback_bullets, max_items=target_count)
+    return enriched
+
+
 def _render_resume_lines(
     data: dict,
     profile: dict,
@@ -943,6 +977,8 @@ def assemble_resume_text(data: dict, profile: dict, job: dict | None = None) -> 
         if not sanitized.get("header") and not sanitized.get("subtitle") and not sanitized.get("bullets"):
             continue
         role = _find_matching_profile_role(sanitized, profile_roles)
+        if isinstance(role, dict):
+            sanitized = _enrich_full_entry_from_profile(role, sanitized, job_text)
         experience_bundles.append({"role": role, "entry": sanitized})
 
     full_entries = [bundle["entry"] for bundle in experience_bundles]
