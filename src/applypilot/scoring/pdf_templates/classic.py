@@ -2,6 +2,22 @@
 
 from applypilot.scoring.pdf_render_model import ResumeRenderModel
 
+TEMPLATE_INFO = {
+    "name": "classic",
+    "display_name": "Classic",
+    "description": "Baseline renderer with no measurement-aware or heuristic compaction planning.",
+}
+TEMPLATE_CAPABILITIES = [
+    "baseline_rendering",
+]
+TEMPLATE_INPUT_PREFERENCES = {
+    "expects": "ResumeRenderModel",
+}
+TEMPLATE_REQUIREMENTS = {
+    "hooks": ["build_html", "prepare"],
+}
+TEMPLATE_OPTIONS = {}
+
 
 def prepare(model: ResumeRenderModel) -> ResumeRenderModel:
     """Prepare a render model for the classic template (no-op)."""

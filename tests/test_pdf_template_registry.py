@@ -7,7 +7,7 @@ import pytest
 
 from applypilot.scoring.pdf import DEFAULT_PDF_TEMPLATE, build_html_for_resume, resolve_pdf_template_name
 from applypilot.scoring.pdf_render_model import ResumeRenderModel
-from applypilot.scoring.pdf_templates.registry import TemplateLoadError, get_template
+from applypilot.scoring.pdf_templates.registry import TemplateLoadError, get_template, get_template_input_preferences
 
 
 def test_get_template_without_ref_loads_production_default_template() -> None:
@@ -48,6 +48,32 @@ def test_get_template_professional_compact_has_required_interface() -> None:
     assert hasattr(template, "build_html")
 
 
+def test_templates_may_expose_optional_metadata() -> None:
+    template = get_template("professional_compact")
+
+    assert isinstance(template.TEMPLATE_INFO, dict)
+    assert isinstance(template.TEMPLATE_CAPABILITIES, list)
+    assert isinstance(template.TEMPLATE_INPUT_PREFERENCES, dict)
+    assert isinstance(template.TEMPLATE_REQUIREMENTS, dict)
+    assert isinstance(template.TEMPLATE_OPTIONS, dict)
+
+
+def test_get_template_input_preferences_returns_dict_for_professional_compact() -> None:
+    prefs = get_template_input_preferences("professional_compact")
+    assert isinstance(prefs, dict)
+
+
+def test_get_template_input_preferences_returns_empty_for_template_without_preferences(monkeypatch) -> None:
+    module_name = "applypilot.scoring.pdf_templates.fake_no_prefs"
+    fake_module = types.ModuleType(module_name)
+    fake_module.prepare = lambda model: model
+    fake_module.build_html = lambda prepared: "<html></html>"
+    monkeypatch.setitem(sys.modules, module_name, fake_module)
+
+    prefs = get_template_input_preferences("fake_no_prefs")
+    assert prefs == {}
+
+
 def test_default_alias_matches_professional_compact_behavior() -> None:
     model = ResumeRenderModel(name="Alex Example", title="Senior Engineer")
     default_template = get_template("default")
@@ -82,6 +108,22 @@ def test_get_template_rejects_module_missing_build_html(monkeypatch) -> None:
     assert "fake_missing_build" in message
     assert "build_html" in message
     assert "Expected contract" in message
+
+
+def test_get_template_rejects_module_with_invalid_optional_metadata(monkeypatch) -> None:
+    module_name = "applypilot.scoring.pdf_templates.fake_bad_metadata"
+    fake_module = types.ModuleType(module_name)
+    fake_module.prepare = lambda model: model
+    fake_module.build_html = lambda prepared: "<html></html>"
+    fake_module.TEMPLATE_INFO = "not-a-dict"
+    monkeypatch.setitem(sys.modules, module_name, fake_module)
+
+    with pytest.raises(TemplateLoadError) as exc:
+        get_template("fake_bad_metadata")
+
+    message = str(exc.value)
+    assert "fake_bad_metadata" in message
+    assert "TEMPLATE_INFO" in message
 
 
 def test_build_html_for_resume_works_with_compact_template() -> None:

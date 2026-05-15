@@ -89,7 +89,11 @@ def _build_work_history_block(profile: dict) -> str:
     return "\n".join(lines) if lines else "N/A"
 
 
-def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
+def _build_tailor_prompt(
+    profile: dict,
+    resume_text: str | None = None,
+    content_preparation_context: dict | None = None,
+) -> str:
     """Build the resume tailoring system prompt from the user's profile.
 
     All skills boundaries, preserved entities, and formatting rules are
@@ -121,6 +125,53 @@ def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
     if education_block == "N/A" and education_level:
         education_block = f"{school} | {education_level}" if school else education_level
     del resume_text
+
+    context = content_preparation_context if isinstance(content_preparation_context, dict) else {}
+    selected_pdf_template = str(context.get("pdf_template", "")).strip() or "professional_compact"
+    raw_template_prefs = context.get("pdf_template_input_preferences", {})
+    template_prefs = raw_template_prefs if isinstance(raw_template_prefs, dict) else {}
+
+    requested_entry_fields = template_prefs.get("requested_entry_fields", [])
+    if not isinstance(requested_entry_fields, list):
+        requested_entry_fields = []
+    requested_entry_fields_normalized = {
+        str(field).strip().lower() for field in requested_entry_fields if str(field).strip()
+    }
+    wants_compact_summary = bool(template_prefs.get("prefers_compact_summary")) or (
+        "compact_summary" in requested_entry_fields_normalized
+    )
+
+    compact_summary_section = ""
+    experience_compact_summary_line = ""
+    project_compact_summary_line = ""
+    if wants_compact_summary:
+        compact_summary_section = """
+    ## COMPACT SUMMARY (OPTIONAL WHEN USEFUL)
+
+    If useful for downstream template rendering, you may include compact_summary on experience entries and relevant project entries.
+
+    compact_summary should:
+    - be one concise sentence
+    - preserve real evidence from the source
+    - avoid new claims
+    - include the strongest role-specific signal
+    - preserve exact metrics when used
+    - be suitable for a compact/selected experience layout
+
+    compact_summary is optional. Do not replace bullets with compact_summary.
+    Do not omit bullets because compact_summary exists.
+"""
+        experience_compact_summary_line = '\n          "compact_summary": "Optional concise sentence for compact layouts."'
+        project_compact_summary_line = '\n          "compact_summary": "Optional concise sentence for compact layouts."'
+
+    content_prep_context_text = json.dumps(
+        {
+            "pdf_template": selected_pdf_template,
+            "pdf_template_input_preferences": template_prefs,
+        },
+        indent=2,
+        sort_keys=True,
+    )
 
     system_prompt = f"""
     You are a senior technical resume editor helping a strong senior engineer get an interview.
@@ -283,20 +334,7 @@ def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
     Avoid:
     "Enhanced deployment efficiency through robust automation and comprehensive testing."
 
-    ## COMPACT SUMMARY
-
-    For each experience entry and relevant project entry, provide compact_summary.
-
-    compact_summary should:
-    - be one concise sentence
-    - preserve real evidence from the source
-    - avoid new claims
-    - include the strongest role-specific signal
-    - preserve exact metrics when used
-    - be suitable for a compact/selected experience layout
-
-    Do not use compact_summary to replace bullets.
-    Do not omit bullets because compact_summary exists.
+    {compact_summary_section}
 
     ## BULLET STYLE
 
@@ -420,6 +458,14 @@ def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
     9. Does len(experience) equal the profile company count from source work history?
     10. Does each profile company appear exactly once in experience?
 
+    ## TEMPLATE INPUT PREFERENCES (INFORMATIONAL)
+
+    This context is informational and helps prioritize content quality for downstream rendering.
+    It does NOT change the required output schema.
+    Do not add new top-level fields and do not remove required fields.
+
+    {content_prep_context_text}
+
     ## OUTPUT
 
     Return ONLY valid JSON.
@@ -450,8 +496,7 @@ def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
             "bullet 2",
             "bullet 3",
             "bullet 4"
-          ],
-          "compact_summary": "One concise sentence summarizing the role for compact layouts."
+          ]{experience_compact_summary_line}
         }}
       ],
       "projects": [
@@ -461,8 +506,7 @@ def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
           "bullets": [
             "bullet 1",
             "bullet 2"
-          ],
-          "compact_summary": "One concise sentence summarizing the project for compact layouts."
+          ]{project_compact_summary_line}
         }}
       ],
       "education": "{education_block}"
@@ -1099,6 +1143,7 @@ def judge_tailored_resume(
 def tailor_resume(
     resume_text: str, job: dict, profile: dict,
     max_retries: int = 3, validation_mode: str = "normal",
+    content_preparation_context: dict | None = None,
 ) -> tuple[str, dict]:
     """Generate a tailored resume via JSON output + fresh context on each retry.
 
@@ -1131,11 +1176,15 @@ def tailor_resume(
     report: dict = {
         "attempts": 0, "validator": None, "judge": None,
         "status": "pending", "validation_mode": validation_mode,
+        "content_preparation_context": dict(content_preparation_context or {}),
     }
     avoid_notes: list[str] = []
     tailored = ""
     client = get_client()
-    tailor_prompt_base = _build_tailor_prompt(profile)
+    tailor_prompt_base = _build_tailor_prompt(
+        profile,
+        content_preparation_context=report["content_preparation_context"],
+    )
 
     for attempt in range(max_retries + 1):
         report["attempts"] = attempt + 1
@@ -1312,7 +1361,7 @@ def run_tailoring(
     results: list[dict] = []
     stats: dict[str, int] = {"approved": 0, "failed_validation": 0, "failed_judge": 0, "error": 0}
     from applypilot.scoring.pdf import DEFAULT_PDF_TEMPLATE, resolve_pdf_template_name
-    from applypilot.scoring.pdf_templates.registry import get_template
+    from applypilot.scoring.pdf_templates.registry import get_template, get_template_input_preferences
 
     pdf_template_name = resolve_pdf_template_name(profile)
     try:
@@ -1325,12 +1374,33 @@ def run_tailoring(
             DEFAULT_PDF_TEMPLATE,
         )
         pdf_template_name = DEFAULT_PDF_TEMPLATE
+    try:
+        pdf_template_input_preferences = get_template_input_preferences(pdf_template_name)
+    except Exception as exc:  # pragma: no cover - defensive guard for metadata lookup
+        log.warning(
+            "Unable to load PDF template input preferences for '%s': %s. Continuing without preferences.",
+            pdf_template_name,
+            exc,
+        )
+        pdf_template_input_preferences = {}
+    content_preparation_context = {
+        "pdf_template": pdf_template_name,
+        "pdf_template_input_preferences": pdf_template_input_preferences,
+    }
 
     for job in jobs:
         completed += 1
         try:
-            tailored, report = tailor_resume(resume_text, job, profile,
-                                             validation_mode=validation_mode)
+            tailored, report = tailor_resume(
+                resume_text,
+                job,
+                profile,
+                validation_mode=validation_mode,
+                content_preparation_context=content_preparation_context,
+            )
+            report["pdf_template"] = pdf_template_name
+            report["pdf_template_input_preferences"] = pdf_template_input_preferences
+            report["content_preparation_context"] = dict(content_preparation_context)
 
             # Build collision-resistant filename prefix
             prefix = _build_tailored_prefix(job)

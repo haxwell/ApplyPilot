@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from applypilot.scoring import tailor
@@ -292,3 +293,104 @@ def test_tailor_resume_includes_tailored_json_on_success(monkeypatch) -> None:
     assert report["status"] == "approved"
     assert isinstance(report.get("tailored_json"), dict)
     assert report["tailored_json"]["title"] == "Senior Software Engineer"
+
+
+def test_tailor_resume_includes_content_preparation_context(monkeypatch) -> None:
+    class _FakeClient:
+        def chat(self, _messages, max_output_tokens: int = 16000):  # noqa: ARG002
+            return (
+                "{"
+                '"title":"Senior Software Engineer",'
+                '"summary":"Built production backend services.",'
+                '"skills":{"Languages":"Python, Java"},'
+                '"experience":[{"header":"Engineer","subtitle":"Acme | 2020-2024","bullets":["Built APIs"]}],'
+                '"projects":[],'
+                '"education":"State University | BS Computer Science"'
+                "}"
+            )
+
+    monkeypatch.setattr(tailor, "get_client", lambda: _FakeClient())
+
+    profile = {"personal": {}}
+    job = {
+        "title": "Senior Software Engineer",
+        "site": "Example",
+        "location": "Remote",
+        "full_description": "Build APIs",
+    }
+    context = {
+        "pdf_template": "professional_compact",
+        "pdf_template_input_preferences": {"prefers_compact_summary": True},
+    }
+
+    _, report = tailor.tailor_resume(
+        "Base resume text",
+        job,
+        profile,
+        max_retries=0,
+        validation_mode="lenient",
+        content_preparation_context=context,
+    )
+
+    assert report["content_preparation_context"] == context
+
+
+def test_build_tailor_prompt_includes_informational_template_context() -> None:
+    prompt = tailor._build_tailor_prompt(
+        profile={"personal": {}},
+        content_preparation_context={
+            "pdf_template": "professional_compact",
+            "pdf_template_input_preferences": {"prefers_compact_summary": True},
+        },
+    )
+
+    assert "## TEMPLATE INPUT PREFERENCES (INFORMATIONAL)" in prompt
+    assert '"pdf_template": "professional_compact"' in prompt
+    assert '"prefers_compact_summary": true' in prompt
+    assert "It does NOT change the required output schema." in prompt
+    assert "## COMPACT SUMMARY (OPTIONAL WHEN USEFUL)" in prompt
+    assert '"compact_summary": "Optional concise sentence for compact layouts."' in prompt
+
+
+def test_build_tailor_prompt_omits_compact_summary_guidance_when_not_requested() -> None:
+    prompt = tailor._build_tailor_prompt(
+        profile={"personal": {}},
+        content_preparation_context={
+            "pdf_template": "classic",
+            "pdf_template_input_preferences": {},
+        },
+    )
+
+    assert "## COMPACT SUMMARY (OPTIONAL WHEN USEFUL)" not in prompt
+    assert '"compact_summary": "Optional concise sentence for compact layouts."' not in prompt
+
+
+def test_run_tailoring_report_includes_pdf_template_preferences(monkeypatch, tmp_path: Path) -> None:
+    conn = _FakeConnection()
+    job = _make_job()
+
+    monkeypatch.setattr(tailor, "TAILORED_DIR", tmp_path)
+    monkeypatch.setattr(tailor, "load_profile", lambda: {"personal": {"full_name": "Alex Example"}})
+    monkeypatch.setattr(tailor, "load_resume_text", lambda: "base resume")
+    monkeypatch.setattr(tailor, "get_connection", lambda: conn)
+    monkeypatch.setattr(tailor, "get_jobs_by_stage", lambda **_: [job])
+    monkeypatch.setattr(tailor, "tailor_resume", lambda *args, **kwargs: ("tailored resume", _approved_report()))
+
+    def _fake_convert_to_pdf(text_path: Path, output_path: Path | None = None, **_kwargs) -> Path:
+        out = output_path or Path(text_path).with_suffix(".pdf")
+        out = Path(out)
+        out.write_bytes(b"%PDF-1.4 fake\n")
+        return out
+
+    monkeypatch.setattr("applypilot.scoring.pdf.convert_to_pdf", _fake_convert_to_pdf)
+
+    result = tailor.run_tailoring(min_score=7, limit=1, validation_mode="normal")
+
+    assert result["approved"] == 1
+    report_paths = list(tmp_path.glob("*_REPORT.json"))
+    assert len(report_paths) == 1
+    report_data = json.loads(report_paths[0].read_text(encoding="utf-8"))
+    assert report_data["pdf_template"] == "professional_compact"
+    assert isinstance(report_data["pdf_template_input_preferences"], dict)
+    assert report_data["content_preparation_context"]["pdf_template"] == "professional_compact"
+    assert isinstance(report_data["content_preparation_context"]["pdf_template_input_preferences"], dict)

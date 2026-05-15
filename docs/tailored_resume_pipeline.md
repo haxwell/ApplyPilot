@@ -174,6 +174,27 @@ The orchestrating PDF code only calls the template contract and does not hardcod
 template-specific layout behavior.
 When both hooks are present, orchestration prefers `prepare_with_measurement(...)`.
 
+Optional template metadata (not required yet):
+
+- `TEMPLATE_INFO` (dict)
+- `TEMPLATE_CAPABILITIES` (list/tuple of strings)
+- `TEMPLATE_INPUT_PREFERENCES` (dict)
+- `TEMPLATE_REQUIREMENTS` (dict)
+- `TEMPLATE_OPTIONS` (dict)
+
+Registry behavior:
+
+- metadata fields are read/validated when present
+- missing metadata is allowed
+- invalid metadata types raise template load validation errors
+- template input preferences are surfaced for reporting/introspection via
+  `get_template_input_preferences(template_ref)`
+- current usage is informational (for reports/debugging), not behavior-changing
+- future work may use these preferences to inform upstream content preparation
+- tailoring now persists a `content_preparation_context` object in reports that
+  includes selected template + input preferences; this is a seam for future
+  prompt/content-preparation decisions without hardcoding template assumptions
+
 `resolve_pdf_template_name(profile, explicit_template=None)` resolves template selection order:
 
 1. explicit argument

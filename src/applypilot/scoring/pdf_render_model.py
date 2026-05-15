@@ -106,6 +106,30 @@ def _build_location(personal: dict) -> str:
     return str(personal.get("location", "")).strip()
 
 
+def _extract_render_options(profile: dict) -> dict[str, Any]:
+    options: dict[str, Any] = {}
+    if not isinstance(profile, dict):
+        return options
+
+    tailoring_config = profile.get("tailoring_config", {})
+    if isinstance(tailoring_config, dict):
+        raw_tailoring_render_options = tailoring_config.get("render_options")
+        if isinstance(raw_tailoring_render_options, dict):
+            options.update(raw_tailoring_render_options)
+
+        raw_pdf_render_options = tailoring_config.get("pdf_render_options")
+        if isinstance(raw_pdf_render_options, dict):
+            options.update(raw_pdf_render_options)
+
+    render = profile.get("render", {})
+    if isinstance(render, dict):
+        raw_render_options = render.get("options")
+        if isinstance(raw_render_options, dict):
+            options.update(raw_render_options)
+
+    return options
+
+
 def build_render_model_from_tailored_json(data: dict, profile: dict) -> ResumeRenderModel:
     """Build a render model directly from LLM-tailored JSON + profile context."""
 
@@ -117,6 +141,7 @@ def build_render_model_from_tailored_json(data: dict, profile: dict) -> ResumeRe
     model.title = str(data.get("title", "")).strip()
     model.summary = str(data.get("summary", "")).strip()
     model.education = str(data.get("education", "")).strip()
+    model.render_options = _extract_render_options(profile)
 
     contact_parts: list[str] = []
     for key in ("email", "phone", "github_url", "linkedin_url"):

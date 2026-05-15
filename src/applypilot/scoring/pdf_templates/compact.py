@@ -5,6 +5,24 @@ from dataclasses import dataclass
 from applypilot.scoring.pdf_render_model import ResumeEntry, ResumeRenderModel
 
 _DEFAULT_MAX_DETAILED_EXPERIENCE = 4
+TEMPLATE_INFO = {
+    "name": "compact",
+    "display_name": "Compact",
+    "description": "Heuristic compact template that keeps first N experience entries detailed.",
+}
+TEMPLATE_CAPABILITIES = [
+    "heuristic_prepare",
+    "selected_experience_rendering",
+]
+TEMPLATE_INPUT_PREFERENCES = {
+    "expects": "ResumeRenderModel",
+}
+TEMPLATE_REQUIREMENTS = {
+    "hooks": ["build_html", "prepare"],
+}
+TEMPLATE_OPTIONS = {
+    "compact_max_detailed_experience": {"type": "int", "default": 4, "min": 1},
+}
 
 
 @dataclass

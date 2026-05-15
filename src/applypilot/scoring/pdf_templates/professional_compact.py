@@ -8,6 +8,29 @@ from typing import Callable
 from applypilot.scoring.pdf_render_model import ResumeEntry, ResumeRenderModel
 
 _DEFAULT_PAGE_TARGET = 2.0
+TEMPLATE_INFO = {
+    "name": "professional_compact",
+    "display_name": "Professional Compact",
+    "description": "Measurement-aware production template that compacts later experience entries when needed.",
+}
+TEMPLATE_CAPABILITIES = [
+    "measurement_aware_prepare",
+    "selected_experience_rendering",
+]
+TEMPLATE_INPUT_PREFERENCES = {
+    "expects": "ResumeRenderModel",
+    "preferred_path": "structured_json_to_render_model",
+    "requested_entry_fields": ["compact_summary"],
+    "prefers_compact_summary": True,
+}
+TEMPLATE_REQUIREMENTS = {
+    "hooks": ["build_html", "prepare", "prepare_with_measurement"],
+}
+TEMPLATE_OPTIONS = {
+    "page_target": {"type": "float", "default": 2.0},
+    "max_resume_pages": {"type": "float", "default": 2.0},
+    "compact_max_detailed_experience": {"type": "int", "min": 1},
+}
 
 
 @dataclass
