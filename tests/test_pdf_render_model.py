@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from applypilot.scoring.pdf import build_render_model, parse_resume
 from applypilot.scoring.pdf_render_model import ResumeEntry, build_render_model_from_tailored_json
+from applypilot.scoring.pdf_templates import classic as classic_template
+from applypilot.scoring.pdf_templates import compact as compact_template
 from applypilot.scoring.pdf_templates import default as default_template
+from applypilot.scoring.pdf_templates import professional_compact as professional_compact_template
 
 
 def _sample_resume_text() -> str:
@@ -72,13 +75,23 @@ def test_build_render_model_maps_expected_fields() -> None:
     assert model.education == "State University | BS Computer Science | 2018"
 
 
-def test_default_prepare_is_noop_equivalent() -> None:
+def test_classic_prepare_is_noop_equivalent() -> None:
     parsed = parse_resume(_sample_resume_text())
     model = build_render_model(parsed)
 
-    prepared = default_template.prepare(model)
+    prepared = classic_template.prepare(model)
 
     assert prepared == model
+
+
+def test_default_alias_points_to_production_template() -> None:
+    parsed = parse_resume(_sample_resume_text())
+    model = build_render_model(parsed)
+
+    default_prepared = default_template.prepare(model)
+    prod_prepared = professional_compact_template.prepare(model)
+
+    assert default_template.build_html(default_prepared) == professional_compact_template.build_html(prod_prepared)
 
 
 def test_build_render_model_from_tailored_json_maps_profile_and_sections() -> None:
@@ -186,3 +199,73 @@ def test_build_render_model_from_tailored_json_maps_compact_summary() -> None:
 
     assert model.experience[0].compact_summary == "Improved API reliability."
     assert model.projects[0].compact_summary == "Created automation tooling."
+
+
+def test_build_render_model_from_tailored_json_maps_render_options_from_pdf_render_options() -> None:
+    profile = {
+        "personal": {"full_name": "Alex Example"},
+        "tailoring_config": {"pdf_render_options": {"compact_max_detailed_experience": 3}},
+    }
+    data = {"title": "Engineer", "summary": "Summary", "skills": {}, "experience": [], "projects": [], "education": ""}
+
+    model = build_render_model_from_tailored_json(data, profile)
+
+    assert model.render_options["compact_max_detailed_experience"] == 3
+
+
+def test_build_render_model_from_tailored_json_render_options_priority_prefers_render_options() -> None:
+    profile = {
+        "personal": {"full_name": "Alex Example"},
+        "tailoring_config": {
+            "render_options": {"compact_max_detailed_experience": 2, "tailoring_only": "x"},
+            "pdf_render_options": {"compact_max_detailed_experience": 3, "pdf_only": "y"},
+        },
+        "render": {"options": {"compact_max_detailed_experience": 5, "render_only": "z"}},
+    }
+    data = {"title": "Engineer", "summary": "Summary", "skills": {}, "experience": [], "projects": [], "education": ""}
+
+    model = build_render_model_from_tailored_json(data, profile)
+
+    assert model.render_options["compact_max_detailed_experience"] == 5
+    assert model.render_options["tailoring_only"] == "x"
+    assert model.render_options["pdf_only"] == "y"
+    assert model.render_options["render_only"] == "z"
+
+
+def test_build_render_model_from_tailored_json_ignores_non_dict_render_options() -> None:
+    profile = {
+        "personal": {"full_name": "Alex Example"},
+        "tailoring_config": {"render_options": "invalid", "pdf_render_options": 7},
+        "render": {"options": ["not", "a", "dict"]},
+    }
+    data = {"title": "Engineer", "summary": "Summary", "skills": {}, "experience": [], "projects": [], "education": ""}
+
+    model = build_render_model_from_tailored_json(data, profile)
+
+    assert model.render_options == {}
+
+
+def test_compact_prepare_honors_render_options_from_profile_model() -> None:
+    profile = {
+        "personal": {"full_name": "Alex Example"},
+        "tailoring_config": {"pdf_render_options": {"compact_max_detailed_experience": 2}},
+    }
+    data = {
+        "title": "Engineer",
+        "summary": "Summary",
+        "skills": {},
+        "experience": [
+            {"header": "Role 1", "bullets": ["b1"]},
+            {"header": "Role 2", "bullets": ["b2"]},
+            {"header": "Role 3", "bullets": ["b3"]},
+            {"header": "Role 4", "bullets": ["b4"]},
+        ],
+        "projects": [],
+        "education": "",
+    }
+
+    model = build_render_model_from_tailored_json(data, profile)
+    prepared = compact_template.prepare(model)
+
+    assert [entry.title for entry in prepared.detailed_experience] == ["Role 1", "Role 2"]
+    assert [entry.title for entry in prepared.compact_experience] == ["Role 3", "Role 4"]

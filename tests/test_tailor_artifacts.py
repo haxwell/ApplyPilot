@@ -130,7 +130,12 @@ def test_run_tailoring_prefers_structured_pdf_render_when_tailored_json_availabl
     monkeypatch.setattr(tailor, "get_jobs_by_stage", lambda **_: [job])
     monkeypatch.setattr(tailor, "tailor_resume", lambda *args, **kwargs: ("tailored resume", report))
 
-    def _fake_render_model_to_pdf(model, output_path: Path, template_name: str = "default", html_only: bool = False) -> Path:
+    def _fake_render_model_to_pdf(
+        model,
+        output_path: Path,
+        template_name: str = "professional_compact",
+        html_only: bool = False,
+    ) -> Path:
         del model, template_name, html_only
         structured_called["value"] = True
         out = Path(output_path)
@@ -226,7 +231,12 @@ def test_run_tailoring_invalid_configured_template_falls_back_to_default(
     monkeypatch.setattr(tailor, "get_jobs_by_stage", lambda **_: [job])
     monkeypatch.setattr(tailor, "tailor_resume", lambda *args, **kwargs: ("tailored resume", report))
 
-    def _fake_render_model_to_pdf(model, output_path: Path, template_name: str = "default", html_only: bool = False) -> Path:
+    def _fake_render_model_to_pdf(
+        model,
+        output_path: Path,
+        template_name: str = "professional_compact",
+        html_only: bool = False,
+    ) -> Path:
         del model, html_only
         captured_template["value"] = template_name
         out = Path(output_path)
@@ -242,8 +252,8 @@ def test_run_tailoring_invalid_configured_template_falls_back_to_default(
     result = tailor.run_tailoring(min_score=7, limit=1, validation_mode="normal")
 
     assert result["approved"] == 1
-    assert captured_template["value"] == "default"
-    assert "Falling back to 'default'" in caplog.text
+    assert captured_template["value"] == "professional_compact"
+    assert "Falling back to 'professional_compact'" in caplog.text
 
 
 def test_tailor_resume_includes_tailored_json_on_success(monkeypatch) -> None:

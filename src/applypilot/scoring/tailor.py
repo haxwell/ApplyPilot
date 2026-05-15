@@ -1311,7 +1311,7 @@ def run_tailoring(
     completed = 0
     results: list[dict] = []
     stats: dict[str, int] = {"approved": 0, "failed_validation": 0, "failed_judge": 0, "error": 0}
-    from applypilot.scoring.pdf import resolve_pdf_template_name
+    from applypilot.scoring.pdf import DEFAULT_PDF_TEMPLATE, resolve_pdf_template_name
     from applypilot.scoring.pdf_templates.registry import get_template
 
     pdf_template_name = resolve_pdf_template_name(profile)
@@ -1319,11 +1319,12 @@ def run_tailoring(
         get_template(pdf_template_name)
     except ValueError as exc:
         log.warning(
-            "Configured PDF template '%s' is invalid (%s). Falling back to 'default'.",
+            "Configured PDF template '%s' is invalid (%s). Falling back to '%s'.",
             pdf_template_name,
             exc,
+            DEFAULT_PDF_TEMPLATE,
         )
-        pdf_template_name = "default"
+        pdf_template_name = DEFAULT_PDF_TEMPLATE
 
     for job in jobs:
         completed += 1

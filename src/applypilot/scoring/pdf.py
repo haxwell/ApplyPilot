@@ -18,6 +18,7 @@ from applypilot.scoring.pdf_render_model import (
 from applypilot.scoring.pdf_templates.registry import get_template
 
 log = logging.getLogger(__name__)
+DEFAULT_PDF_TEMPLATE = "professional_compact"
 
 
 # ── Resume Parser ────────────────────────────────────────────────────────
@@ -201,15 +202,26 @@ def build_render_model(parsed: dict) -> ResumeRenderModel:
     return model
 
 
-def build_html_for_resume(model: ResumeRenderModel, template_name: str = "default") -> str:
+def build_html_for_resume(model: ResumeRenderModel, template_name: str = DEFAULT_PDF_TEMPLATE) -> str:
     """Run template preparation + HTML generation for a render model.
 
     `prepare()` may return a template-specific prepared view type; `build_html()`
-    consumes that prepared value.
+    consumes that prepared value. Templates may also provide
+    `prepare_with_measurement(model, measure_html_page_count)`.
     """
 
     template = get_template(template_name)
-    prepared = template.prepare(model)
+    prepare_with_measurement = getattr(template, "prepare_with_measurement", None)
+    if callable(prepare_with_measurement):
+        prepared = prepare_with_measurement(model, measure_html_page_count)
+    else:
+        prepare = getattr(template, "prepare", None)
+        if not callable(prepare):
+            raise ValueError(
+                f"Template '{template_name}' must define prepare(model) or "
+                "prepare_with_measurement(model, measure_html_page_count)."
+            )
+        prepared = prepare(model)
     return template.build_html(prepared)
 
 
@@ -231,13 +243,13 @@ def resolve_pdf_template_name(profile: dict, explicit_template: str | None = Non
         if str(template_name).strip():
             return str(template_name).strip()
 
-    return "default"
+    return DEFAULT_PDF_TEMPLATE
 
 
 def render_model_to_pdf(
     model: ResumeRenderModel,
     output_path: Path,
-    template_name: str = "default",
+    template_name: str = DEFAULT_PDF_TEMPLATE,
     html_only: bool = False,
 ) -> Path:
     """Render a resume model directly to HTML or PDF."""
@@ -281,7 +293,7 @@ def measure_html_page_count(html: str) -> int:
 
 def measure_model_page_count(
     model: ResumeRenderModel,
-    template_name: str = "default",
+    template_name: str = DEFAULT_PDF_TEMPLATE,
 ) -> int:
     """Measure rendered page count for a resume model + template."""
 
@@ -321,7 +333,7 @@ def convert_to_pdf(
     text_path: Path,
     output_path: Path | None = None,
     html_only: bool = False,
-    template_name: str = "default",
+    template_name: str = DEFAULT_PDF_TEMPLATE,
 ) -> Path:
     """Convert a text resume/cover letter to PDF.
 
@@ -355,7 +367,7 @@ def convert_to_pdf(
     return out
 
 
-def batch_convert(limit: int = 0, template_name: str = "default") -> int:
+def batch_convert(limit: int = 0, template_name: str = DEFAULT_PDF_TEMPLATE) -> int:
     """Convert .txt files in TAILORED_DIR that don't have corresponding PDFs.
 
     Scans for .txt files (excluding _JOB.txt and _REPORT.json), checks if a

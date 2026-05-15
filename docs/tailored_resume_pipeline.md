@@ -33,6 +33,10 @@ High-level flow for approved resumes:
 5. If structured rendering is unavailable or fails, PDF falls back to text parsing:
    - `convert_to_pdf(txt_path, ...)`
 
+Production default template:
+
+- `professional_compact` (measurement-aware)
+
 ## Contract 1: Tailored JSON
 
 Produced by `tailor_resume(...)` prompt contract in `src/applypilot/scoring/tailor.py`.
@@ -70,7 +74,8 @@ Expected shape:
 Notes:
 
 - `compact_summary` is optional alternate content.
-  - `default` template ignores it.
+  - `classic` template ignores it.
+  - `default` aliases `professional_compact`, so it may use `compact_summary` for selected entries during measurement-aware planning.
   - `compact` template uses it for Selected Experience entries when those entries are planned as compact.
 - `tailor_resume(...)` puts accepted parsed JSON into `report["tailored_json"]` so downstream PDF generation can avoid reparsing text.
 
@@ -88,6 +93,11 @@ Mapping rules:
   - `title`, `summary`, `education`
   - `skills` -> `list[SkillSection]`
   - `experience`/`projects` -> `list[ResumeEntry]`
+- Template render options are copied into `ResumeRenderModel.render_options` with priority:
+  1. `profile["tailoring_config"]["render_options"]`
+  2. `profile["tailoring_config"]["pdf_render_options"]`
+  3. `profile["render"]["options"]` (highest)
+  Missing/non-dict values are ignored.
 
 Defensive normalization:
 
@@ -102,49 +112,83 @@ In `src/applypilot/scoring/pdf.py`:
 
 ```python
 template = get_template(template_name)
-prepared = template.prepare(model)
+if hasattr(template, "prepare_with_measurement"):
+    prepared = template.prepare_with_measurement(model, measure_html_page_count)
+else:
+    prepared = template.prepare(model)
 html = template.build_html(prepared)
 ```
 
 Meaning:
 
 - `ResumeRenderModel` represents shared available content.
+- `ResumeRenderModel.render_options` carries optional template-tuning inputs from profile config.
 - `template.prepare(...)` is template-owned planning/normalization seam.
 - `template.build_html(...)` renders the prepared object.
 
 Current template behavior:
 
-- `default.prepare(model)` returns `ResumeRenderModel` unchanged.
-- `compact.prepare(model)` performs heuristic layout planning in a template-specific prepared view:
+- `professional_compact.prepare_with_measurement(...)` is the production measurement-aware template:
+  - starts with maximum detailed experience (or explicit hard cap from render options)
+  - measures full rendered resume HTML page count
+  - progressively moves later entries into Selected Experience only as needed to fit page target
+  - preserves order and keeps projects/summary/skills/education renderable
+- `classic.prepare(model)` is the baseline/simple renderer:
+  - no measurement-aware planning
+  - all experience entries remain detailed
+- `compact.prepare(model)` is a simple heuristic alternate:
   - keeps first `N` experience entries as detailed (`N` defaults to 4)
   - moves remaining entries into compact Selected Experience
   - preserves order
   - keeps all projects renderable
   - supports optional template-local override via `model.render_options["compact_max_detailed_experience"]`
+  - template owns the final planning decision; `render_options` are hints/inputs, not upstream compaction logic
+- `default` is a compatibility alias to `professional_compact`.
 
 ## Contract 4: HTML Generation
 
-Each template module must expose:
-
-- `prepare(...)`
-- `build_html(...) -> str`
-
-Registry:
+Templates are loaded dynamically by reference through:
 
 - `src/applypilot/scoring/pdf_templates/registry.py`
-- Supported names today: `default`, `compact`
+- `get_template(template_ref)`
+
+Built-in template references resolve to modules under:
+
+- `applypilot.scoring.pdf_templates.<template_ref>`
+
+Examples:
+
+- `default`
+- `compact`
+- `professional_compact`
+- `classic`
+
+Required template contract:
+
+- `build_html(prepared) -> str`
+- and either:
+  - `prepare(model)`
+  - or `prepare_with_measurement(model, measure_html_page_count)`
+
+The orchestrating PDF code only calls the template contract and does not hardcode
+template-specific layout behavior.
+When both hooks are present, orchestration prefers `prepare_with_measurement(...)`.
 
 `resolve_pdf_template_name(profile, explicit_template=None)` resolves template selection order:
 
 1. explicit argument
 2. `profile["render"]["theme"]`
 3. `profile["tailoring_config"]["pdf_template"]`
-4. `"default"`
+4. `"professional_compact"`
+
+Recommended explicit config value:
+
+- `"pdf_template": "professional_compact"`
 
 Unknown names are handled safely in `run_tailoring(...)`:
 
 - warning logged
-- fallback to `"default"`
+- fallback to `"professional_compact"`
 
 ## Contract 5: Text Fallback Path
 
@@ -168,16 +212,15 @@ This preserves artifact generation even if the structured path breaks.
 `src/applypilot/scoring/pdf.py` provides measurement helpers:
 
 - `measure_html_page_count(html: str) -> int`
-- `measure_model_page_count(model: ResumeRenderModel, template_name: str = "default") -> int`
+- `measure_model_page_count(model: ResumeRenderModel, template_name: str = "professional_compact") -> int`
 
 These helpers render template HTML to a temporary PDF and return measured page count.
 
 Current status:
 
-- measurement only
-- not used yet to make layout/compaction decisions
-- intended as a future input for template-specific planning in `template.prepare(...)`
-- future compact iterations may combine measurement with retry/tighter layout variants
+- available as generic helper in `pdf.py`
+- used by measurement-aware templates such as `professional_compact`
+- not pushed upstream into `tailor.py` or `assemble_resume_text(...)`
 
 ## Artifacts and Status Behavior
 

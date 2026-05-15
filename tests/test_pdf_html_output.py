@@ -40,13 +40,59 @@ def test_convert_to_pdf_html_only_contains_expected_sections(tmp_path: Path) -> 
         encoding="utf-8",
     )
 
-    html_path = convert_to_pdf(source, html_only=True, template_name="default")
+    html_path = convert_to_pdf(source, html_only=True, template_name="classic")
     html = html_path.read_text(encoding="utf-8")
 
     assert "Summary" in html
     assert "Technical Skills" in html
     assert "Experience" in html
     assert "Education" in html
+
+
+def test_convert_to_pdf_html_only_uses_production_default_template_when_not_specified(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "resume_default_template.txt"
+    source.write_text(
+        "\n".join(
+            [
+                "Alex Example",
+                "Senior Engineer",
+                "alex@example.com | 555-111-2222",
+                "",
+                "SUMMARY",
+                "Built and shipped reliable systems.",
+                "",
+                "TECHNICAL SKILLS",
+                "Languages: Python, Java",
+                "",
+                "EXPERIENCE",
+                "Role 1",
+                "Company 1 | 2022-01 - Present",
+                "- Bullet 1",
+                "",
+                "Role 2",
+                "Company 2 | 2020-01 - 2021-12",
+                "- Bullet 2",
+                "",
+                "Role 3",
+                "Company 3 | 2018-01 - 2019-12",
+                "- Bullet 3",
+                "",
+                "EDUCATION",
+                "State University | BS Computer Science | 2018",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("applypilot.scoring.pdf.measure_html_page_count", lambda _html: 99)
+    html_path = convert_to_pdf(source, html_only=True)
+    html = html_path.read_text(encoding="utf-8")
+
+    # professional_compact is measurement-aware and may render selected experience.
+    assert "Selected Experience" in html
 
 
 def test_convert_to_pdf_html_only_compact_contains_expected_sections(tmp_path: Path) -> None:
@@ -86,7 +132,7 @@ def test_convert_to_pdf_html_only_compact_contains_expected_sections(tmp_path: P
     assert "Education" in compact_html
 
 
-def test_compact_html_differs_from_default_html(tmp_path: Path) -> None:
+def test_compact_html_differs_from_classic_html(tmp_path: Path) -> None:
     source = tmp_path / "resume_compare.txt"
     source.write_text(
         "\n".join(
@@ -114,7 +160,7 @@ def test_compact_html_differs_from_default_html(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    default_html_path = convert_to_pdf(source, html_only=True, output_path=tmp_path / "default.html", template_name="default")
+    default_html_path = convert_to_pdf(source, html_only=True, output_path=tmp_path / "default.html", template_name="classic")
     compact_html_path = convert_to_pdf(source, html_only=True, output_path=tmp_path / "compact.html", template_name="compact")
 
     default_html = default_html_path.read_text(encoding="utf-8")
@@ -144,7 +190,7 @@ def test_render_model_to_pdf_html_only_contains_model_content(tmp_path: Path) ->
     html_path = render_model_to_pdf(
         model,
         output_path=tmp_path / "model.html",
-        template_name="default",
+        template_name="classic",
         html_only=True,
     )
     html = html_path.read_text(encoding="utf-8")
@@ -153,6 +199,29 @@ def test_render_model_to_pdf_html_only_contains_model_content(tmp_path: Path) ->
     assert "Built and shipped reliable systems." in html
     assert "Built APIs" in html
     assert "Led backend reliability improvements." not in html
+
+
+def test_render_model_to_pdf_html_only_uses_production_default_template_when_not_specified(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        title="Senior Engineer",
+        summary="Built and shipped reliable systems.",
+        contact="alex@example.com | 555-111-2222",
+        experience=[
+            ResumeEntry(title="Role 1", subtitle="Company 1 | 2022", bullets=["Bullet 1"]),
+            ResumeEntry(title="Role 2", subtitle="Company 2 | 2021", bullets=["Bullet 2"]),
+            ResumeEntry(title="Role 3", subtitle="Company 3 | 2020", bullets=["Bullet 3"]),
+        ],
+    )
+
+    monkeypatch.setattr("applypilot.scoring.pdf.measure_html_page_count", lambda _html: 99)
+    html_path = render_model_to_pdf(model, output_path=tmp_path / "model_default.html", html_only=True)
+    html = html_path.read_text(encoding="utf-8")
+
+    assert "Selected Experience" in html
 
 
 def test_render_model_to_pdf_html_only_from_tailored_json_model(tmp_path: Path) -> None:
@@ -184,7 +253,7 @@ def test_render_model_to_pdf_html_only_from_tailored_json_model(tmp_path: Path) 
     html_path = render_model_to_pdf(
         model,
         output_path=tmp_path / "from_json_model.html",
-        template_name="default",
+        template_name="classic",
         html_only=True,
     )
     html = html_path.read_text(encoding="utf-8")
@@ -221,6 +290,35 @@ def test_compact_template_ignores_compact_summary_and_renders_bullets(tmp_path: 
 
     assert "Built APIs" in html
     assert "Led backend reliability improvements." not in html
+
+
+def test_classic_template_renders_all_experience_detailed_without_selected_experience(tmp_path: Path) -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        title="Senior Engineer",
+        summary="Built and shipped reliable systems.",
+        contact="alex@example.com | 555-111-2222",
+        experience=[
+            ResumeEntry(title="Role 1", subtitle="Company 1 | 2022", bullets=["Bullet 1"]),
+            ResumeEntry(title="Role 2", subtitle="Company 2 | 2021", bullets=["Bullet 2"]),
+            ResumeEntry(title="Role 3", subtitle="Company 3 | 2020", bullets=["Bullet 3"]),
+        ],
+        education="State University | BS Computer Science | 2018",
+    )
+
+    html_path = render_model_to_pdf(
+        model,
+        output_path=tmp_path / "classic.html",
+        template_name="classic",
+        html_only=True,
+    )
+    html = html_path.read_text(encoding="utf-8")
+
+    assert "Experience" in html
+    assert "Role 1" in html
+    assert "Role 2" in html
+    assert "Role 3" in html
+    assert "Selected Experience" not in html
 
 
 def test_compact_prepare_returns_template_view() -> None:

@@ -23,7 +23,10 @@ def test_measure_html_page_count_uses_rendered_pdf_tokens(monkeypatch) -> None:
 def test_measure_model_page_count_uses_template_html(monkeypatch) -> None:
     calls: dict[str, object] = {}
 
-    def _fake_build_html_for_resume(model: ResumeRenderModel, template_name: str = "default") -> str:
+    def _fake_build_html_for_resume(
+        model: ResumeRenderModel,
+        template_name: str = pdf.DEFAULT_PDF_TEMPLATE,
+    ) -> str:
         calls["model"] = model
         calls["template_name"] = template_name
         return "<html><body>Rendered</body></html>"
