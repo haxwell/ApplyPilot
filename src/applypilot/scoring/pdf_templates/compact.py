@@ -1,19 +1,34 @@
 """Compact HTML/CSS template for scored resume PDF generation."""
 
+from dataclasses import dataclass
+
 from applypilot.scoring.pdf_render_model import ResumeRenderModel
 
 
-def prepare(model: ResumeRenderModel) -> ResumeRenderModel:
-    """Prepare a render model for the compact template.
+@dataclass
+class CompactTemplateView:
+    """Prepared compact-template view.
 
-    This initial seam is intentionally a no-op and preserves content behavior.
+    This template-specific wrapper is where compact layout planning decisions
+    can be added later without changing the shared ResumeRenderModel.
     """
 
-    return model
+    model: ResumeRenderModel
 
 
-def build_html(resume: ResumeRenderModel) -> str:
-    """Build compact resume HTML from parsed data."""
+def prepare(model: ResumeRenderModel) -> CompactTemplateView:
+    """Prepare a render model for the compact template.
+
+    This initial seam preserves content behavior and wraps the shared model in
+    a compact-template-specific prepared view.
+    """
+
+    return CompactTemplateView(model=model)
+
+
+def build_html(view: CompactTemplateView) -> str:
+    """Build compact resume HTML from a prepared compact template view."""
+    resume = view.model
 
     # Skills
     skills_html = ""

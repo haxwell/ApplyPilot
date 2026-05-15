@@ -200,11 +200,36 @@ def build_render_model(parsed: dict) -> ResumeRenderModel:
 
 
 def build_html_for_resume(model: ResumeRenderModel, template_name: str = "default") -> str:
-    """Run template preparation + HTML generation for a render model."""
+    """Run template preparation + HTML generation for a render model.
+
+    `prepare()` may return a template-specific prepared view type; `build_html()`
+    consumes that prepared value.
+    """
 
     template = get_template(template_name)
     prepared = template.prepare(model)
     return template.build_html(prepared)
+
+
+def resolve_pdf_template_name(profile: dict, explicit_template: str | None = None) -> str:
+    """Resolve PDF template name from explicit value or profile config."""
+
+    if explicit_template and str(explicit_template).strip():
+        return str(explicit_template).strip()
+
+    render = profile.get("render", {}) if isinstance(profile, dict) else {}
+    if isinstance(render, dict):
+        theme = render.get("theme", "")
+        if str(theme).strip():
+            return str(theme).strip()
+
+    tailoring_config = profile.get("tailoring_config", {}) if isinstance(profile, dict) else {}
+    if isinstance(tailoring_config, dict):
+        template_name = tailoring_config.get("pdf_template", "")
+        if str(template_name).strip():
+            return str(template_name).strip()
+
+    return "default"
 
 
 def render_model_to_pdf(
