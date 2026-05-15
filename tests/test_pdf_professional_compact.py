@@ -315,8 +315,80 @@ def test_professional_compact_build_html_renders_projects_in_experience_style() 
     assert "TribeApp Platform" in html
     assert 'class="project-title-row"' in html
     assert "2023 - 2024" in html
-    assert "Personal Project" in html
     assert "Designed backend service APIs." in html
+
+
+def test_professional_compact_projects_use_summary_only_when_no_bullets() -> None:
+    model = ResumeRenderModel(name="Alex Example", contact="alex@example.com")
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[],
+        compact_experience=[],
+        projects_to_render=[
+            ResumeEntry(
+                title="TribeApp Platform",
+                start_date="2022-10",
+                end_date="2024-02",
+                bullets=[],
+                metadata={"description": "Backend-driven mobile platform"},
+            )
+        ],
+    )
+
+    html = professional_compact.build_html(view)
+
+    assert "Backend-driven mobile platform" in html
+    assert "<ul class=\"entry-bullets\">" not in html
+
+
+def test_professional_compact_projects_hide_summary_when_bullets_present() -> None:
+    model = ResumeRenderModel(name="Alex Example", contact="alex@example.com")
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[],
+        compact_experience=[],
+        projects_to_render=[
+            ResumeEntry(
+                title="TribeApp Platform",
+                start_date="2022-10",
+                end_date="2024-02",
+                bullets=["Designed backend service APIs."],
+                metadata={"description": "Backend-driven mobile platform"},
+            )
+        ],
+    )
+
+    html = professional_compact.build_html(view)
+
+    assert "Designed backend service APIs." in html
+    assert "Backend-driven mobile platform" not in html
+
+
+def test_professional_compact_earlier_experience_strips_contract_from_heading() -> None:
+    model = ResumeRenderModel(name="Alex Example", contact="alex@example.com")
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[],
+        compact_experience=[
+            ResumeEntry(
+                title="Software Engineer (Contract)",
+                company="Charles Schwab",
+                role="Software Engineer (Contract)",
+                is_contract=True,
+                start_date="2025-08",
+                end_date="2026-03",
+                location="Denver, CO",
+                bullets=["Built backend services."],
+            )
+        ],
+        projects_to_render=[],
+    )
+
+    html = professional_compact.build_html(view)
+
+    assert "Charles Schwab - Software Engineer" in html
+    assert "Software Engineer (Contract)" not in html
+    assert "Aug 2025 - Mar 2026 | Denver, CO | Contract" in html
 
 
 def test_professional_compact_selected_experience_subtitle_fallback_formats_dates() -> None:
@@ -338,6 +410,54 @@ def test_professional_compact_selected_experience_subtitle_fallback_formats_date
 
     assert "Aug 2025 - Mar 2026" in html
     assert "2025-08 - 2026-03" not in html
+
+
+def test_professional_compact_formats_structured_dates_and_present() -> None:
+    model = ResumeRenderModel(name="Alex Example", contact="alex@example.com")
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[
+            ResumeEntry(
+                title="Software Engineer",
+                company="Charles Schwab",
+                role="Software Engineer",
+                start_date="2025-08",
+                end_date=None or "",
+                location="Denver, CO",
+                bullets=["Built backend services."],
+            )
+        ],
+        compact_experience=[],
+        projects_to_render=[],
+    )
+
+    html = professional_compact.build_html(view)
+
+    assert "Charles Schwab - Software Engineer" in html
+    assert "Aug 2025 - Present | Denver, CO" in html
+
+
+def test_professional_compact_project_structured_dates_render_month_year() -> None:
+    model = ResumeRenderModel(name="Alex Example", contact="alex@example.com")
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[],
+        compact_experience=[],
+        projects_to_render=[
+            ResumeEntry(
+                title="TribeApp",
+                start_date="2022-10",
+                end_date="2024-02",
+                technologies=["Spring Boot", "MySQL"],
+                bullets=["Built product features."],
+                metadata={"description": "Backend-driven mobile platform"},
+            )
+        ],
+    )
+
+    html = professional_compact.build_html(view)
+
+    assert "Oct 2022 - Feb 2024" in html
 
 
 def test_professional_compact_detailed_entries_can_flow_across_pages() -> None:

@@ -9,6 +9,7 @@ Public contract:
 from __future__ import annotations
 
 import atexit
+import json
 import logging
 import os
 import threading
@@ -436,7 +437,9 @@ class LLMClient:
                 self._exhausted[entry.name] = time.time()
                 if not is_last:
                     return None
-            raise RuntimeError(f"LLM request failed ({entry.provider}/{entry.name}): {exc}") from exc
+            detail = self._extract_error_detail(exc, redact=[entry.api_key, self.api_key])
+            detail_suffix = f" | detail: {detail}" if detail else ""
+            raise RuntimeError(f"LLM request failed ({entry.provider}/{entry.name}): {exc}{detail_suffix}") from exc
 
         if not text:
             if not is_last:
@@ -497,6 +500,49 @@ class LLMClient:
                         text_parts.append(str(text))
             return "".join(text_parts).strip()
         return str(value).strip()
+
+    @staticmethod
+    def _extract_error_detail(exc: Exception, *, redact: list[str] | None = None) -> str:
+        """Best-effort extraction of provider error payload for diagnostics."""
+
+        def _sanitize(text: str) -> str:
+            cleaned = text.replace("\n", " ").strip()
+            for secret in redact or []:
+                if secret:
+                    cleaned = cleaned.replace(secret, "[REDACTED]")
+            return cleaned
+
+        for attr in ("response", "http_response"):
+            response = getattr(exc, attr, None)
+            if response is None:
+                continue
+            status_code = getattr(response, "status_code", None)
+            if status_code is not None:
+                try:
+                    if int(status_code) < 400:
+                        continue
+                except (TypeError, ValueError):
+                    pass
+            json_payload = getattr(response, "json", None)
+            if callable(json_payload):
+                try:
+                    payload = json_payload()
+                    if payload:
+                        return _sanitize(json.dumps(payload, ensure_ascii=False)[:600])
+                except Exception:
+                    pass
+            text_payload = getattr(response, "text", None)
+            if isinstance(text_payload, str) and text_payload.strip():
+                return _sanitize(text_payload[:600])
+
+        for attr in ("body", "message"):
+            value = getattr(exc, attr, None)
+            if isinstance(value, dict):
+                return _sanitize(json.dumps(value, ensure_ascii=False)[:600])
+            if isinstance(value, str) and value.strip():
+                return _sanitize(value[:600])
+
+        return ""
 
 
 _instance: LLMClient | None = None

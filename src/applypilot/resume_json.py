@@ -98,6 +98,7 @@ _WORK_EXTENSION_SCHEMA: dict = {
     "type": "object",
     "properties": {
         "key_metrics": {"type": "array", "items": {"type": "string"}},
+        "is_contract": {"type": "boolean"},
     },
     "additionalProperties": True,
 }
@@ -387,6 +388,8 @@ def _normalize_work_entries(work: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         extension = item.get("x-applypilot", {}) if isinstance(item.get("x-applypilot"), dict) else {}
+        extension_contract = _coerce_optional_bool(extension.get("is_contract"))
+        root_contract = _coerce_optional_bool(item.get("is_contract"))
         normalized.append(
             {
                 "company": _coerce_str(_safe_get(item, "company", "name")),
@@ -398,6 +401,7 @@ def _normalize_work_entries(work: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "highlights": _coerce_list(item.get("highlights", [])),
                 "key_metrics": _coerce_list(extension.get("key_metrics", item.get("key_metrics", []))),
                 "technologies": _coerce_list(item.get("technologies", [])),
+                "is_contract": extension_contract if extension_contract is not None else (root_contract or False),
             }
         )
     return normalized
@@ -423,6 +427,8 @@ def format_education_entry(entry: dict[str, Any]) -> str:
         details = education_display
     else:
         degree_completed = _coerce_optional_bool(extension.get("degree_completed"))
+        if degree_completed is None:
+            degree_completed = _coerce_optional_bool(entry.get("degree_completed"))
         if degree_completed is False:
             if field:
                 details = f"{field} coursework"

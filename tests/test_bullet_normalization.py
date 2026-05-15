@@ -231,6 +231,79 @@ class TestAssembleResumeTextWithJsonBullets:
         assert "- Led team" in result
         assert "- Reduced costs" in result
 
+    def test_assemble_resume_text_uses_structured_start_end_dates(self, sample_profile):
+        data = {
+            "title": "Software Engineer",
+            "summary": "Test summary",
+            "skills": {"Languages": "Python"},
+            "experience": [
+                {
+                    "company": "Charles Schwab",
+                    "role": "Software Engineer",
+                    "start_date": "2025-08",
+                    "end_date": "2026-03",
+                    "location": "Denver, CO",
+                    "bullets": ["Built API handling 1M requests/day"],
+                }
+            ],
+            "projects": [],
+            "education": "BS Computer Science",
+        }
+
+        result = assemble_resume_text(data, sample_profile)
+
+        assert "Software Engineer | Charles Schwab" in result
+        assert "Denver, CO | 2025-08 - 2026-03" in result
+
+    def test_assemble_resume_text_prefers_profile_education_over_llm_education(self, sample_profile):
+        profile = {
+            "personal": {"full_name": "Test User", "email": "test@example.com"},
+            "education": [
+                {
+                    "institution": "Metropolitan State College of Denver",
+                    "studyType": "Major",
+                    "area": "Computer Science",
+                    "startDate": "1994",
+                    "endDate": "1996",
+                    "degree_completed": False,
+                }
+            ],
+        }
+        data = {
+            "title": "Software Engineer",
+            "summary": "Test summary",
+            "skills": {"Languages": "Python"},
+            "experience": [],
+            "projects": [],
+            "education": "Metropolitan State College of Denver | Major Computer Science | 1994 - 1996",
+        }
+
+        result = assemble_resume_text(data, profile)
+
+        assert "Metropolitan State College of Denver | Computer Science coursework | 1994 - 1996" in result
+        assert "Major Computer Science" not in result
+
+    def test_assemble_resume_text_keeps_legacy_subtitle_dates_fallback(self, sample_profile):
+        data = {
+            "title": "Software Engineer",
+            "summary": "Test summary",
+            "skills": {"Languages": "Python"},
+            "experience": [
+                {
+                    "header": "Engineer | TestCorp | 2020-2023",
+                    "subtitle": "Backend | 2020-2023",
+                    "bullets": ["Built API handling 1M requests/day"],
+                }
+            ],
+            "projects": [],
+            "education": "BS Computer Science",
+        }
+
+        result = assemble_resume_text(data, sample_profile)
+
+        assert "Engineer | TestCorp | 2020-2023" in result
+        assert "Backend | 2020-2023" in result
+
     def test_omits_projects_section_when_empty(self, sample_profile):
         """PROJECTS header should not render when there are no project entries."""
         data = {
@@ -525,6 +598,45 @@ class TestValidationCompactSummary:
                     "subtitle": "Python | 2023",
                     "bullets": ["Built tooling"],
                     "compact_summary": "Built internal platform tooling.",
+                }
+            ],
+            "education": "State University | BS Computer Science",
+        }
+
+        result = validate_json_fields(data, profile, mode="normal")
+
+        assert result["passed"] is True
+        assert result["errors"] == []
+
+    def test_validate_json_fields_accepts_structured_date_fields(self):
+        profile = {
+            "work": [{"company": "Acme Corp"}],
+            "education": [{"institution": "State University"}],
+            "job_context": {"title": "Senior Software Engineer"},
+        }
+        data = {
+            "title": "Senior Software Engineer",
+            "summary": "Experienced backend engineer building scalable services.",
+            "skills": {"Languages": "Python, Java"},
+            "experience": [
+                {
+                    "company": "Acme Corp",
+                    "role": "Senior Software Engineer",
+                    "start_date": "2020-01",
+                    "end_date": None,
+                    "location": "Remote",
+                    "technologies": ["Python", "AWS"],
+                    "bullets": ["Built APIs", "Improved reliability"],
+                }
+            ],
+            "projects": [
+                {
+                    "name": "Internal Platform",
+                    "description": "Developer tooling",
+                    "start_date": "2023-01",
+                    "end_date": None,
+                    "technologies": ["Python"],
+                    "bullets": ["Built tooling"],
                 }
             ],
             "education": "State University | BS Computer Science",

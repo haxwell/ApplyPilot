@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Any
 
+from applypilot.resume_json import format_education_entry
 
 @dataclass
 class SkillSection:
@@ -18,6 +20,14 @@ class ResumeEntry:
     subtitle: str = ""
     bullets: list[str] = field(default_factory=list)
     compact_summary: str = ""
+    company: str = ""
+    role: str = ""
+    location: str = ""
+    technologies: list[str] = field(default_factory=list)
+    is_contract: bool = False
+    start_date: str = ""
+    end_date: str = ""
+    dates: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -53,12 +63,130 @@ def _normalize_bullet_text(bullet: Any) -> str:
     return str(bullet).strip()
 
 
-def _normalize_entry(entry: Any) -> ResumeEntry | None:
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes", "1"}:
+            return True
+        if lowered in {"false", "no", "0"}:
+            return False
+    return default
+
+
+def _normalize_date_value(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    if text.lower() in {"none", "null"}:
+        return ""
+    return text
+
+
+def _parse_legacy_date_range(text: str) -> tuple[str, str]:
+    cleaned = text.strip()
+    if not cleaned:
+        return "", ""
+    match = re.search(
+        r"(?P<start>\d{4}(?:-\d{2})?(?:-\d{2})?)\s*-\s*(?P<end>\d{4}(?:-\d{2})?(?:-\d{2})?|Present)",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return "", ""
+    start = _normalize_date_value(match.group("start"))
+    end = _normalize_date_value(match.group("end"))
+    return start, end
+
+
+def _normalize_technologies(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    return []
+
+
+def _normalize_company_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+
+def _infer_company_from_legacy_fields(entry: ResumeEntry) -> str:
+    if entry.company.strip():
+        return entry.company.strip()
+    subtitle = entry.subtitle.strip()
+    if subtitle:
+        first = subtitle.split("|", 1)[0].strip()
+        if first:
+            return first
+    return ""
+
+
+def _reconcile_entry_with_profile_work(entry: ResumeEntry, profile_work: list[dict[str, Any]]) -> ResumeEntry:
+    company_key = _normalize_company_key(_infer_company_from_legacy_fields(entry))
+    if not company_key:
+        return entry
+
+    matched: dict[str, Any] | None = None
+    for role in profile_work:
+        if not isinstance(role, dict):
+            continue
+        role_key = _normalize_company_key(str(role.get("company", "")))
+        if role_key and role_key == company_key:
+            matched = role
+            break
+
+    if matched is None:
+        return entry
+
+    if not entry.company.strip():
+        entry.company = str(matched.get("company", "")).strip()
+    if not entry.role.strip():
+        entry.role = str(matched.get("position", "")).strip() or entry.title
+    if not entry.location.strip():
+        entry.location = str(matched.get("location", "")).strip()
+    if not entry.start_date.strip():
+        entry.start_date = _normalize_date_value(matched.get("start_date"))
+    if not entry.end_date.strip():
+        entry.end_date = _normalize_date_value(matched.get("end_date"))
+    if not entry.technologies:
+        entry.technologies = _normalize_technologies(matched.get("technologies", []))
+    # Profile work metadata is authoritative for contract status.
+    entry.is_contract = _coerce_bool(matched.get("is_contract"), default=False)
+    return entry
+
+
+def _normalize_entry(entry: Any, *, is_project: bool = False) -> ResumeEntry | None:
     if not isinstance(entry, dict):
         return None
 
-    title = str(entry.get("header", "")).strip()
+    company = str(entry.get("company", "")).strip()
+    role = str(entry.get("role", "")).strip()
+    location = str(entry.get("location", "")).strip()
+    header = str(entry.get("header", "")).strip()
+    title = str(entry.get("name", "")).strip() if is_project else role
+    if not title:
+        title = header
     subtitle = str(entry.get("subtitle", "")).strip()
+    description = str(entry.get("description", "")).strip()
+    dates = str(entry.get("dates", "")).strip()
+    start_date = _normalize_date_value(entry.get("start_date"))
+    end_date = _normalize_date_value(entry.get("end_date"))
+    technologies = _normalize_technologies(entry.get("technologies", []))
+    is_contract = _coerce_bool(entry.get("is_contract"), default=False)
+
+    if not start_date and not end_date:
+        start_from_dates, end_from_dates = _parse_legacy_date_range(dates)
+        start_date = start_date or start_from_dates
+        end_date = end_date or end_from_dates
+    if not start_date and not end_date:
+        start_from_subtitle, end_from_subtitle = _parse_legacy_date_range(subtitle)
+        start_date = start_date or start_from_subtitle
+        end_date = end_date or end_from_subtitle
+
     compact_summary = ""
     for key in ("compact_summary", "summary", "short_summary"):
         value = entry.get(key)
@@ -74,14 +202,27 @@ def _normalize_entry(entry: Any) -> ResumeEntry | None:
             if text:
                 bullets.append(text)
 
-    if not title and not subtitle and not bullets:
+    if not title and not subtitle and not bullets and not company and not description:
         return None
+
+    metadata: dict[str, Any] = {}
+    if description:
+        metadata["description"] = description
 
     return ResumeEntry(
         title=title,
         subtitle=subtitle,
         bullets=bullets,
         compact_summary=compact_summary,
+        company=company,
+        role=role,
+        location=location,
+        technologies=technologies,
+        is_contract=is_contract,
+        start_date=start_date,
+        end_date=end_date,
+        dates=dates,
+        metadata=metadata,
     )
 
 
@@ -150,7 +291,22 @@ def build_render_model_from_tailored_json(data: dict, profile: dict) -> ResumeRe
     model.location = _build_location(personal, include_country=include_country)
     model.title = str(data.get("title", "")).strip()
     model.summary = str(data.get("summary", "")).strip()
-    model.education = str(data.get("education", "")).strip()
+    profile_education = profile.get("education", []) if isinstance(profile, dict) else []
+    if isinstance(profile_education, list):
+        rendered_education = []
+        for entry in profile_education:
+            if not isinstance(entry, dict):
+                continue
+            rendered = format_education_entry(entry)
+            if rendered:
+                rendered_education.append(rendered)
+    else:
+        rendered_education = []
+
+    if rendered_education:
+        model.education = "\n".join(rendered_education)
+    else:
+        model.education = str(data.get("education", "")).strip()
 
     contact_parts: list[str] = []
     for key in ("email", "phone", "github_url", "linkedin_url"):
@@ -173,16 +329,18 @@ def build_render_model_from_tailored_json(data: dict, profile: dict) -> ResumeRe
                 model.skills.append(SkillSection(category=f"Skill {idx + 1}", value=value_text))
 
     raw_experience = data.get("experience", [])
+    profile_work = profile.get("work", []) if isinstance(profile, dict) and isinstance(profile.get("work"), list) else []
     if isinstance(raw_experience, list):
         for entry in raw_experience:
-            normalized = _normalize_entry(entry)
+            normalized = _normalize_entry(entry, is_project=False)
             if normalized is not None:
+                normalized = _reconcile_entry_with_profile_work(normalized, profile_work)
                 model.experience.append(normalized)
 
     raw_projects = data.get("projects", [])
     if isinstance(raw_projects, list):
         for entry in raw_projects:
-            normalized = _normalize_entry(entry)
+            normalized = _normalize_entry(entry, is_project=True)
             if normalized is not None:
                 model.projects.append(normalized)
 

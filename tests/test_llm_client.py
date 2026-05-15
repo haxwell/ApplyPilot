@@ -165,3 +165,35 @@ def test_openrouter_primary_entry_preserves_remote_base_url(monkeypatch) -> None
     assert captured["model"] == "openrouter/openai/gpt-oss-120b:free"
     assert captured["api_base"] == "https://openrouter.ai/api/v1"
     assert captured["base_url"] == "https://openrouter.ai/api/v1"
+
+
+def test_chat_error_includes_provider_payload_detail(monkeypatch) -> None:
+    client = LLMClient(
+        LLMConfig(
+            provider="openai",
+            api_base=None,
+            model="openai/gpt-5.2",
+            api_key="test-key",
+        )
+    )
+
+    class _FakeResponse:
+        status_code = 400
+        text = '{"error":{"message":"Model gpt-5.2 is not supported for this endpoint"}}'
+
+    class _FakeError(Exception):
+        def __init__(self) -> None:
+            super().__init__("400 Bad Request")
+            self.response = _FakeResponse()
+
+    monkeypatch.setattr(llm_module.litellm, "completion", lambda **_: (_ for _ in ()).throw(_FakeError()))
+
+    try:
+        client.chat([{"role": "user", "content": "hello"}], max_output_tokens=32)
+    except RuntimeError as exc:
+        message = str(exc)
+        assert "LLM request failed (openai/" in message
+        assert "detail:" in message
+        assert "not supported for this endpoint" in message
+    else:
+        raise AssertionError("Expected RuntimeError")

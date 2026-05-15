@@ -43,7 +43,10 @@ def sample_resume_json() -> dict:
                 "startDate": "2022-09-19",
                 "summary": "Led platform strategy.",
                 "highlights": ["Built client platforms", "Automated AI workflows"],
-                "x-applypilot": {"key_metrics": ["99.9% uptime", "50% faster delivery"]},
+                "x-applypilot": {
+                    "key_metrics": ["99.9% uptime", "50% faster delivery"],
+                    "is_contract": True,
+                },
             }
         ],
         "education": [
@@ -97,6 +100,7 @@ def test_normalize_profile_from_resume_json_maps_internal_contract() -> None:
     assert profile["experience"]["current_title"] == "Principal Developer"
     assert profile["experience"]["target_role"] == "Staff Software Engineer"
     assert profile["work"][0]["company"] == "Watson Creative"
+    assert profile["work"][0]["is_contract"] is True
     assert get_profile_verified_metrics(profile) == [
         "99.9% uptime",
         "50% faster delivery",

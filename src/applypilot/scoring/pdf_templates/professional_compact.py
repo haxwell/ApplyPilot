@@ -212,6 +212,10 @@ def _build_compact_entry_summary(entry: ResumeEntry) -> tuple[str, bool]:
     if fallback_parts:
         return " ".join(fallback_parts), False
 
+    date_text = _format_entry_date_range(entry, default_present=True)
+    if date_text:
+        return date_text, True
+
     subtitle = entry.subtitle.strip()
     if subtitle:
         return _format_date_text(subtitle), True
@@ -235,6 +239,102 @@ def _extract_project_context_and_dates(subtitle: str) -> tuple[str, str]:
     if len(parts) == 1:
         return "", _format_date_text(parts[0])
     return _format_date_text(" | ".join(parts[:-1])), _format_date_text(parts[-1])
+
+
+def _is_present_value(value: str) -> bool:
+    normalized = value.strip().lower()
+    return normalized in {"present", "current", "now"}
+
+
+def _format_entry_date_range(entry: ResumeEntry, *, default_present: bool) -> str:
+    start = str(entry.start_date or "").strip()
+    end = str(entry.end_date or "").strip()
+    if not start and not end and entry.dates.strip():
+        start_legacy, end_legacy = _parse_legacy_date_range(entry.dates)
+        start = start or start_legacy
+        end = end or end_legacy
+    if not start and not end:
+        return ""
+
+    if _is_present_value(end):
+        end_display = "Present"
+    elif end:
+        end_display = end
+    else:
+        end_display = "Present" if default_present and start else ""
+
+    if start and end_display:
+        return _format_date_text(f"{start} - {end_display}")
+    if start:
+        return _format_date_text(start)
+    return _format_date_text(end_display)
+
+
+def _parse_legacy_date_range(text: str) -> tuple[str, str]:
+    cleaned = text.strip()
+    if not cleaned:
+        return "", ""
+    match = re.search(
+        r"(?P<start>\d{4}(?:-\d{2})?(?:-\d{2})?)\s*-\s*(?P<end>\d{4}(?:-\d{2})?(?:-\d{2})?|Present)",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return "", ""
+    return match.group("start").strip(), match.group("end").strip()
+
+
+def _experience_heading(entry: ResumeEntry) -> str:
+    def _strip_contract_suffix(text: str) -> str:
+        value = text.strip()
+        if not value:
+            return ""
+        # Normalize display by removing trailing contract markers from role/title.
+        value = re.sub(r"\s*[\(\[]?\bcontract(or)?\b[\)\]]?\s*$", "", value, flags=re.IGNORECASE).strip()
+        value = re.sub(r"\s*[-|,]\s*$", "", value).strip()
+        return value
+
+    company = entry.company.strip()
+    role = _strip_contract_suffix(entry.role.strip() or entry.title.strip())
+    if company and role:
+        return f"{company} - {role}"
+    company_legacy, _detail_legacy = _split_subtitle(entry.subtitle)
+    if company_legacy:
+        title = role or _strip_contract_suffix(entry.title.strip())
+        return f"{company_legacy} - {title}" if title else company_legacy
+    return role or _strip_contract_suffix(entry.title.strip())
+
+
+def _experience_detail_line(entry: ResumeEntry) -> str:
+    parts: list[str] = []
+    date_text = _format_entry_date_range(entry, default_present=True)
+    location = entry.location.strip()
+    if date_text:
+        parts.append(date_text)
+    if location:
+        parts.append(location)
+    if entry.is_contract:
+        parts.append("Contract")
+    if parts:
+        return " | ".join(parts)
+    _company_legacy, detail_legacy = _split_subtitle(entry.subtitle)
+    return detail_legacy
+
+
+def _project_context_and_dates(entry: ResumeEntry) -> tuple[str, str]:
+    context_parts: list[str] = []
+    description = str(entry.metadata.get("description", "")).strip()
+    if description:
+        context_parts.append(description)
+    if entry.technologies:
+        context_parts.append(", ".join(entry.technologies))
+    date_text = _format_entry_date_range(entry, default_present=True)
+    if date_text:
+        return " | ".join(context_parts), date_text
+    context_legacy, date_legacy = _extract_project_context_and_dates(entry.subtitle)
+    if not context_parts:
+        return context_legacy, date_legacy
+    return " | ".join(context_parts), date_legacy
 
 
 def _build_skill_lines(skills: list) -> list[str]:
@@ -352,8 +452,8 @@ def build_html(view: ProfessionalCompactTemplateView) -> str:
     if view.detailed_experience:
         items = ""
         for entry in view.detailed_experience:
-            company, detail_line = _split_subtitle(entry.subtitle)
-            heading = f"{company} - {entry.title}" if company else entry.title
+            heading = _experience_heading(entry)
+            detail_line = _experience_detail_line(entry)
             subtitle = f'<div class="entry-subtitle">{detail_line}</div>' if detail_line else ""
             bullets = "".join(f"<li>{bullet}</li>" for bullet in entry.bullets)
             bullet_list = f'<ul class="entry-bullets">{bullets}</ul>' if bullets else ""
@@ -366,15 +466,13 @@ def build_html(view: ProfessionalCompactTemplateView) -> str:
         items = ""
         for entry in view.compact_experience:
             summary, used_subtitle_as_summary = _build_compact_entry_summary(entry)
-            company, detail_line = _split_subtitle(entry.subtitle)
-            company_text = company if company else entry.title
-            role_text = entry.title if company else ""
-            role_suffix = f" - {role_text}" if role_text else ""
+            heading = _experience_heading(entry)
+            detail_line = _experience_detail_line(entry)
             detail_suffix = f" | {detail_line}" if detail_line and not used_subtitle_as_summary else ""
             summary_html = f'<p class="compact-summary">{summary}</p>' if summary else ""
             items += (
                 '<article class="compact-entry">'
-                f'<div class="compact-meta"><strong class="compact-company">{company_text}{role_suffix}</strong>'
+                f'<div class="compact-meta"><strong class="compact-company">{heading}</strong>'
                 f'<span class="compact-date">{detail_suffix}</span></div>'
                 f"{summary_html}"
                 "</article>"
@@ -388,17 +486,20 @@ def build_html(view: ProfessionalCompactTemplateView) -> str:
     if view.projects_to_render:
         items = ""
         for entry in view.projects_to_render:
-            context_line, date_line = _extract_project_context_and_dates(entry.subtitle)
+            context_line, date_line = _project_context_and_dates(entry)
             title_row = (
                 '<div class="project-title-row">'
                 f'<h3 class="entry-title">{entry.title}</h3>'
                 f'<span class="project-dates">{date_line}</span>'
                 "</div>"
             )
-            subtitle = f'<div class="entry-subtitle">{context_line}</div>' if context_line else ""
             bullets = "".join(f"<li>{bullet}</li>" for bullet in entry.bullets)
-            bullet_list = f'<ul class="entry-bullets">{bullets}</ul>' if bullets else ""
-            items += f'<article class="entry">{title_row}{subtitle}{bullet_list}</article>'
+            has_bullets = bool(bullets)
+            # Project rendering is mutually exclusive: summary-only when compact,
+            # or bullet-detail when space allows.
+            summary_html = f'<p class="project-summary">{context_line}</p>' if context_line and not has_bullets else ""
+            bullet_list = f'<ul class="entry-bullets">{bullets}</ul>' if has_bullets else ""
+            items += f'<article class="entry">{title_row}{summary_html}{bullet_list}</article>'
         proj_html = f'<section class="section"><h2 class="section-title">Projects</h2>{items}</section>'
 
     # Education
@@ -517,6 +618,12 @@ body {{
     font-style: italic;
     color: #444444;
     white-space: nowrap;
+}}
+.project-summary {{
+    margin-top: 2px;
+    font-size: 10.8pt;
+    line-height: 1.4;
+    color: #222222;
 }}
 .entry-bullets {{
     margin: 6px 0 0 24px;

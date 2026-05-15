@@ -161,10 +161,10 @@ def _company_is_present(experience_entry: dict, company: str) -> bool:
 
     entry_text = " ".join(
         str(experience_entry.get(key, ""))
-        for key in ("header", "company", "subtitle")
+        for key in ("header", "company", "role", "subtitle")
     )
     entry_norm = _normalize(entry_text)
-    return company_norm in entry_norm
+    return bool(re.search(rf"(^| ){re.escape(company_norm)}( |$)", entry_norm))
 
 
 # ── JSON Field Validation ─────────────────────────────────────────────────

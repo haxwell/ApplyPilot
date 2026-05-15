@@ -374,6 +374,9 @@ def test_build_tailor_prompt_includes_informational_template_context() -> None:
     assert "It does NOT change the required output schema." in prompt
     assert "## COMPACT SUMMARY (OPTIONAL WHEN USEFUL)" in prompt
     assert '"compact_summary": "Optional concise sentence for compact layouts."' in prompt
+    assert '"start_date": "2025-08"' in prompt
+    assert '"end_date": null' in prompt
+    assert '"is_contract": false' in prompt
 
 
 def test_build_tailor_prompt_omits_compact_summary_guidance_when_not_requested() -> None:
@@ -387,6 +390,59 @@ def test_build_tailor_prompt_omits_compact_summary_guidance_when_not_requested()
 
     assert "## COMPACT SUMMARY (OPTIONAL WHEN USEFUL)" not in prompt
     assert '"compact_summary": "Optional concise sentence for compact layouts."' not in prompt
+
+
+def test_tailor_resume_applies_profile_contract_authority_to_experience() -> None:
+    class _FakeClient:
+        def chat(self, _messages, max_output_tokens: int = 16000):  # noqa: ARG002
+            return (
+                "{"
+                '"title":"Senior Software Engineer",'
+                '"summary":"Built production backend services.",'
+                '"skills":{"Languages":"Python, Java"},'
+                '"experience":[{"company":"Charles Schwab","role":"Software Engineer","is_contract":false,'
+                '"start_date":"2025-08","end_date":"2026-03","bullets":["Built APIs"]}],'
+                '"projects":[],'
+                '"education":"State University | BS Computer Science"'
+                "}"
+            )
+
+    original_get_client = tailor.get_client
+    try:
+        tailor.get_client = lambda: _FakeClient()
+        profile = {
+            "personal": {"full_name": "Alex Example"},
+            "work": [
+                {
+                    "company": "Charles Schwab",
+                    "position": "Software Engineer",
+                    "is_contract": True,
+                    "start_date": "2025-08",
+                    "end_date": "2026-03",
+                }
+            ],
+            "education": [{"institution": "State University"}],
+        }
+        job = {
+            "title": "Senior Software Engineer",
+            "site": "Example",
+            "location": "Remote",
+            "full_description": "Build APIs",
+        }
+
+        _, report = tailor.tailor_resume(
+            "Base resume text",
+            job,
+            profile,
+            max_retries=0,
+            validation_mode="lenient",
+        )
+    finally:
+        tailor.get_client = original_get_client
+
+    assert report["status"] == "approved"
+    assert report["tailored_json"]["experience"][0]["is_contract"] is True
+    assert report["profile_work_authority_overrides"] == ["Charles Schwab: is_contract=true"]
 
 
 def test_build_tailor_prompt_centralizes_global_voice_and_evidence_standard() -> None:
@@ -408,6 +464,8 @@ def test_build_tailor_prompt_centralizes_global_voice_and_evidence_standard() ->
     assert "Use the global voice and evidence standard." in prompt
     assert "## FINAL QUALITY CHECK BEFORE OUTPUT" in prompt
     assert "Did I apply the global voice and evidence standard?" in prompt
+    assert "Education is injected from trusted profile data" in prompt
+    assert 'The "education" field in output is legacy/compatibility only' in prompt
 
 
 def test_run_tailoring_report_includes_pdf_template_preferences(monkeypatch, tmp_path: Path) -> None:
@@ -415,7 +473,23 @@ def test_run_tailoring_report_includes_pdf_template_preferences(monkeypatch, tmp
     job = _make_job()
 
     monkeypatch.setattr(tailor, "TAILORED_DIR", tmp_path)
-    monkeypatch.setattr(tailor, "load_profile", lambda: {"personal": {"full_name": "Alex Example"}})
+    monkeypatch.setattr(
+        tailor,
+        "load_profile",
+        lambda: {
+            "personal": {"full_name": "Alex Example"},
+            "education": [
+                {
+                    "institution": "Metropolitan State College of Denver",
+                    "studyType": "Major",
+                    "area": "Computer Science",
+                    "startDate": "1994",
+                    "endDate": "1996",
+                    "degree_completed": False,
+                }
+            ],
+        },
+    )
     monkeypatch.setattr(tailor, "load_resume_text", lambda: "base resume")
     monkeypatch.setattr(tailor, "get_connection", lambda: conn)
     monkeypatch.setattr(tailor, "get_jobs_by_stage", lambda **_: [job])
@@ -439,3 +513,6 @@ def test_run_tailoring_report_includes_pdf_template_preferences(monkeypatch, tmp
     assert isinstance(report_data["pdf_template_input_preferences"], dict)
     assert report_data["content_preparation_context"]["pdf_template"] == "professional_compact"
     assert isinstance(report_data["content_preparation_context"]["pdf_template_input_preferences"], dict)
+    assert report_data["profile_education_rendered"] == (
+        "Metropolitan State College of Denver | Computer Science coursework | 1994 - 1996"
+    )

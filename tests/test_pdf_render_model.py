@@ -102,7 +102,15 @@ def test_build_render_model_from_tailored_json_maps_profile_and_sections() -> No
             "phone": "555-111-2222",
             "city": "Denver",
             "province_state": "CO",
-        }
+        },
+        "education": [
+            {
+                "institution": "State University",
+                "studyType": "BS",
+                "area": "Computer Science",
+                "endDate": "2018",
+            }
+        ],
     }
     data = {
         "title": "Senior Engineer",
@@ -220,6 +228,130 @@ def test_build_render_model_from_tailored_json_maps_compact_summary() -> None:
 
     assert model.experience[0].compact_summary == "Improved API reliability."
     assert model.projects[0].compact_summary == "Created automation tooling."
+
+
+def test_build_render_model_from_tailored_json_maps_structured_date_fields() -> None:
+    profile = {
+        "personal": {"full_name": "Alex Example"},
+        "work": [
+            {
+                "company": "Charles Schwab",
+                "position": "Software Engineer",
+                "is_contract": True,
+                "start_date": "2025-08",
+                "end_date": "2026-03",
+                "location": "Denver, CO",
+            }
+        ],
+    }
+    data = {
+        "title": "Engineer",
+        "summary": "Summary",
+        "skills": {},
+        "experience": [
+            {
+                "company": "Charles Schwab",
+                "role": "Software Engineer",
+                "start_date": "2025-08",
+                "end_date": "2026-03",
+                "location": "Denver, CO",
+                "technologies": ["Cucumber", "GitHub Actions", "CloudFoundry"],
+                "bullets": ["Built APIs"],
+            }
+        ],
+        "projects": [
+            {
+                "name": "TribeApp",
+                "description": "Backend-driven mobile platform",
+                "start_date": "2022-10",
+                "end_date": None,
+                "technologies": ["Spring Boot", "MySQL"],
+                "bullets": ["Built product features"],
+            }
+        ],
+        "education": "",
+    }
+
+    model = build_render_model_from_tailored_json(data, profile)
+
+    assert model.experience[0].company == "Charles Schwab"
+    assert model.experience[0].role == "Software Engineer"
+    assert model.experience[0].start_date == "2025-08"
+    assert model.experience[0].end_date == "2026-03"
+    assert model.experience[0].location == "Denver, CO"
+    assert model.experience[0].technologies == ["Cucumber", "GitHub Actions", "CloudFoundry"]
+    assert model.experience[0].is_contract is True
+    assert model.projects[0].title == "TribeApp"
+    assert model.projects[0].start_date == "2022-10"
+    assert model.projects[0].end_date == ""
+
+
+def test_build_render_model_from_tailored_json_prefers_profile_education_over_llm_education() -> None:
+    profile = {
+        "personal": {"full_name": "Alex Example"},
+        "education": [
+            {
+                "institution": "Metropolitan State College of Denver",
+                "studyType": "Major",
+                "area": "Computer Science",
+                "startDate": "1994",
+                "endDate": "1996",
+                "degree_completed": False,
+            }
+        ],
+    }
+    data = {
+        "title": "Engineer",
+        "summary": "Summary",
+        "skills": {},
+        "experience": [],
+        "projects": [],
+        "education": "Metropolitan State College of Denver | Major Computer Science | 1994 - 1996",
+    }
+
+    model = build_render_model_from_tailored_json(data, profile)
+
+    assert model.education == "Metropolitan State College of Denver | Computer Science coursework | 1994 - 1996"
+    assert "Major Computer Science" not in model.education
+
+
+def test_build_render_model_from_tailored_json_uses_llm_education_when_profile_missing() -> None:
+    profile = {"personal": {"full_name": "Alex Example"}}
+    data = {
+        "title": "Engineer",
+        "summary": "Summary",
+        "skills": {},
+        "experience": [],
+        "projects": [],
+        "education": "State University | BS Computer Science | 2018",
+    }
+
+    model = build_render_model_from_tailored_json(data, profile)
+
+    assert model.education == "State University | BS Computer Science | 2018"
+
+
+def test_build_render_model_from_tailored_json_parses_legacy_dates_fallback() -> None:
+    profile = {"personal": {"full_name": "Alex Example"}}
+    data = {
+        "title": "Engineer",
+        "summary": "Summary",
+        "skills": {},
+        "experience": [
+            {
+                "header": "Software Engineer",
+                "subtitle": "Acme Corp | 2020-01 - 2021-02",
+                "bullets": ["Built APIs"],
+            }
+        ],
+        "projects": [],
+        "education": "",
+    }
+
+    model = build_render_model_from_tailored_json(data, profile)
+
+    assert model.experience[0].start_date == "2020-01"
+    assert model.experience[0].end_date == "2021-02"
 
 
 def test_build_render_model_from_tailored_json_maps_render_options_from_pdf_render_options() -> None:

@@ -82,8 +82,9 @@ def _build_work_history_block(profile: dict) -> str:
         position = str(role.get("position", "")).strip() or "Software Engineer"
         start = str(role.get("start_date", "")).strip()
         end = str(role.get("end_date", "")).strip() or "Present"
+        contract = " | Contract" if _coerce_bool(role.get("is_contract", False)) else ""
         if company:
-            lines.append(f"- {company} | {position} | {start} - {end}".strip())
+            lines.append(f"- {company} | {position} | {start} - {end}{contract}".strip())
 
     return "\n".join(lines) if lines else "N/A"
 
@@ -337,6 +338,22 @@ def _build_tailor_prompt(
     - Do not reduce any role to a single bullet unless the source resume truly contains only one useful evidence point for that role.
     - Do not reduce older roles to a single bullet merely to fit page length; page fitting is handled by the PDF template.
 
+    ## DATE METADATA
+
+    Use factual date metadata fields:
+    - start_date
+    - end_date
+
+    Use ISO-like strings when possible:
+    - YYYY
+    - YYYY-MM
+    - YYYY-MM-DD
+
+    For current roles or projects, prefer end_date as null.
+
+    Do not put rendered date ranges into role/title/header display text.
+    Templates handle date display formatting.
+
     ## BULLET STRATEGY
 
     Tailor by selection, ordering, emphasis, and light editing.
@@ -462,6 +479,10 @@ def _build_tailor_prompt(
     Preserved school:
     {school}
 
+    Education is injected from trusted profile data (resume.json/profile normalization) in downstream rendering.
+    Do not rewrite, infer, or invent education completion status or wording.
+    The "education" field in output is legacy/compatibility only and may be ignored by downstream rendering.
+
     Do not invent degrees. If education is coursework, keep it as coursework.
 
     Do not invent certifications.
@@ -512,8 +533,15 @@ def _build_tailor_prompt(
       }},
       "experience": [
         {{
-          "header": "Title at Company",
-          "subtitle": "Tech | Dates",
+          "company": "Company Name",
+          "role": "Role Title",
+          "is_contract": false,
+          "start_date": "2025-08",
+          "end_date": null,
+          "location": "Denver, CO",
+          "technologies": ["Java", "Spring Boot", "Kafka"],
+          "header": "Legacy fallback only when needed",
+          "subtitle": "Legacy fallback only when needed",
           "bullets": [
             "bullet 1",
             "bullet 2",
@@ -524,15 +552,20 @@ def _build_tailor_prompt(
       ],
       "projects": [
         {{
-          "header": "Project Name - Description",
-          "subtitle": "Tech | Dates",
+          "name": "Project Name",
+          "description": "Short factual project description",
+          "start_date": "2022-10",
+          "end_date": null,
+          "technologies": ["Spring Boot", "MySQL", "AWS"],
+          "header": "Legacy fallback only when needed",
+          "subtitle": "Legacy fallback only when needed",
           "bullets": [
             "bullet 1",
             "bullet 2"
           ]{project_compact_summary_line}
         }}
       ],
-      "education": "{education_block}"
+      "education": "Legacy compatibility field; downstream rendering uses trusted profile education when available."
     }}
     """
 
@@ -728,13 +761,17 @@ def _collect_renderable_project_entries(data: dict) -> list[dict]:
         if not isinstance(entry, dict):
             continue
         header = sanitize_text(str(entry.get("header", ""))).strip()
+        name = sanitize_text(str(entry.get("name", ""))).strip()
+        description = sanitize_text(str(entry.get("description", ""))).strip()
         subtitle = sanitize_text(str(entry.get("subtitle", ""))).strip()
+        start_date = sanitize_text(str(entry.get("start_date", ""))).strip()
+        end_date = sanitize_text(str(entry.get("end_date", ""))).strip()
         bullets = []
         for b in entry.get("bullets", []):
             bullet_text = _normalize_bullet(b)
             if bullet_text and sanitize_text(bullet_text).strip():
                 bullets.append(bullet_text)
-        if header or subtitle or bullets:
+        if header or name or description or subtitle or start_date or end_date or bullets:
             renderable.append(entry)
     return renderable
 
@@ -767,6 +804,18 @@ def _coerce_int(value: Any, default: int) -> int:
     return parsed if parsed > 0 else default
 
 
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes", "1"}:
+            return True
+        if lowered in {"false", "no", "0"}:
+            return False
+    return default
+
+
 def _get_tailored_max_lines(profile: dict) -> int:
     """Compute line budget from tailoring_config max pages settings.
 
@@ -790,9 +839,10 @@ def _company_in_entry(entry: dict, company: str) -> bool:
         return False
     entry_text = " ".join(
         str(entry.get(key, ""))
-        for key in ("header", "company", "subtitle")
+        for key in ("header", "company", "role", "subtitle")
     )
-    return company_norm in _normalize_company_text(entry_text)
+    entry_norm = _normalize_company_text(entry_text)
+    return bool(re.search(rf"(^| ){re.escape(company_norm)}( |$)", entry_norm))
 
 
 def _missing_profile_companies_in_generated_experience(data: dict, profile: dict) -> list[str]:
@@ -847,7 +897,16 @@ def _build_profile_full_entry(role: dict, job_text: str) -> dict:
     selected = _select_relevant_highlights(highlights, job_text, limit=3)
     if not selected and role.get("summary"):
         selected = [sanitize_text(str(role.get("summary", "")))]
+    start_date = str(role.get("start_date", "")).strip()
+    end_date = str(role.get("end_date", "")).strip()
     return {
+        "company": company,
+        "role": position,
+        "is_contract": _coerce_bool(role.get("is_contract", False)),
+        "start_date": start_date,
+        "end_date": end_date,
+        "location": str(role.get("location", "")).strip(),
+        "technologies": list(role.get("technologies", [])) if isinstance(role.get("technologies", []), list) else [],
         "header": f"{position}",
         "subtitle": f"{company} | {_build_role_date_range(role)}".strip(),
         "bullets": selected,
@@ -861,7 +920,16 @@ def _build_profile_compact_entry(role: dict, job_text: str) -> dict:
     selected = _select_relevant_highlights(highlights, job_text, limit=1)
     if not selected and role.get("summary"):
         selected = [sanitize_text(str(role.get("summary", "")))]
+    start_date = str(role.get("start_date", "")).strip()
+    end_date = str(role.get("end_date", "")).strip()
     return {
+        "company": company,
+        "role": position,
+        "is_contract": _coerce_bool(role.get("is_contract", False)),
+        "start_date": start_date,
+        "end_date": end_date,
+        "location": str(role.get("location", "")).strip(),
+        "technologies": list(role.get("technologies", [])) if isinstance(role.get("technologies", []), list) else [],
         "header": f"{position} | {company}".strip(" |"),
         "subtitle": _build_role_date_range(role),
         "bullets": selected,
@@ -869,9 +937,28 @@ def _build_profile_compact_entry(role: dict, job_text: str) -> dict:
 
 
 def _sanitize_experience_entry(entry: dict) -> dict:
+    start_date = sanitize_text(str(entry.get("start_date", ""))).strip()
+    end_raw = entry.get("end_date", "")
+    end_date = "" if end_raw is None else sanitize_text(str(end_raw)).strip()
+    technologies = []
+    raw_technologies = entry.get("technologies", [])
+    if isinstance(raw_technologies, list):
+        technologies = [sanitize_text(str(t)).strip() for t in raw_technologies if sanitize_text(str(t)).strip()]
+    elif isinstance(raw_technologies, str):
+        technologies = [part.strip() for part in sanitize_text(raw_technologies).split(",") if part.strip()]
+
     sanitized = {
         "header": sanitize_text(str(entry.get("header", ""))).strip(),
+        "company": sanitize_text(str(entry.get("company", ""))).strip(),
+        "role": sanitize_text(str(entry.get("role", ""))).strip(),
         "subtitle": sanitize_text(str(entry.get("subtitle", ""))).strip(),
+        "location": sanitize_text(str(entry.get("location", ""))).strip(),
+        "is_contract": _coerce_bool(entry.get("is_contract", False)),
+        "start_date": start_date,
+        "end_date": end_date,
+        "dates": sanitize_text(str(entry.get("dates", ""))).strip(),
+        "technologies": technologies,
+        "compact_summary": sanitize_text(str(entry.get("compact_summary", ""))).strip(),
         "bullets": [],
     }
     for bullet in entry.get("bullets", []):
@@ -893,10 +980,44 @@ def _find_matching_profile_role(entry: dict, profile_roles: list[dict]) -> dict 
     return None
 
 
+def _apply_profile_work_authority(data: dict, profile: dict) -> list[str]:
+    """Apply authoritative work metadata from profile onto generated experience."""
+
+    overrides: list[str] = []
+    profile_roles = [role for role in profile.get("work", []) if isinstance(role, dict)]
+    experience = data.get("experience", [])
+    if not isinstance(experience, list):
+        return overrides
+
+    for entry in experience:
+        if not isinstance(entry, dict):
+            continue
+        sanitized = _sanitize_experience_entry(entry)
+        role = _find_matching_profile_role(sanitized, profile_roles)
+        if not isinstance(role, dict):
+            continue
+
+        authoritative_is_contract = _coerce_bool(role.get("is_contract", False))
+        previous_is_contract = _coerce_bool(entry.get("is_contract", False))
+        entry["is_contract"] = authoritative_is_contract
+        if authoritative_is_contract != previous_is_contract:
+            company = str(role.get("company", "")).strip() or str(entry.get("company", "")).strip() or "Unknown Company"
+            overrides.append(f"{company}: is_contract={str(authoritative_is_contract).lower()}")
+    return overrides
+
+
 def _build_compact_entry_from_generated(entry: dict) -> dict:
     return {
         "header": str(entry.get("header", "")).strip(),
+        "company": str(entry.get("company", "")).strip(),
+        "role": str(entry.get("role", "")).strip(),
         "subtitle": str(entry.get("subtitle", "")).strip(),
+        "location": str(entry.get("location", "")).strip(),
+        "is_contract": _coerce_bool(entry.get("is_contract", False)),
+        "start_date": str(entry.get("start_date", "")).strip(),
+        "end_date": "" if entry.get("end_date", "") is None else str(entry.get("end_date", "")).strip(),
+        "dates": str(entry.get("dates", "")).strip(),
+        "technologies": list(entry.get("technologies", [])) if isinstance(entry.get("technologies", []), list) else [],
         "bullets": list(entry.get("bullets", []))[:1],
     }
 
@@ -923,15 +1044,36 @@ def _enrich_full_entry_from_profile(role: dict, entry: dict, job_text: str) -> d
 
     enriched = {
         "header": str(entry.get("header", "")).strip(),
+        "company": str(entry.get("company", "")).strip(),
+        "role": str(entry.get("role", "")).strip(),
         "subtitle": str(entry.get("subtitle", "")).strip(),
+        "location": str(entry.get("location", "")).strip(),
+        "is_contract": _coerce_bool(entry.get("is_contract", False)),
+        "start_date": str(entry.get("start_date", "")).strip(),
+        "end_date": "" if entry.get("end_date", "") is None else str(entry.get("end_date", "")).strip(),
+        "dates": str(entry.get("dates", "")).strip(),
+        "technologies": list(entry.get("technologies", [])) if isinstance(entry.get("technologies", []), list) else [],
+        "compact_summary": str(entry.get("compact_summary", "")).strip(),
         "bullets": list(entry.get("bullets", [])),
     }
 
     fallback = _build_profile_full_entry(role, job_text)
     if not enriched["header"]:
         enriched["header"] = fallback.get("header", "")
+    if not enriched["company"]:
+        enriched["company"] = str(role.get("company", "")).strip()
+    if not enriched["role"]:
+        enriched["role"] = str(role.get("position", "")).strip()
     if not enriched["subtitle"]:
         enriched["subtitle"] = fallback.get("subtitle", "")
+    if not enriched["start_date"]:
+        enriched["start_date"] = str(role.get("start_date", "")).strip()
+    if not enriched["end_date"]:
+        enriched["end_date"] = str(role.get("end_date", "")).strip()
+    if not enriched["location"]:
+        enriched["location"] = str(role.get("location", "")).strip()
+    # Profile work metadata is authoritative for contract status.
+    enriched["is_contract"] = _coerce_bool(role.get("is_contract", False))
 
     bullets = [sanitize_text(str(b)).strip() for b in enriched.get("bullets", []) if str(b).strip()]
     fallback_bullets = [sanitize_text(str(b)).strip() for b in fallback.get("bullets", []) if str(b).strip()]
@@ -945,6 +1087,126 @@ def _enrich_full_entry_from_profile(role: dict, entry: dict, job_text: str) -> d
 
     enriched["bullets"] = _merge_unique_bullets(bullets, fallback_bullets, max_items=target_count)
     return enriched
+
+
+def _parse_legacy_date_range(text: str) -> tuple[str, str]:
+    cleaned = str(text).strip()
+    if not cleaned:
+        return "", ""
+    match = re.search(
+        r"(?P<start>\d{4}(?:-\d{2})?(?:-\d{2})?)\s*-\s*(?P<end>\d{4}(?:-\d{2})?(?:-\d{2})?|Present)",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return "", ""
+    return match.group("start").strip(), match.group("end").strip()
+
+
+def _coerce_end_date(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    if text.lower() in {"none", "null"}:
+        return ""
+    return text
+
+
+def _experience_display_lines(entry: dict) -> tuple[str, str]:
+    company = str(entry.get("company", "")).strip()
+    role = str(entry.get("role", "")).strip()
+    header = str(entry.get("header", "")).strip()
+    subtitle = str(entry.get("subtitle", "")).strip()
+    location = str(entry.get("location", "")).strip()
+    is_contract = bool(entry.get("is_contract", False))
+    start_date = str(entry.get("start_date", "")).strip()
+    end_date = _coerce_end_date(entry.get("end_date", ""))
+    dates_legacy = str(entry.get("dates", "")).strip()
+    has_structured_fields = any(
+        str(entry.get(key, "")).strip()
+        for key in ("company", "role", "location", "start_date", "end_date", "dates")
+    ) or _coerce_bool(entry.get("is_contract", False))
+
+    if not has_structured_fields:
+        display_header = header or role or company or subtitle
+        return display_header, subtitle
+
+    if not start_date and not end_date:
+        parsed_start, parsed_end = _parse_legacy_date_range(dates_legacy)
+        start_date = start_date or parsed_start
+        end_date = end_date or parsed_end
+    if not start_date and not end_date:
+        parsed_start, parsed_end = _parse_legacy_date_range(subtitle)
+        start_date = start_date or parsed_start
+        end_date = end_date or parsed_end
+
+    if start_date:
+        end_display = end_date or "Present"
+        date_text = f"{start_date} - {end_display}"
+    else:
+        date_text = dates_legacy
+
+    display_header = header or role or company
+    if role and company:
+        display_header = f"{role} | {company}"
+    elif not display_header and subtitle:
+        display_header = subtitle.split("|", 1)[0].strip()
+
+    subtitle_parts = []
+    if location:
+        subtitle_parts.append(location)
+    if date_text:
+        subtitle_parts.append(date_text)
+    if is_contract:
+        subtitle_parts.append("Contract")
+    if not subtitle_parts and subtitle:
+        subtitle_parts.append(subtitle)
+    display_subtitle = " | ".join(part for part in subtitle_parts if part)
+    return display_header, display_subtitle
+
+
+def _project_display_lines(entry: dict) -> tuple[str, str]:
+    name = str(entry.get("name", "")).strip()
+    description = str(entry.get("description", "")).strip()
+    header = str(entry.get("header", "")).strip()
+    subtitle = str(entry.get("subtitle", "")).strip()
+    start_date = str(entry.get("start_date", "")).strip()
+    end_date = _coerce_end_date(entry.get("end_date", ""))
+    dates_legacy = str(entry.get("dates", "")).strip()
+    has_structured_fields = any(
+        str(entry.get(key, "")).strip()
+        for key in ("name", "description", "start_date", "end_date", "dates")
+    )
+
+    if not has_structured_fields:
+        return header or name or description, subtitle
+
+    if not start_date and not end_date:
+        parsed_start, parsed_end = _parse_legacy_date_range(dates_legacy)
+        start_date = start_date or parsed_start
+        end_date = end_date or parsed_end
+    if not start_date and not end_date:
+        parsed_start, parsed_end = _parse_legacy_date_range(subtitle)
+        start_date = start_date or parsed_start
+        end_date = end_date or parsed_end
+
+    title = name or header
+    if not title and description:
+        title = description
+
+    subtitle_parts = []
+    if description:
+        subtitle_parts.append(description)
+    if start_date:
+        end_display = end_date or "Present"
+        subtitle_parts.append(f"{start_date} - {end_display}")
+    elif dates_legacy:
+        subtitle_parts.append(dates_legacy)
+    if not subtitle_parts and subtitle:
+        subtitle_parts.append(subtitle)
+    return title, " | ".join(part for part in subtitle_parts if part)
 
 
 def _render_resume_lines(
@@ -990,9 +1252,10 @@ def _render_resume_lines(
     # Experience
     lines.append("EXPERIENCE")
     for entry in experience_entries:
-        lines.append(entry.get("header", ""))
-        if entry.get("subtitle"):
-            lines.append(entry["subtitle"])
+        header, subtitle = _experience_display_lines(entry)
+        lines.append(header)
+        if subtitle:
+            lines.append(subtitle)
         for bullet in entry.get("bullets", []):
             lines.append(f"- {bullet}")
         lines.append("")
@@ -1001,9 +1264,10 @@ def _render_resume_lines(
     if selected_entries:
         lines.append("SELECTED EXPERIENCE")
         for entry in selected_entries:
-            lines.append(entry.get("header", ""))
-            if entry.get("subtitle"):
-                lines.append(entry["subtitle"])
+            header, subtitle = _experience_display_lines(entry)
+            lines.append(header)
+            if subtitle:
+                lines.append(subtitle)
             for bullet in entry.get("bullets", []):
                 lines.append(f"- {bullet}")
             lines.append("")
@@ -1013,9 +1277,10 @@ def _render_resume_lines(
     if project_entries:
         lines.append("PROJECTS")
         for entry in project_entries:
-            lines.append(sanitize_text(entry.get("header", "")))
-            if entry.get("subtitle"):
-                lines.append(sanitize_text(entry["subtitle"]))
+            header, subtitle = _project_display_lines(entry)
+            lines.append(sanitize_text(header))
+            if subtitle:
+                lines.append(sanitize_text(subtitle))
             for b in entry.get("bullets", []):
                 bullet_text = _normalize_bullet(b)
                 if bullet_text:
@@ -1024,7 +1289,11 @@ def _render_resume_lines(
 
     # Education
     lines.append("EDUCATION")
-    lines.append(sanitize_text(str(data.get("education", ""))))
+    profile_education_block = _build_education_block(profile.get("education", []))
+    if profile_education_block != "N/A":
+        lines.extend(profile_education_block.splitlines())
+    else:
+        lines.append(sanitize_text(str(data.get("education", ""))))
 
     return lines
 
@@ -1242,6 +1511,10 @@ def tailor_resume(
                 attempt + 1,
                 ", ".join(removed_skills[:5]),
             )
+        work_overrides = _apply_profile_work_authority(data, profile)
+        if work_overrides:
+            log.info("Attempt %d applied profile work authority overrides: %s", attempt + 1, "; ".join(work_overrides))
+            report["profile_work_authority_overrides"] = work_overrides
 
         # Layer 1: Validate JSON fields
         validation = validate_json_fields(data, profile, mode=validation_mode)
@@ -1424,6 +1697,9 @@ def run_tailoring(
             report["pdf_template"] = pdf_template_name
             report["pdf_template_input_preferences"] = pdf_template_input_preferences
             report["content_preparation_context"] = dict(content_preparation_context)
+            profile_education_rendered = _build_education_block(profile.get("education", []))
+            if profile_education_rendered != "N/A":
+                report["profile_education_rendered"] = profile_education_rendered
 
             # Build collision-resistant filename prefix
             prefix = _build_tailored_prefix(job)
