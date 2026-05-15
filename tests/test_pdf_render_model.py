@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from applypilot.scoring.pdf import build_render_model, parse_resume
-from applypilot.scoring.pdf_render_model import build_render_model_from_tailored_json
+from applypilot.scoring.pdf_render_model import ResumeEntry, build_render_model_from_tailored_json
 from applypilot.scoring.pdf_templates import default as default_template
 
 
@@ -87,7 +87,8 @@ def test_build_render_model_from_tailored_json_maps_profile_and_sections() -> No
             "full_name": "Alex Example",
             "email": "alex@example.com",
             "phone": "555-111-2222",
-            "location": "Denver, CO",
+            "city": "Denver",
+            "province_state": "CO",
         }
     }
     data = {
@@ -127,3 +128,61 @@ def test_build_render_model_from_tailored_json_maps_profile_and_sections() -> No
     assert len(model.projects) == 1
     assert model.projects[0].bullets == ["Built a tool"]
     assert model.education == "State University | BS Computer Science | 2018"
+
+
+def test_resume_entry_supports_compact_summary() -> None:
+    entry = ResumeEntry(
+        title="Senior Engineer",
+        subtitle="Example Corp | 2022-01 - Present",
+        bullets=["Built APIs"],
+        compact_summary="Led backend reliability improvements.",
+    )
+
+    assert entry.compact_summary == "Led backend reliability improvements."
+
+
+def test_build_render_model_from_tailored_json_location_includes_country() -> None:
+    profile = {
+        "personal": {
+            "full_name": "Alex Example",
+            "city": "Aurora",
+            "province_state": "CO",
+            "country": "US",
+        }
+    }
+    data = {"title": "Engineer", "summary": "Summary", "skills": {}, "experience": [], "projects": [], "education": ""}
+
+    model = build_render_model_from_tailored_json(data, profile)
+
+    assert model.location == "Aurora, CO, US"
+
+
+def test_build_render_model_from_tailored_json_maps_compact_summary() -> None:
+    profile = {"personal": {"full_name": "Alex Example"}}
+    data = {
+        "title": "Engineer",
+        "summary": "Summary",
+        "skills": {},
+        "experience": [
+            {
+                "header": "Engineer",
+                "subtitle": "Example | 2020-2024",
+                "bullets": ["Built APIs"],
+                "compact_summary": "Improved API reliability.",
+            }
+        ],
+        "projects": [
+            {
+                "header": "Side Project",
+                "subtitle": "Python | 2024",
+                "bullets": ["Built a tool"],
+                "short_summary": "Created automation tooling.",
+            }
+        ],
+        "education": "",
+    }
+
+    model = build_render_model_from_tailored_json(data, profile)
+
+    assert model.experience[0].compact_summary == "Improved API reliability."
+    assert model.projects[0].compact_summary == "Created automation tooling."

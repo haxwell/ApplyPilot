@@ -1,157 +1,192 @@
-# Tailored Resume Generation Pipeline
+# Tailored Resume + PDF Rendering Pipeline
 
-This document describes how ApplyPilot generates a tailored resume artifact from source profile/resume data and a target job description.
+This document defines the current rendering architecture and the contract boundaries between:
 
-## Scope and Entry Point
+1. LLM-tailored JSON
+2. `ResumeRenderModel`
+3. `template.prepare(...)`
+4. `template.build_html(...)`
+5. text-based fallback rendering
 
-Primary runtime path:
+## Runtime Flow
+
+Primary orchestration:
 
 - `src/applypilot/scoring/tailor.py`
-  - `run_tailoring(...)`
   - `tailor_resume(...)`
-  - `assemble_resume_text(...)`
-
-CLI entry:
-
-- `applypilot run tailor`
-- `applypilot tailor`
-
-## Inputs
-
-`run_tailoring(...)` loads:
-
-1. Normalized profile data via `load_profile()` (from `~/.applypilot/resume.json` and settings/profile sources).
-2. Deterministic base resume text via `load_resume_text()`.
-3. Target jobs from DB (`pending_tailor` stage, filtered by score/limit or `target_url`).
-
-Input provenance note:
-
-- `load_resume_text()` typically derives base resume text from canonical `~/.applypilot/resume.json`.
-- If canonical JSON is unavailable, legacy `~/.applypilot/resume.txt` is used as fallback.
-
-For each target job, the tailoring request uses:
-
-- job title
-- company/site
-- location
-- job description text (truncated to 6000 chars in prompt payload)
-
-## Generation Model Contract
-
-`tailor_resume(...)` asks the LLM for **JSON**, not final printable text.
-
-Expected JSON shape includes:
-
-- `title`
-- `summary`
-- `skills`
-- `experience` (list)
-- `projects` (list)
-- `education`
-
-Important current policy:
-
-- The LLM step is quality and relevance focused.
-- It must preserve full profile-company coverage in `experience`.
-- Length fitting is not delegated to the LLM as a page-budget task.
-
-## Retry and Validation Loop
-
-`tailor_resume(...)` runs attempts (`max_retries + 1`) with a fresh chat each attempt.
-
-Per attempt:
-
-1. Parse JSON from model output.
-2. Strip disallowed watchlist skills from generated `skills`.
-3. Run `validate_json_fields(...)`.
-4. Enforce missing-company hard check via `_missing_profile_companies_in_generated_experience(...)`.
-   - If any profile company is missing, this is a hard validation error.
-5. Add warning when no renderable projects exist.
-
-If validation fails:
-
-- retry until attempts exhausted
-- on final failed attempt: still assemble TXT from the last JSON and mark `failed_validation`
-
-If validation passes:
-
-- assemble deterministic resume text
-- optionally run LLM judge (`strict`/`normal`; skipped in `lenient`)
-
-## Deterministic Assembly and Compaction
-
-`assemble_resume_text(...)` turns validated JSON into final text sections:
-
-- header/contact (profile-injected)
-- `SUMMARY`
-- `TECHNICAL SKILLS`
-- `EXPERIENCE`
-- optional `SELECTED EXPERIENCE`
-- optional `PROJECTS`
-- `EDUCATION`
-
-JSON-to-text rendering path:
-
-- `assemble_resume_text(...)` prepares section data and experience compaction state.
-- `_render_resume_lines(...)` emits the actual ordered plain-text lines.
-- Those lines are joined into the final `{prefix}.txt` artifact.
-
-Behavior details:
-
-1. Experience starts from LLM-provided entries (no silent reinsertion of omitted roles).
-2. For matched profile roles, thin entries are enriched from profile highlights before compaction.
-3. A line budget is computed from profile tailoring config:
-   - `tailoring_config.global_rules.max_resume_pages`
-   - `tailoring_config.global_rules.formatting.lines_per_page`
-4. If over budget, oldest roles are moved from `EXPERIENCE` to `SELECTED EXPERIENCE`.
-5. If still over budget, `SELECTED EXPERIENCE` is further compacted (fewer bullets/subtitle removal).
-
-This is where length enforcement occurs.
-
-## Artifact Outputs
-
-For each processed job, `run_tailoring(...)` writes to `~/.applypilot/tailored_resumes`:
-
-- `{prefix}.txt` (assembled resume text)
-- `{prefix}_JOB.txt` (job snapshot)
-- `{prefix}_REPORT.json` (attempt/validator/judge report)
-- `{prefix}.pdf` (only for approved statuses)
-
-PDF generation path:
-
+  - `run_tailoring(...)`
+- `src/applypilot/scoring/pdf_render_model.py`
 - `src/applypilot/scoring/pdf.py`
-  - `convert_to_pdf(...)`
-  - `parse_resume(...)`
-  - `build_html(...)`
-  - `render_pdf(...)` (Playwright Chromium)
+- `src/applypilot/scoring/pdf_templates/`
 
-Approved statuses for PDF conversion:
+High-level flow for approved resumes:
+
+1. LLM returns tailored JSON.
+2. `tailor_resume(...)` validates JSON and stores accepted object in `report["tailored_json"]`.
+3. `run_tailoring(...)` always writes:
+   - `{prefix}.txt`
+   - `{prefix}_JOB.txt`
+   - `{prefix}_REPORT.json`
+4. For approved statuses, PDF generation prefers structured rendering:
+   - `build_render_model_from_tailored_json(...)`
+   - `render_model_to_pdf(...)`
+5. If structured rendering is unavailable or fails, PDF falls back to text parsing:
+   - `convert_to_pdf(txt_path, ...)`
+
+## Contract 1: Tailored JSON
+
+Produced by `tailor_resume(...)` prompt contract in `src/applypilot/scoring/tailor.py`.
+
+Expected shape:
+
+```json
+{
+  "title": "Role Title",
+  "summary": "4-6 tailored sentences.",
+  "skills": {
+    "Languages": "...",
+    "Backend": "..."
+  },
+  "experience": [
+    {
+      "header": "Title at Company",
+      "subtitle": "Tech | Dates",
+      "bullets": ["..."],
+      "compact_summary": "Optional single-sentence compact variant."
+    }
+  ],
+  "projects": [
+    {
+      "header": "Project Name - Description",
+      "subtitle": "Tech | Dates",
+      "bullets": ["..."],
+      "compact_summary": "Optional single-sentence compact variant."
+    }
+  ],
+  "education": "..."
+}
+```
+
+Notes:
+
+- `compact_summary` is optional alternate content.
+  - `default` template ignores it.
+  - `compact` template uses it for Selected Experience entries when those entries are planned as compact.
+- `tailor_resume(...)` puts accepted parsed JSON into `report["tailored_json"]` so downstream PDF generation can avoid reparsing text.
+
+## Contract 2: Tailored JSON -> ResumeRenderModel
+
+Owned by `build_render_model_from_tailored_json(data, profile)` in `src/applypilot/scoring/pdf_render_model.py`.
+
+Mapping rules:
+
+- Header/contact fields come from normalized profile `personal` data:
+  - `name` <- `personal.full_name`
+  - `contact` <- joined `email`, `phone`, `github_url`, `linkedin_url`
+  - `location` <- `_build_location(personal)` using `city`, `province_state`, `country`, `postal_code` (with `location` as fallback)
+- Content fields come from tailored JSON:
+  - `title`, `summary`, `education`
+  - `skills` -> `list[SkillSection]`
+  - `experience`/`projects` -> `list[ResumeEntry]`
+
+Defensive normalization:
+
+- Missing/invalid optional fields become empty values.
+- Bullets are normalized to strings.
+- Entry compact summary is read from first available key:
+  - `compact_summary`, `summary`, `short_summary`
+
+## Contract 3: Template Prepare Phase
+
+In `src/applypilot/scoring/pdf.py`:
+
+```python
+template = get_template(template_name)
+prepared = template.prepare(model)
+html = template.build_html(prepared)
+```
+
+Meaning:
+
+- `ResumeRenderModel` represents shared available content.
+- `template.prepare(...)` is template-owned planning/normalization seam.
+- `template.build_html(...)` renders the prepared object.
+
+Current template behavior:
+
+- `default.prepare(model)` returns `ResumeRenderModel` unchanged.
+- `compact.prepare(model)` performs heuristic layout planning in a template-specific prepared view:
+  - keeps first `N` experience entries as detailed (`N` defaults to 4)
+  - moves remaining entries into compact Selected Experience
+  - preserves order
+  - keeps all projects renderable
+  - supports optional template-local override via `model.render_options["compact_max_detailed_experience"]`
+
+## Contract 4: HTML Generation
+
+Each template module must expose:
+
+- `prepare(...)`
+- `build_html(...) -> str`
+
+Registry:
+
+- `src/applypilot/scoring/pdf_templates/registry.py`
+- Supported names today: `default`, `compact`
+
+`resolve_pdf_template_name(profile, explicit_template=None)` resolves template selection order:
+
+1. explicit argument
+2. `profile["render"]["theme"]`
+3. `profile["tailoring_config"]["pdf_template"]`
+4. `"default"`
+
+Unknown names are handled safely in `run_tailoring(...)`:
+
+- warning logged
+- fallback to `"default"`
+
+## Contract 5: Text Fallback Path
+
+Text fallback stays fully supported and is the resilience path:
+
+1. `convert_to_pdf(text_path, ...)`
+2. `parse_resume(text)` -> section dict
+3. `build_render_model(parsed)` -> `ResumeRenderModel`
+4. template `prepare(...)` -> `build_html(...)`
+5. `render_pdf(...)` via Playwright
+
+Fallback is used when:
+
+- `report["tailored_json"]` is missing, or
+- structured model rendering raises at runtime
+
+This preserves artifact generation even if the structured path breaks.
+
+## Page Count Measurement (Low-Level)
+
+`src/applypilot/scoring/pdf.py` provides measurement helpers:
+
+- `measure_html_page_count(html: str) -> int`
+- `measure_model_page_count(model: ResumeRenderModel, template_name: str = "default") -> int`
+
+These helpers render template HTML to a temporary PDF and return measured page count.
+
+Current status:
+
+- measurement only
+- not used yet to make layout/compaction decisions
+- intended as a future input for template-specific planning in `template.prepare(...)`
+- future compact iterations may combine measurement with retry/tighter layout variants
+
+## Artifacts and Status Behavior
+
+`run_tailoring(...)` always persists text/report artifacts; PDF is produced only for:
 
 - `approved`
 - `approved_with_judge_warning`
 
-## Database Effects
+DB write behavior remains unchanged:
 
-On success (`approved` or `approved_with_judge_warning`):
-
-- store `tailored_resume_path`
-- store `tailored_at`
-- increment `tailor_attempts`
-
-On non-success:
-
-- increment `tailor_attempts`
-- do not update `tailored_resume_path`
-
-## Validation Modes
-
-`validation_mode` affects strictness:
-
-- `strict`: strongest rejection behavior (plus judge required)
-- `normal`: balanced default
-- `lenient`: lighter checks; judge skipped
-
-See:
-
-- `src/applypilot/scoring/validator.py`
-- `src/applypilot/scoring/tailor.py` (`tailor_resume`)
+- approved statuses update `tailored_resume_path` and `tailored_at`
+- all statuses increment `tailor_attempts`

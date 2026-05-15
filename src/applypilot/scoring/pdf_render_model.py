@@ -17,6 +17,8 @@ class ResumeEntry:
     title: str
     subtitle: str = ""
     bullets: list[str] = field(default_factory=list)
+    compact_summary: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -30,6 +32,7 @@ class ResumeRenderModel:
     experience: list[ResumeEntry] = field(default_factory=list)
     projects: list[ResumeEntry] = field(default_factory=list)
     education: str = ""
+    render_options: dict[str, Any] = field(default_factory=dict)
 
 
 def _normalize_bullet_text(bullet: Any) -> str:
@@ -56,6 +59,13 @@ def _normalize_entry(entry: Any) -> ResumeEntry | None:
 
     title = str(entry.get("header", "")).strip()
     subtitle = str(entry.get("subtitle", "")).strip()
+    compact_summary = ""
+    for key in ("compact_summary", "summary", "short_summary"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            compact_summary = value.strip()
+            break
+
     raw_bullets = entry.get("bullets", [])
     bullets: list[str] = []
     if isinstance(raw_bullets, list):
@@ -67,7 +77,33 @@ def _normalize_entry(entry: Any) -> ResumeEntry | None:
     if not title and not subtitle and not bullets:
         return None
 
-    return ResumeEntry(title=title, subtitle=subtitle, bullets=bullets)
+    return ResumeEntry(
+        title=title,
+        subtitle=subtitle,
+        bullets=bullets,
+        compact_summary=compact_summary,
+    )
+
+
+def _build_location(personal: dict) -> str:
+    city = str(personal.get("city", "")).strip()
+    state = str(personal.get("province_state", "")).strip()
+    country = str(personal.get("country", "")).strip()
+    postal_code = str(personal.get("postal_code", "")).strip()
+
+    city_state = ", ".join(part for part in (city, state) if part)
+    if city_state and country:
+        return f"{city_state}, {country}"
+    if city_state:
+        return city_state
+    if country and postal_code:
+        return f"{postal_code}, {country}"
+    if country:
+        return country
+    if postal_code:
+        return postal_code
+
+    return str(personal.get("location", "")).strip()
 
 
 def build_render_model_from_tailored_json(data: dict, profile: dict) -> ResumeRenderModel:
@@ -77,7 +113,7 @@ def build_render_model_from_tailored_json(data: dict, profile: dict) -> ResumeRe
     model = ResumeRenderModel()
 
     model.name = str(personal.get("full_name", "")).strip()
-    model.location = str(personal.get("location", "")).strip()
+    model.location = _build_location(personal)
     model.title = str(data.get("title", "")).strip()
     model.summary = str(data.get("summary", "")).strip()
     model.education = str(data.get("education", "")).strip()

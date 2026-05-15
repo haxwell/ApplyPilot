@@ -5,6 +5,8 @@ and exports to PDF using headless Chromium via Playwright.
 """
 
 import logging
+import re
+import tempfile
 from pathlib import Path
 
 from applypilot.config import TAILORED_DIR
@@ -251,6 +253,40 @@ def render_model_to_pdf(
     render_pdf(html, str(out))
     log.info("PDF generated: %s", out)
     return out
+
+
+def _count_pdf_pages(pdf_bytes: bytes) -> int:
+    """Count pages in a PDF byte stream.
+
+    This uses a lightweight token count that is reliable for Chromium-generated
+    PDFs used by this module.
+    """
+
+    return len(re.findall(rb"/Type\s*/Page\b", pdf_bytes))
+
+
+def measure_html_page_count(html: str) -> int:
+    """Render HTML to a temporary PDF and return its page count."""
+
+    with tempfile.TemporaryDirectory(prefix="applypilot_pdf_measure_") as tmp_dir:
+        tmp_pdf = Path(tmp_dir) / "measure.pdf"
+        render_pdf(html, str(tmp_pdf))
+        pdf_bytes = tmp_pdf.read_bytes()
+
+    page_count = _count_pdf_pages(pdf_bytes)
+    if page_count < 1:
+        raise RuntimeError("Unable to measure PDF page count from rendered HTML.")
+    return page_count
+
+
+def measure_model_page_count(
+    model: ResumeRenderModel,
+    template_name: str = "default",
+) -> int:
+    """Measure rendered page count for a resume model + template."""
+
+    html = build_html_for_resume(model, template_name=template_name)
+    return measure_html_page_count(html)
 
 
 # ── PDF Renderer ─────────────────────────────────────────────────────────

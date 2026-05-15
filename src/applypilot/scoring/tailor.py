@@ -283,6 +283,21 @@ def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
     Avoid:
     "Enhanced deployment efficiency through robust automation and comprehensive testing."
 
+    ## COMPACT SUMMARY
+
+    For each experience entry and relevant project entry, provide compact_summary.
+
+    compact_summary should:
+    - be one concise sentence
+    - preserve real evidence from the source
+    - avoid new claims
+    - include the strongest role-specific signal
+    - preserve exact metrics when used
+    - be suitable for a compact/selected experience layout
+
+    Do not use compact_summary to replace bullets.
+    Do not omit bullets because compact_summary exists.
+
     ## BULLET STYLE
 
     Use short, direct engineering language.
@@ -435,7 +450,8 @@ def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
             "bullet 2",
             "bullet 3",
             "bullet 4"
-          ]
+          ],
+          "compact_summary": "One concise sentence summarizing the role for compact layouts."
         }}
       ],
       "projects": [
@@ -445,7 +461,8 @@ def _build_tailor_prompt(profile: dict, resume_text: str | None = None) -> str:
           "bullets": [
             "bullet 1",
             "bullet 2"
-          ]
+          ],
+          "compact_summary": "One concise sentence summarizing the project for compact layouts."
         }}
       ],
       "education": "{education_block}"
@@ -1180,6 +1197,7 @@ def tailor_resume(
                 continue
             # Last attempt — assemble whatever we got
             tailored = assemble_resume_text(data, profile, job=job)
+            report["tailored_json"] = data
             report["status"] = "failed_validation"
             return tailored, report
 
@@ -1189,6 +1207,7 @@ def tailor_resume(
         # Layer 2: LLM judge (catches subtle fabrication) — skipped in lenient mode
         if validation_mode == "lenient":
             report["judge"] = {"verdict": "SKIPPED", "passed": True, "issues": "none"}
+            report["tailored_json"] = data
             report["status"] = "approved"
             return tailored, report
 
@@ -1202,10 +1221,12 @@ def tailor_resume(
                 if validation_mode != "lenient":
                     continue
             # Accept best attempt on last retry (all modes) or if lenient
+            report["tailored_json"] = data
             report["status"] = "approved_with_judge_warning"
             return tailored, report
 
         # Both passed
+        report["tailored_json"] = data
         report["status"] = "approved"
         return tailored, report
 
@@ -1290,6 +1311,19 @@ def run_tailoring(
     completed = 0
     results: list[dict] = []
     stats: dict[str, int] = {"approved": 0, "failed_validation": 0, "failed_judge": 0, "error": 0}
+    from applypilot.scoring.pdf import resolve_pdf_template_name
+    from applypilot.scoring.pdf_templates.registry import get_template
+
+    pdf_template_name = resolve_pdf_template_name(profile)
+    try:
+        get_template(pdf_template_name)
+    except ValueError as exc:
+        log.warning(
+            "Configured PDF template '%s' is invalid (%s). Falling back to 'default'.",
+            pdf_template_name,
+            exc,
+        )
+        pdf_template_name = "default"
 
     for job in jobs:
         completed += 1
@@ -1328,8 +1362,36 @@ def run_tailoring(
             status = report["status"]
             if status in ("approved", "approved_with_judge_warning"):
                 try:
-                    from applypilot.scoring.pdf import convert_to_pdf
-                    generated_pdf = convert_to_pdf(txt_path)
+                    from applypilot.scoring.pdf import convert_to_pdf, render_model_to_pdf
+                    from applypilot.scoring.pdf_render_model import build_render_model_from_tailored_json
+
+                    generated_pdf = txt_path.with_suffix(".pdf")
+                    tailored_json = report.get("tailored_json")
+                    if isinstance(tailored_json, dict):
+                        try:
+                            model = build_render_model_from_tailored_json(tailored_json, profile)
+                            generated_pdf = render_model_to_pdf(
+                                model,
+                                generated_pdf,
+                                template_name=pdf_template_name,
+                            )
+                        except Exception as structured_exc:
+                            log.warning(
+                                "Structured PDF render failed for %s, falling back to text-based render: %s",
+                                txt_path,
+                                structured_exc,
+                            )
+                            generated_pdf = convert_to_pdf(
+                                txt_path,
+                                output_path=generated_pdf,
+                                template_name=pdf_template_name,
+                            )
+                    else:
+                        generated_pdf = convert_to_pdf(
+                            txt_path,
+                            output_path=generated_pdf,
+                            template_name=pdf_template_name,
+                        )
                     pdf_path = str(generated_pdf)
                     if not generated_pdf.exists() or generated_pdf.stat().st_size == 0:
                         raise RuntimeError(f"Generated PDF missing or empty: {generated_pdf}")

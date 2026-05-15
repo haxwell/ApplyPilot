@@ -12,6 +12,7 @@ from applypilot.scoring.tailor import (
     _strip_disallowed_watchlist_skills,
     assemble_resume_text,
 )
+from applypilot.scoring.validator import validate_json_fields
 
 
 class TestNormalizeBullet:
@@ -140,6 +141,36 @@ class TestAssembleResumeTextWithJsonBullets:
         assert "Built API handling 1M requests/day" in result
         assert "Led team" in result
         assert "Designed system" in result
+
+    def test_compact_summary_not_rendered_in_assembled_text(self, sample_profile):
+        """compact_summary should not appear in assembled text output yet."""
+        data = {
+            "title": "Software Engineer",
+            "summary": "Test summary",
+            "skills": {"Languages": "Python"},
+            "experience": [
+                {
+                    "header": "Engineer | TestCorp | 2020-2023",
+                    "subtitle": "Backend | 2020-2023",
+                    "bullets": ["Built API handling 1M requests/day"],
+                    "compact_summary": "Built backend APIs and improved reliability.",
+                }
+            ],
+            "projects": [
+                {
+                    "header": "Project X - AI Platform",
+                    "subtitle": "Python, AI | 2023",
+                    "bullets": ["Built ML pipeline"],
+                    "compact_summary": "Built model experimentation tooling.",
+                }
+            ],
+            "education": "BS Computer Science",
+        }
+
+        result = assemble_resume_text(data, sample_profile)
+
+        assert "Built backend APIs and improved reliability." not in result
+        assert "Built model experimentation tooling." not in result
 
     def test_projects_with_json_bullets(self, sample_profile):
         """Project bullets with JSON should be cleaned in final output."""
@@ -467,3 +498,39 @@ class TestMissingCompanyDetection:
         missing = _missing_profile_companies_in_generated_experience(data, profile)
 
         assert missing == ["Beta Systems"]
+
+
+class TestValidationCompactSummary:
+    def test_validate_json_fields_accepts_compact_summary_fields(self):
+        profile = {
+            "work": [{"company": "Acme Corp"}],
+            "education": [{"institution": "State University"}],
+            "job_context": {"title": "Senior Software Engineer"},
+        }
+        data = {
+            "title": "Senior Software Engineer",
+            "summary": "Experienced backend engineer building scalable services.",
+            "skills": {"Languages": "Python, Java"},
+            "experience": [
+                {
+                    "header": "Senior Software Engineer",
+                    "subtitle": "Acme Corp | 2020-2024",
+                    "bullets": ["Built APIs", "Improved reliability"],
+                    "compact_summary": "Built scalable backend services and improved reliability.",
+                }
+            ],
+            "projects": [
+                {
+                    "header": "Internal Platform",
+                    "subtitle": "Python | 2023",
+                    "bullets": ["Built tooling"],
+                    "compact_summary": "Built internal platform tooling.",
+                }
+            ],
+            "education": "State University | BS Computer Science",
+        }
+
+        result = validate_json_fields(data, profile, mode="normal")
+
+        assert result["passed"] is True
+        assert result["errors"] == []

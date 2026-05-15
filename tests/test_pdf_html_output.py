@@ -224,12 +224,78 @@ def test_compact_template_ignores_compact_summary_and_renders_bullets(tmp_path: 
 
 
 def test_compact_prepare_returns_template_view() -> None:
-    model = ResumeRenderModel(name="Alex Example", title="Senior Engineer")
+    model = ResumeRenderModel(
+        name="Alex Example",
+        title="Senior Engineer",
+        experience=[ResumeEntry(title="Senior Engineer", bullets=["Built APIs"])],
+        projects=[ResumeEntry(title="TribeApp", bullets=["Built product features"])],
+    )
 
     prepared = compact_template.prepare(model)
 
     assert isinstance(prepared, compact_template.CompactTemplateView)
     assert prepared.model == model
+    assert prepared.detailed_experience == model.experience
+    assert prepared.compact_experience == []
+    assert prepared.projects_to_render == model.projects
+    assert prepared.page_target is None
+
+
+def _experience_entries(count: int) -> list[ResumeEntry]:
+    return [
+        ResumeEntry(
+            title=f"Role {idx + 1}",
+            subtitle=f"Company {idx + 1} | 20{10 + idx}-20{11 + idx}",
+            bullets=[f"Bullet {idx + 1}"],
+        )
+        for idx in range(count)
+    ]
+
+
+def test_compact_prepare_with_three_entries_keeps_all_detailed() -> None:
+    model = ResumeRenderModel(name="Alex Example", title="Senior Engineer", experience=_experience_entries(3))
+
+    prepared = compact_template.prepare(model)
+
+    assert [entry.title for entry in prepared.detailed_experience] == ["Role 1", "Role 2", "Role 3"]
+    assert prepared.compact_experience == []
+
+
+def test_compact_prepare_with_six_entries_keeps_first_four_detailed_and_moves_last_two() -> None:
+    model = ResumeRenderModel(name="Alex Example", title="Senior Engineer", experience=_experience_entries(6))
+
+    prepared = compact_template.prepare(model)
+
+    assert [entry.title for entry in prepared.detailed_experience] == ["Role 1", "Role 2", "Role 3", "Role 4"]
+    assert [entry.title for entry in prepared.compact_experience] == ["Role 5", "Role 6"]
+
+
+def test_compact_prepare_invalid_render_option_falls_back_to_default() -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        title="Senior Engineer",
+        experience=_experience_entries(6),
+        render_options={"compact_max_detailed_experience": "bad-value"},
+    )
+
+    prepared = compact_template.prepare(model)
+
+    assert [entry.title for entry in prepared.detailed_experience] == ["Role 1", "Role 2", "Role 3", "Role 4"]
+    assert [entry.title for entry in prepared.compact_experience] == ["Role 5", "Role 6"]
+
+
+def test_compact_prepare_render_option_two_keeps_first_two_detailed() -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        title="Senior Engineer",
+        experience=_experience_entries(6),
+        render_options={"compact_max_detailed_experience": 2},
+    )
+
+    prepared = compact_template.prepare(model)
+
+    assert [entry.title for entry in prepared.detailed_experience] == ["Role 1", "Role 2"]
+    assert [entry.title for entry in prepared.compact_experience] == ["Role 3", "Role 4", "Role 5", "Role 6"]
 
 
 def test_compact_build_html_uses_prepared_view_and_preserves_content() -> None:
@@ -255,3 +321,76 @@ def test_compact_build_html_uses_prepared_view_and_preserves_content() -> None:
     assert "Experience" in html
     assert "Education" in html
     assert "Built APIs" in html
+    assert "Selected Experience" not in html
+
+
+def test_compact_build_html_with_prepare_on_six_entries_includes_selected_experience() -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        title="Senior Engineer",
+        experience=_experience_entries(6),
+    )
+
+    html = compact_template.build_html(compact_template.prepare(model))
+
+    assert "Experience" in html
+    assert "Selected Experience" in html
+    assert "Role 1" in html
+    assert "Role 4" in html
+    assert "Role 5" in html
+    assert "Role 6" in html
+
+
+def test_compact_build_html_renders_selected_experience_when_compact_entries_provided() -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        title="Senior Engineer",
+        summary="Built and shipped reliable systems.",
+        contact="alex@example.com | 555-111-2222",
+        experience=[ResumeEntry(title="Senior Engineer", bullets=["Built APIs"])],
+        education="State University | BS Computer Science | 2018",
+    )
+    view = compact_template.CompactTemplateView(
+        model=model,
+        detailed_experience=model.experience,
+        compact_experience=[
+            ResumeEntry(
+                title="Staff Engineer at Example Co",
+                subtitle="2019 - 2021",
+                bullets=["Led platform migration"],
+                compact_summary="Led platform migration and reliability improvements.",
+            )
+        ],
+        projects_to_render=[],
+        page_target=None,
+    )
+
+    html = compact_template.build_html(view)
+
+    assert "Selected Experience" in html
+    assert "Staff Engineer at Example Co" in html
+    assert "Led platform migration and reliability improvements." in html
+
+
+def test_compact_build_html_selected_experience_falls_back_to_bullets_when_no_compact_summary() -> None:
+    model = ResumeRenderModel(name="Alex Example", title="Senior Engineer")
+    view = compact_template.CompactTemplateView(
+        model=model,
+        detailed_experience=[],
+        compact_experience=[
+            ResumeEntry(
+                title="Engineer at Example Co",
+                subtitle="2017 - 2019",
+                bullets=["Built API gateway", "Reduced incident MTTR"],
+                compact_summary="",
+            )
+        ],
+        projects_to_render=[],
+        page_target=None,
+    )
+
+    html = compact_template.build_html(view)
+
+    assert "Selected Experience" in html
+    assert "Engineer at Example Co" in html
+    assert "Built API gateway Reduced incident MTTR" in html

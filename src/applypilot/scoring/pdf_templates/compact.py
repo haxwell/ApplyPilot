@@ -2,7 +2,9 @@
 
 from dataclasses import dataclass
 
-from applypilot.scoring.pdf_render_model import ResumeRenderModel
+from applypilot.scoring.pdf_render_model import ResumeEntry, ResumeRenderModel
+
+_DEFAULT_MAX_DETAILED_EXPERIENCE = 4
 
 
 @dataclass
@@ -14,6 +16,23 @@ class CompactTemplateView:
     """
 
     model: ResumeRenderModel
+    detailed_experience: list[ResumeEntry]
+    compact_experience: list[ResumeEntry]
+    projects_to_render: list[ResumeEntry]
+    page_target: int | None = None
+
+
+def _resolve_max_detailed_experience(model: ResumeRenderModel) -> int:
+    raw = model.render_options.get("compact_max_detailed_experience")
+    if isinstance(raw, bool):
+        return _DEFAULT_MAX_DETAILED_EXPERIENCE
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_DETAILED_EXPERIENCE
+    if parsed < 1:
+        return _DEFAULT_MAX_DETAILED_EXPERIENCE
+    return parsed
 
 
 def prepare(model: ResumeRenderModel) -> CompactTemplateView:
@@ -23,7 +42,33 @@ def prepare(model: ResumeRenderModel) -> CompactTemplateView:
     a compact-template-specific prepared view.
     """
 
-    return CompactTemplateView(model=model)
+    max_detailed = _resolve_max_detailed_experience(model)
+    detailed_experience = list(model.experience[:max_detailed])
+    compact_experience = list(model.experience[max_detailed:])
+
+    return CompactTemplateView(
+        model=model,
+        detailed_experience=detailed_experience,
+        compact_experience=compact_experience,
+        projects_to_render=model.projects,
+        page_target=None,
+    )
+
+
+def _build_compact_entry_summary(entry: ResumeEntry) -> tuple[str, bool]:
+    compact_summary = entry.compact_summary.strip()
+    if compact_summary:
+        return compact_summary, False
+
+    fallback_parts = [bullet.strip() for bullet in entry.bullets[:2] if bullet.strip()]
+    if fallback_parts:
+        return " ".join(fallback_parts), False
+
+    subtitle = entry.subtitle.strip()
+    if subtitle:
+        return subtitle, True
+
+    return "", False
 
 
 def build_html(view: CompactTemplateView) -> str:
@@ -40,19 +85,37 @@ def build_html(view: CompactTemplateView) -> str:
 
     # Experience
     exp_html = ""
-    if resume.experience:
+    if view.detailed_experience:
         items = ""
-        for entry in resume.experience:
+        for entry in view.detailed_experience:
             bullets = "".join(f"<li>{bullet}</li>" for bullet in entry.bullets)
             subtitle = f'<div class="entry-subtitle">{entry.subtitle}</div>' if entry.subtitle else ""
             items += f'<div class="entry"><div class="entry-title">{entry.title}</div>{subtitle}<ul>{bullets}</ul></div>'
         exp_html = f'<div class="section"><div class="section-title">Experience</div>{items}</div>'
 
+    # Selected Experience (compact entries)
+    selected_exp_html = ""
+    if view.compact_experience:
+        items = ""
+        for entry in view.compact_experience:
+            summary, used_subtitle_as_summary = _build_compact_entry_summary(entry)
+            subtitle = ""
+            if entry.subtitle and not used_subtitle_as_summary:
+                subtitle = f'<span class="compact-subtitle">{entry.subtitle}</span>'
+            summary_html = f'<div class="compact-summary">{summary}</div>' if summary else ""
+            items += (
+                '<div class="compact-entry">'
+                f'<div class="compact-title">{entry.title}{subtitle}</div>'
+                f"{summary_html}"
+                "</div>"
+            )
+        selected_exp_html = f'<div class="section"><div class="section-title">Selected Experience</div>{items}</div>'
+
     # Projects
     proj_html = ""
-    if resume.projects:
+    if view.projects_to_render:
         items = ""
-        for entry in resume.projects:
+        for entry in view.projects_to_render:
             bullets = "".join(f"<li>{bullet}</li>" for bullet in entry.bullets)
             subtitle = f'<div class="entry-subtitle">{entry.subtitle}</div>' if entry.subtitle else ""
             items += f'<div class="entry"><div class="entry-title">{entry.title}</div>{subtitle}<ul>{bullets}</ul></div>'
@@ -152,6 +215,23 @@ body {{
     color: #444;
     margin-bottom: 1px;
 }}
+.compact-entry {{
+    margin-bottom: 3px;
+    line-height: 1.25;
+}}
+.compact-title {{
+    font-size: 8.8pt;
+    font-weight: 700;
+}}
+.compact-subtitle {{
+    font-weight: 400;
+    color: #444;
+    margin-left: 4px;
+}}
+.compact-summary {{
+    font-size: 8.6pt;
+    color: #222;
+}}
 ul {{
     margin-left: 12px;
     padding: 0;
@@ -176,6 +256,7 @@ li {{
 {summary_html}
 {skills_html}
 {exp_html}
+{selected_exp_html}
 {proj_html}
 {edu_html}
 </body>
