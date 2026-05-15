@@ -133,6 +133,7 @@ Current template behavior:
   - measures full rendered resume HTML page count
   - progressively moves later entries into Selected Experience only as needed to fit page target
   - preserves order and keeps projects/summary/skills/education renderable
+  - uses a roomier polished two-page visual style so page measurement/compaction has meaningful effect
 - `classic.prepare(model)` is the baseline/simple renderer:
   - no measurement-aware planning
   - all experience entries remain detailed

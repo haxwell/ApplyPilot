@@ -134,6 +134,37 @@ def _build_compact_entry_summary(entry: ResumeEntry) -> tuple[str, bool]:
     return "", False
 
 
+def _split_subtitle(subtitle: str) -> tuple[str, str]:
+    parts = [part.strip() for part in subtitle.split("|") if part.strip()]
+    if not parts:
+        return "", ""
+    if len(parts) == 1:
+        return "", parts[0]
+    return parts[0], " | ".join(parts[1:])
+
+
+def _build_skill_lines(skills: list) -> list[str]:
+    seen: set[str] = set()
+    flattened: list[str] = []
+    for skill in skills:
+        for raw in str(skill.value).split(","):
+            token = raw.strip()
+            key = token.lower()
+            if not token or key in seen:
+                continue
+            seen.add(key)
+            flattened.append(token)
+
+    if not flattened:
+        return []
+
+    lines: list[str] = []
+    chunk_size = 6
+    for idx in range(0, len(flattened), chunk_size):
+        lines.append(" • ".join(flattened[idx:idx + chunk_size]))
+    return lines
+
+
 def build_html(view: ProfessionalCompactTemplateView) -> str:
     """Build professional compact resume HTML from a prepared view."""
     resume = view.model
@@ -141,20 +172,21 @@ def build_html(view: ProfessionalCompactTemplateView) -> str:
     # Skills
     skills_html = ""
     if resume.skills:
-        rows = ""
-        for skill in resume.skills:
-            rows += f'<div class="skill-row"><span class="skill-cat">{skill.category}:</span> {skill.value}</div>\n'
-        skills_html = f'<div class="section"><div class="section-title">Technical Skills</div>{rows}</div>'
+        rows = "".join(f'<div class="skill-line">{line}</div>' for line in _build_skill_lines(resume.skills))
+        skills_html = f'<section class="section"><h2 class="section-title">Technical Skills</h2>{rows}</section>'
 
     # Experience
     exp_html = ""
     if view.detailed_experience:
         items = ""
         for entry in view.detailed_experience:
+            company, detail_line = _split_subtitle(entry.subtitle)
+            heading = f"{company} - {entry.title}" if company else entry.title
+            subtitle = f'<div class="entry-subtitle">{detail_line}</div>' if detail_line else ""
             bullets = "".join(f"<li>{bullet}</li>" for bullet in entry.bullets)
-            subtitle = f'<div class="entry-subtitle">{entry.subtitle}</div>' if entry.subtitle else ""
-            items += f'<div class="entry"><div class="entry-title">{entry.title}</div>{subtitle}<ul>{bullets}</ul></div>'
-        exp_html = f'<div class="section"><div class="section-title">Experience</div>{items}</div>'
+            bullet_list = f'<ul class="entry-bullets">{bullets}</ul>' if bullets else ""
+            items += f'<article class="entry"><h3 class="entry-title">{heading}</h3>{subtitle}{bullet_list}</article>'
+        exp_html = f'<section class="section"><h2 class="section-title">Experience</h2>{items}</section>'
 
     # Selected Experience (compact entries)
     selected_exp_html = ""
@@ -162,44 +194,51 @@ def build_html(view: ProfessionalCompactTemplateView) -> str:
         items = ""
         for entry in view.compact_experience:
             summary, used_subtitle_as_summary = _build_compact_entry_summary(entry)
-            subtitle = ""
-            if entry.subtitle and not used_subtitle_as_summary:
-                subtitle = f'<span class="compact-subtitle">{entry.subtitle}</span>'
-            summary_html = f'<div class="compact-summary">{summary}</div>' if summary else ""
+            company, detail_line = _split_subtitle(entry.subtitle)
+            company_text = company if company else entry.title
+            role_text = entry.title if company else ""
+            role_suffix = f" - {role_text}" if role_text else ""
+            detail_suffix = f" | {detail_line}" if detail_line and not used_subtitle_as_summary else ""
+            summary_html = f'<p class="compact-summary">{summary}</p>' if summary else ""
             items += (
-                '<div class="compact-entry">'
-                f'<div class="compact-title">{entry.title}{subtitle}</div>'
+                '<article class="compact-entry">'
+                f'<div class="compact-meta"><strong class="compact-company">{company_text}{role_suffix}</strong>'
+                f'<span class="compact-date">{detail_suffix}</span></div>'
                 f"{summary_html}"
-                "</div>"
+                "</article>"
             )
-        selected_exp_html = f'<div class="section"><div class="section-title">Selected Experience</div>{items}</div>'
+        selected_exp_html = f'<section class="section"><h2 class="section-title">Selected Experience</h2>{items}</section>'
 
     # Projects
     proj_html = ""
     if view.projects_to_render:
         items = ""
         for entry in view.projects_to_render:
+            company, detail_line = _split_subtitle(entry.subtitle)
+            heading = f"{company} - {entry.title}" if company else entry.title
+            subtitle = f'<div class="entry-subtitle">{detail_line}</div>' if detail_line else ""
             bullets = "".join(f"<li>{bullet}</li>" for bullet in entry.bullets)
-            subtitle = f'<div class="entry-subtitle">{entry.subtitle}</div>' if entry.subtitle else ""
-            items += f'<div class="entry"><div class="entry-title">{entry.title}</div>{subtitle}<ul>{bullets}</ul></div>'
-        proj_html = f'<div class="section"><div class="section-title">Projects</div>{items}</div>'
+            bullet_list = f'<ul class="entry-bullets">{bullets}</ul>' if bullets else ""
+            items += f'<article class="entry"><h3 class="entry-title">{heading}</h3>{subtitle}{bullet_list}</article>'
+        proj_html = f'<section class="section"><h2 class="section-title">Projects</h2>{items}</section>'
 
     # Education
     edu_html = ""
     if resume.education:
-        edu_html = f'<div class="section"><div class="section-title">Education</div><div class="edu">{resume.education}</div></div>'
+        edu_html = f'<section class="section"><h2 class="section-title">Education</h2><p class="edu">{resume.education}</p></section>'
 
     # Summary
     summary_html = ""
     if resume.summary:
-        summary_html = f'<div class="section"><div class="section-title">Summary</div><div class="summary">{resume.summary}</div></div>'
+        summary_html = f'<section class="section"><h2 class="section-title">Summary</h2><p class="summary">{resume.summary}</p></section>'
 
     # Contact line parsing
     contact_parts = [p.strip() for p in resume.contact.split("|")] if resume.contact else []
-    contact_html = " | ".join(contact_parts)
+    if resume.location:
+        contact_parts.insert(0, resume.location)
+    contact_html = " • ".join(part for part in contact_parts if part)
 
-    # Location line (may be empty)
-    location_html = f'<div class="location">{resume.location}</div>' if resume.location else ""
+    header_contact_html = f'<div class="contact">{contact_html}</div>' if contact_html else ""
 
     return f"""<!DOCTYPE html>
 <html>
@@ -208,7 +247,7 @@ def build_html(view: ProfessionalCompactTemplateView) -> str:
 <style>
 @page {{
     size: letter;
-    margin: 0.25in 0.35in;
+    margin: 0.68in 0.7in;
 }}
 * {{
     margin: 0;
@@ -216,111 +255,113 @@ def build_html(view: ProfessionalCompactTemplateView) -> str:
     box-sizing: border-box;
 }}
 body {{
-    font-family: Arial, sans-serif;
-    font-size: 9pt;
-    line-height: 1.25;
-    color: #111;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 11pt;
+    line-height: 1.42;
+    color: #111111;
+}}
+.page {{
+    max-width: 6.8in;
+    margin: 0 auto;
 }}
 .header {{
-    margin-bottom: 3px;
-    padding-bottom: 2px;
-    border-bottom: 1px solid #333;
+    margin-bottom: 16px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #222222;
 }}
 .name {{
-    font-size: 14pt;
+    font-size: 24pt;
     font-weight: 700;
-}}
-.title {{
-    font-size: 9.5pt;
-    margin-top: 1px;
-}}
-.location {{
-    font-size: 8.5pt;
-    color: #444;
+    letter-spacing: 0.2px;
 }}
 .contact {{
-    font-size: 8.5pt;
-    color: #333;
-    margin-top: 1px;
+    margin-top: 6px;
+    font-size: 10.4pt;
+    color: #303030;
 }}
 .section {{
-    margin-top: 4px;
+    margin-top: 16px;
 }}
 .section-title {{
-    font-size: 9pt;
+    font-size: 14.5pt;
     font-weight: 700;
     text-transform: uppercase;
-    border-bottom: 1px solid #333;
-    margin-bottom: 2px;
-    padding-bottom: 1px;
+    letter-spacing: 1.1px;
+    margin-bottom: 8px;
 }}
 .summary {{
-    font-size: 8.8pt;
-    line-height: 1.3;
+    font-size: 11pt;
+    line-height: 1.45;
+    color: #222222;
 }}
-.skill-row {{
-    font-size: 8.8pt;
-    line-height: 1.2;
-}}
-.skill-cat {{
-    font-weight: 700;
+.skill-line {{
+    font-size: 10.8pt;
+    line-height: 1.38;
+    color: #1c1c1c;
+    margin-bottom: 2px;
 }}
 .entry {{
-    margin-bottom: 3px;
+    margin-bottom: 14px;
     break-inside: avoid;
 }}
 .entry-title {{
     font-weight: 700;
-    font-size: 9pt;
+    font-size: 11.4pt;
+    line-height: 1.3;
 }}
 .entry-subtitle {{
-    font-size: 8.4pt;
-    color: #444;
-    margin-bottom: 1px;
+    margin-top: 2px;
+    font-size: 10.2pt;
+    font-style: italic;
+    color: #444444;
 }}
-.compact-entry {{
-    margin-bottom: 3px;
-    line-height: 1.25;
-}}
-.compact-title {{
-    font-size: 8.8pt;
-    font-weight: 700;
-}}
-.compact-subtitle {{
-    font-weight: 400;
-    color: #444;
-    margin-left: 4px;
-}}
-.compact-summary {{
-    font-size: 8.6pt;
-    color: #222;
-}}
-ul {{
-    margin-left: 12px;
+.entry-bullets {{
+    margin: 6px 0 0 24px;
     padding: 0;
 }}
-li {{
-    font-size: 8.8pt;
-    margin-bottom: 1px;
-    line-height: 1.25;
+.entry-bullets li {{
+    margin-bottom: 4px;
+    font-size: 10.9pt;
+    line-height: 1.42;
+}}
+.compact-entry {{
+    margin-bottom: 10px;
+}}
+.compact-meta {{
+    font-size: 10.7pt;
+    line-height: 1.36;
+}}
+.compact-company {{
+    font-weight: 700;
+}}
+.compact-date {{
+    color: #454545;
+}}
+.compact-summary {{
+    margin-top: 2px;
+    font-size: 10.8pt;
+    line-height: 1.4;
+    color: #222222;
 }}
 .edu {{
-    font-size: 8.8pt;
+    font-size: 10.8pt;
+    line-height: 1.38;
+    color: #1f1f1f;
 }}
 </style>
 </head>
 <body>
-<div class="header">
-    <div class="name">{resume.name}</div>
-    <div class="title">{resume.title}</div>
-    {location_html}
-    <div class="contact">{contact_html}</div>
-</div>
+<div class="page">
+<header class="header">
+    <h1 class="name">{resume.name}</h1>
+    {header_contact_html}
+</header>
 {summary_html}
 {skills_html}
 {exp_html}
 {selected_exp_html}
 {proj_html}
 {edu_html}
+</div>
 </body>
 </html>"""

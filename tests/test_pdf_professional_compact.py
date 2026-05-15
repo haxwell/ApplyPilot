@@ -109,3 +109,84 @@ def test_professional_compact_build_html_renders_selected_experience() -> None:
     assert "Selected Experience" in html
     assert "Engineer at Example Co" in html
     assert "Built and stabilized backend APIs." in html
+
+
+def test_professional_compact_build_html_renders_polished_header_and_sections() -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        title="Senior Engineer",
+        location="Denver, CO",
+        contact="alex@example.com | 555-111-2222 | github.com/alex",
+        summary="Built and shipped reliable systems.",
+        education="State University | BS Computer Science | 2018",
+    )
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[],
+        compact_experience=[],
+        projects_to_render=[],
+    )
+
+    html = professional_compact.build_html(view)
+
+    assert '<h1 class="name">Alex Example</h1>' in html
+    assert "Denver, CO • alex@example.com • 555-111-2222 • github.com/alex" in html
+    assert '<h2 class="section-title">Summary</h2>' in html
+    assert '<h2 class="section-title">Education</h2>' in html
+    assert '<div class="title">' not in html
+
+
+def test_professional_compact_build_html_renders_detailed_and_compact_experience_content() -> None:
+    model = ResumeRenderModel(name="Alex Example", contact="alex@example.com")
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[
+            ResumeEntry(
+                title="Senior Software Engineer",
+                subtitle="Scale AI | Nov 2024 - Present | Remote",
+                bullets=["Led backend architecture improvements."],
+            )
+        ],
+        compact_experience=[
+            ResumeEntry(
+                title="Software Engineer",
+                subtitle="Example Corp | 2021 - 2023",
+                bullets=["Built APIs", "Reduced MTTR"],
+                compact_summary="Built API services and improved production reliability.",
+            )
+        ],
+        projects_to_render=[],
+    )
+
+    html = professional_compact.build_html(view)
+
+    assert "Scale AI - Senior Software Engineer" in html
+    assert "Nov 2024 - Present | Remote" in html
+    assert "Led backend architecture improvements." in html
+    assert "Selected Experience" in html
+    assert "Example Corp - Software Engineer" in html
+    assert "2021 - 2023" in html
+    assert "Built API services and improved production reliability." in html
+
+
+def test_professional_compact_build_html_renders_projects_in_experience_style() -> None:
+    model = ResumeRenderModel(name="Alex Example", contact="alex@example.com")
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[],
+        compact_experience=[],
+        projects_to_render=[
+            ResumeEntry(
+                title="TribeApp Platform",
+                subtitle="Personal Project | 2023 - 2024",
+                bullets=["Designed backend service APIs."],
+            )
+        ],
+    )
+
+    html = professional_compact.build_html(view)
+
+    assert '<h2 class="section-title">Projects</h2>' in html
+    assert "Personal Project - TribeApp Platform" in html
+    assert "2023 - 2024" in html
+    assert "Designed backend service APIs." in html
