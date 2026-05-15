@@ -77,6 +77,11 @@ Notes:
   - `classic` template ignores it.
   - `default` aliases `professional_compact`, so it may use `compact_summary` for selected entries during measurement-aware planning.
   - `compact` template uses it for Selected Experience entries when those entries are planned as compact.
+- Education can carry optional JSON Resume extension metadata per entry:
+  - `education[i].x-applypilot.degree_completed` (boolean)
+  - `education[i].x-applypilot.education_display` (string)
+  - When `education_display` is provided, education rendering prefers it.
+  - When `degree_completed=false` and no display override is provided, rendering uses coursework phrasing (for example, `Computer Science coursework`) rather than degree-major wording.
 - `tailor_resume(...)` puts accepted parsed JSON into `report["tailored_json"]` so downstream PDF generation can avoid reparsing text.
 
 ## Contract 2: Tailored JSON -> ResumeRenderModel
@@ -131,11 +136,12 @@ Current template behavior:
 - `professional_compact.prepare_with_measurement(...)` is the production measurement-aware template:
   - starts with maximum detailed experience (or explicit hard cap from render options)
   - measures full rendered resume HTML page count
-  - progressively moves later entries into Selected Experience only as needed to fit page target
+  - progressively moves later entries into Earlier Experience (Selected) only as needed to fit page target
   - always keeps at least one detailed `EXPERIENCE` entry when experience exists
   - interprets fractional page targets as physical-page allowance (`ceil`)
   - preserves order and keeps projects/summary/skills/education renderable
   - uses a roomier polished two-page visual style so page measurement/compaction has meaningful effect
+  - allows detailed experience entries to flow across physical pages (instead of forcing full-entry page keeps), reducing large blank gaps
 - `classic.prepare(model)` is the baseline/simple renderer:
   - no measurement-aware planning
   - all experience entries remain detailed

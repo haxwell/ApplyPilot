@@ -103,6 +103,28 @@ def test_normalize_profile_from_resume_json_maps_internal_contract() -> None:
     ]
 
 
+def test_normalize_profile_preserves_education_coursework_metadata() -> None:
+    data = sample_resume_json()
+    data["education"][0] = {
+        "institution": "Metropolitan State College of Denver",
+        "studyType": "Coursework",
+        "area": "Computer Science",
+        "startDate": "1994",
+        "endDate": "1996",
+        "x-applypilot": {
+            "degree_completed": False,
+            "education_display": "Computer Science coursework",
+        },
+    }
+
+    profile = normalize_profile_from_resume_json(data)
+
+    assert profile["education"][0]["degree_completed"] is False
+    assert profile["education"][0]["education_display"] == "Computer Science coursework"
+    assert profile["education"][0]["startDate"] == "1994"
+    assert profile["education"][0]["endDate"] == "1996"
+
+
 def test_build_resume_text_from_json_is_deterministic() -> None:
     data = sample_resume_json()
 
@@ -116,6 +138,32 @@ def test_build_resume_text_from_json_is_deterministic() -> None:
     assert "PROJECTS" in first
     assert "EDUCATION" in first
     assert "Spencer Thayer" in first
+
+
+def test_build_resume_text_from_json_education_uses_coursework_display_when_provided() -> None:
+    data = sample_resume_json()
+    data["education"][0] = {
+        "institution": "Metropolitan State College of Denver",
+        "studyType": "Coursework",
+        "area": "Computer Science",
+        "startDate": "1994",
+        "endDate": "1996",
+        "x-applypilot": {
+            "degree_completed": False,
+            "education_display": "Computer Science coursework",
+        },
+    }
+
+    rendered = build_resume_text_from_json(data)
+
+    assert "Metropolitan State College of Denver | Computer Science coursework | 1994 - 1996" in rendered
+    assert "Major" not in rendered
+
+
+def test_build_resume_text_from_json_education_without_metadata_preserves_existing_format() -> None:
+    rendered = build_resume_text_from_json(sample_resume_json())
+
+    assert "Lincoln Land Community College | Associate Liberal Arts | 2000" in rendered
 
 
 def test_resolve_render_theme_prefers_applypilot_then_meta() -> None:

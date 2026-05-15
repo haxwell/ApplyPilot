@@ -102,6 +102,15 @@ _WORK_EXTENSION_SCHEMA: dict = {
     "additionalProperties": True,
 }
 
+_EDUCATION_EXTENSION_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "degree_completed": {"type": "boolean"},
+        "education_display": {"type": "string"},
+    },
+    "additionalProperties": True,
+}
+
 
 class ResumeJsonError(ValueError):
     """Raised when resume.json is invalid or unusable."""
@@ -194,6 +203,23 @@ def validate_applypilot_meta(data: dict) -> None:
             )
             errors.extend(_find_forbidden_keys(extension, ["work", index, "x-applypilot"]))
 
+    education_entries = data.get("education", [])
+    if isinstance(education_entries, list):
+        for index, entry in enumerate(education_entries):
+            if not isinstance(entry, dict):
+                continue
+            extension = entry.get("x-applypilot")
+            if extension is None:
+                continue
+            errors.extend(
+                _collect_schema_errors(
+                    extension,
+                    _EDUCATION_EXTENSION_SCHEMA,
+                    ["education", index, "x-applypilot"],
+                )
+            )
+            errors.extend(_find_forbidden_keys(extension, ["education", index, "x-applypilot"]))
+
     if errors:
         raise ResumeJsonError("Invalid resume.json ApplyPilot extensions:\n- " + "\n- ".join(errors))
 
@@ -241,6 +267,18 @@ def _coerce_list(value: Any) -> list[str]:
     if value in (None, ""):
         return []
     return [str(value).strip()]
+
+
+def _coerce_optional_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes", "1"}:
+            return True
+        if lowered in {"false", "no", "0"}:
+            return False
+    return None
 
 
 def _safe_get(mapping: dict[str, Any], *keys: str) -> Any:
@@ -365,21 +403,69 @@ def _normalize_work_entries(work: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return normalized
 
 
-def _normalize_education(education: list[dict[str, Any]]) -> tuple[list[dict[str, str]], str]:
-    normalized: list[dict[str, str]] = []
+def _education_date_fragment(value: Any) -> str:
+    text = _coerce_str(value)
+    if len(text) >= 4:
+        return text[:4]
+    return text
+
+
+def format_education_entry(entry: dict[str, Any]) -> str:
+    institution = _coerce_str(entry.get("institution"))
+    degree = _coerce_str(entry.get("studyType")) or _coerce_str(entry.get("degree"))
+    field = _coerce_str(entry.get("area")) or _coerce_str(entry.get("field"))
+    start = _education_date_fragment(entry.get("startDate"))
+    end = _education_date_fragment(entry.get("endDate")) or _education_date_fragment(entry.get("graduation_date"))
+
+    extension = entry.get("x-applypilot", {}) if isinstance(entry.get("x-applypilot"), dict) else {}
+    education_display = _coerce_str(extension.get("education_display")) or _coerce_str(entry.get("education_display"))
+    if education_display:
+        details = education_display
+    else:
+        degree_completed = _coerce_optional_bool(extension.get("degree_completed"))
+        if degree_completed is False:
+            if field:
+                details = f"{field} coursework"
+            elif degree:
+                details = degree
+            else:
+                details = "Coursework"
+        else:
+            details = " ".join(part for part in (degree, field) if part)
+
+    date_range = ""
+    if start and end and start != end:
+        date_range = f"{start} - {end}"
+    elif end:
+        date_range = end
+    elif start:
+        date_range = start
+
+    parts = [part for part in (institution, details, date_range) if part]
+    return " | ".join(parts)
+
+
+def _normalize_education(education: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str]:
+    normalized: list[dict[str, Any]] = []
     latest_level = ""
     for item in education:
         if not isinstance(item, dict):
             continue
+        extension = item.get("x-applypilot", {}) if isinstance(item.get("x-applypilot"), dict) else {}
         normalized_entry = {
             "institution": _coerce_str(item.get("institution")),
             "studyType": _coerce_str(item.get("studyType")),
             "area": _coerce_str(item.get("area")),
+            "startDate": _coerce_str(item.get("startDate")),
             "endDate": _coerce_str(item.get("endDate")),
+            "degree_completed": _coerce_optional_bool(extension.get("degree_completed")),
+            "education_display": _coerce_str(extension.get("education_display")),
         }
         normalized.append(normalized_entry)
         if normalized_entry["studyType"]:
             latest_level = normalized_entry["studyType"]
+        elif normalized_entry["degree_completed"] is False and normalized_entry["area"]:
+            latest_level = f"{normalized_entry['area']} coursework"
     return normalized, latest_level
 
 
@@ -947,13 +1033,7 @@ def build_resume_text_from_json(data: dict) -> str:
         for entry in education:
             if not isinstance(entry, dict):
                 continue
-            parts = [
-                _coerce_str(entry.get("institution")),
-                _coerce_str(entry.get("studyType")),
-                _coerce_str(entry.get("area")),
-                _coerce_str(entry.get("endDate")),
-            ]
-            lines.append(" | ".join(part for part in parts if part) or "N/A")
+            lines.append(format_education_entry(entry) or "N/A")
     else:
         lines.append("N/A")
 

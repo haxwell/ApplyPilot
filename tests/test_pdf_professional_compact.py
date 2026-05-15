@@ -166,7 +166,7 @@ def test_professional_compact_build_html_renders_selected_experience() -> None:
 
     html = professional_compact.build_html(view)
 
-    assert "Selected Experience" in html
+    assert "Earlier Experience (Selected)" in html
     assert "Engineer at Example Co" in html
     assert "Built and stabilized backend APIs." in html
 
@@ -263,7 +263,7 @@ def test_professional_compact_build_html_renders_detailed_and_compact_experience
     assert "Scale AI - Senior Software Engineer" in html
     assert "Nov 2024 - Present | Remote" in html
     assert "Led backend architecture improvements." in html
-    assert "Selected Experience" in html
+    assert "Earlier Experience (Selected)" in html
     assert "Example Corp - Software Engineer" in html
     assert "2021 - 2023" in html
     assert "Built API services and improved production reliability." in html
@@ -334,3 +334,20 @@ def test_professional_compact_selected_experience_subtitle_fallback_formats_date
 
     assert "Aug 2025 - Mar 2026" in html
     assert "2025-08 - 2026-03" not in html
+
+
+def test_professional_compact_detailed_entries_can_flow_across_pages() -> None:
+    model = ResumeRenderModel(name="Alex Example", contact="alex@example.com")
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[ResumeEntry(title="Role", subtitle="Company | 2024 - Present", bullets=["Bullet"])],
+        compact_experience=[ResumeEntry(title="Older Role", subtitle="Company | 2020 - 2024", bullets=["Bullet"])],
+        projects_to_render=[],
+    )
+
+    html = professional_compact.build_html(view)
+
+    assert ".entry {" in html
+    assert "break-inside: avoid;" not in html.split(".entry {", 1)[1].split("}", 1)[0]
+    assert ".compact-entry {" in html
+    assert "break-inside: avoid;" in html.split(".compact-entry {", 1)[1].split("}", 1)[0]

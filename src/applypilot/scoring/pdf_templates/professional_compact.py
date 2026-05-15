@@ -301,7 +301,7 @@ def build_html(view: ProfessionalCompactTemplateView) -> str:
             items += f'<article class="entry"><h3 class="entry-title">{heading}</h3>{subtitle}{bullet_list}</article>'
         exp_html = f'<section class="section"><h2 class="section-title">Experience</h2>{items}</section>'
 
-    # Selected Experience (compact entries)
+    # Earlier Experience (compact entries)
     selected_exp_html = ""
     if view.compact_experience:
         items = ""
@@ -320,7 +320,9 @@ def build_html(view: ProfessionalCompactTemplateView) -> str:
                 f"{summary_html}"
                 "</article>"
             )
-        selected_exp_html = f'<section class="section"><h2 class="section-title">Selected Experience</h2>{items}</section>'
+        selected_exp_html = (
+            f'<section class="section"><h2 class="section-title">Earlier Experience (Selected)</h2>{items}</section>'
+        )
 
     # Projects
     proj_html = ""
@@ -431,18 +433,19 @@ body {{
 }}
 .entry {{
     margin-bottom: 14px;
-    break-inside: avoid;
 }}
 .entry-title {{
     font-weight: 700;
     font-size: 11.4pt;
     line-height: 1.3;
+    break-after: avoid;
 }}
 .entry-subtitle {{
     margin-top: 2px;
     font-size: 10.2pt;
     font-style: italic;
     color: #444444;
+    break-after: avoid;
 }}
 .project-title-row {{
     display: flex;
@@ -467,6 +470,7 @@ body {{
 }}
 .compact-entry {{
     margin-bottom: 10px;
+    break-inside: avoid;
 }}
 .compact-meta {{
     font-size: 10.7pt;

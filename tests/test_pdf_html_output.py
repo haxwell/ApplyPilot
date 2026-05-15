@@ -91,8 +91,8 @@ def test_convert_to_pdf_html_only_uses_production_default_template_when_not_spec
     html_path = convert_to_pdf(source, html_only=True)
     html = html_path.read_text(encoding="utf-8")
 
-    # professional_compact is measurement-aware and may render selected experience.
-    assert "Selected Experience" in html
+    # professional_compact is measurement-aware and may render earlier selected experience.
+    assert "Earlier Experience (Selected)" in html
 
 
 def test_convert_to_pdf_html_only_compact_contains_expected_sections(tmp_path: Path) -> None:
@@ -221,7 +221,7 @@ def test_render_model_to_pdf_html_only_uses_production_default_template_when_not
     html_path = render_model_to_pdf(model, output_path=tmp_path / "model_default.html", html_only=True)
     html = html_path.read_text(encoding="utf-8")
 
-    assert "Selected Experience" in html
+    assert "Earlier Experience (Selected)" in html
 
 
 def test_render_model_to_pdf_html_only_from_tailored_json_model(tmp_path: Path) -> None:

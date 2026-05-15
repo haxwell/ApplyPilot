@@ -23,6 +23,7 @@ from applypilot.config import TAILORED_DIR, load_profile, load_resume_text
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
 from applypilot.resume_json import (
+    format_education_entry,
     get_profile_company_names,
     get_profile_school_names,
     get_profile_skill_keywords,
@@ -58,13 +59,11 @@ def _build_education_block(education_list: list[dict]) -> str:
         return "N/A"
     lines: list[str] = []
     for edu in education_list:
-        institution = edu.get("institution", "Unknown")
-        degree = edu.get("studyType", "") or edu.get("degree", "")
-        field = edu.get("area", "") or edu.get("field", "")
-        end_date = edu.get("endDate", "") or edu.get("graduation_date", "")
-        year = end_date[:4] if end_date and len(end_date) >= 4 else end_date
-        parts = [part for part in (degree, field, year) if part]
-        lines.append(f"{institution} | {' | '.join(parts)}" if parts else institution)
+        if not isinstance(edu, dict):
+            continue
+        rendered = format_education_entry(edu)
+        if rendered:
+            lines.append(rendered)
     return "\n".join(lines)
 
 
