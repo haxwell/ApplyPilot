@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from applypilot.scoring.pdf import convert_to_pdf, render_model_to_pdf
+from applypilot.scoring.pdf import convert_to_pdf, render_model_to_pdf, render_model_to_pdf_with_planning
 from applypilot.scoring.pdf_render_model import (
     ResumeEntry,
     ResumeRenderModel,
@@ -261,6 +261,33 @@ def test_render_model_to_pdf_html_only_from_tailored_json_model(tmp_path: Path) 
     assert "Alex Example" in html
     assert "Built and shipped reliable systems." in html
     assert "Built APIs" in html
+
+
+def test_render_model_to_pdf_with_planning_returns_planning_report(monkeypatch, tmp_path: Path) -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        title="Senior Engineer",
+        summary="Built and shipped reliable systems.",
+        contact="alex@example.com | 555-111-2222",
+        experience=[
+            ResumeEntry(title="Role 1", subtitle="Company 1 | 2022", bullets=["Bullet 1"]),
+            ResumeEntry(title="Role 2", subtitle="Company 2 | 2021", bullets=["Bullet 2"]),
+            ResumeEntry(title="Role 3", subtitle="Company 3 | 2020", bullets=["Bullet 3"]),
+        ],
+    )
+
+    monkeypatch.setattr("applypilot.scoring.pdf.measure_html_page_count", lambda _html: 99)
+    html_path, planning = render_model_to_pdf_with_planning(
+        model,
+        output_path=tmp_path / "model_with_planning.html",
+        html_only=True,
+    )
+    html = html_path.read_text(encoding="utf-8")
+
+    assert "Alex Example" in html
+    assert planning["template_used"] == "professional_compact"
+    assert planning["allowed_physical_pages"] == 3
+    assert isinstance(planning.get("planning_attempts"), list)
 
 
 def test_compact_template_ignores_compact_summary_and_renders_bullets(tmp_path: Path) -> None:

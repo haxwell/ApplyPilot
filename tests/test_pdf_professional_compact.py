@@ -38,6 +38,10 @@ def test_prepare_with_measurement_moves_later_entries_until_fit(monkeypatch) -> 
 
     assert [entry.title for entry in prepared.detailed_experience] == ["Role 1", "Role 2", "Role 3"]
     assert [entry.title for entry in prepared.compact_experience] == ["Role 4", "Role 5", "Role 6"]
+    assert prepared.allowed_physical_pages == 3
+    assert prepared.measured_pages_final == 3
+    assert len(prepared.planning_attempts) == 4
+    assert prepared.planning_attempts[-1]["fit"] is True
 
 
 def test_prepare_with_measurement_returns_tightest_candidate_with_one_detailed_when_none_fit(monkeypatch) -> None:

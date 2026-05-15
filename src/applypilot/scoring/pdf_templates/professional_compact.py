@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 import re
 from typing import Callable
@@ -59,6 +59,9 @@ class ProfessionalCompactTemplateView:
     compact_experience: list[ResumeEntry]
     projects_to_render: list[ResumeEntry]
     page_target: float = _DEFAULT_PAGE_TARGET
+    allowed_physical_pages: int | None = None
+    measured_pages_final: int | None = None
+    planning_attempts: list[dict[str, int | bool | str | None]] = field(default_factory=list)
 
 
 def _coerce_positive_int(value: object) -> int | None:
@@ -90,7 +93,15 @@ def _allowed_physical_pages(page_target: float) -> int:
     return max(1, int(math.ceil(page_target)))
 
 
-def _build_candidate_view(model: ResumeRenderModel, detailed_count: int, page_target: float) -> ProfessionalCompactTemplateView:
+def _build_candidate_view(
+    model: ResumeRenderModel,
+    detailed_count: int,
+    page_target: float,
+    *,
+    allowed_physical_pages: int | None = None,
+    measured_pages_final: int | None = None,
+    planning_attempts: list[dict[str, int | bool | str | None]] | None = None,
+) -> ProfessionalCompactTemplateView:
     detailed = list(model.experience[:detailed_count])
     compact = list(model.experience[detailed_count:])
     return ProfessionalCompactTemplateView(
@@ -99,6 +110,9 @@ def _build_candidate_view(model: ResumeRenderModel, detailed_count: int, page_ta
         compact_experience=compact,
         projects_to_render=list(model.projects),
         page_target=page_target,
+        allowed_physical_pages=allowed_physical_pages,
+        measured_pages_final=measured_pages_final,
+        planning_attempts=list(planning_attempts or []),
     )
 
 
@@ -111,7 +125,12 @@ def prepare(model: ResumeRenderModel) -> ProfessionalCompactTemplateView:
         detailed_count = len(model.experience)
     else:
         detailed_count = min(hard_cap, len(model.experience))
-    return _build_candidate_view(model, detailed_count=detailed_count, page_target=page_target)
+    return _build_candidate_view(
+        model,
+        detailed_count=detailed_count,
+        page_target=page_target,
+        allowed_physical_pages=_allowed_physical_pages(page_target),
+    )
 
 
 def prepare_with_measurement(
@@ -122,24 +141,64 @@ def prepare_with_measurement(
 
     page_target = _resolve_page_target(model)
     hard_cap = _coerce_positive_int(model.render_options.get("compact_max_detailed_experience"))
+    allowed_pages = _allowed_physical_pages(page_target)
     if hard_cap is not None:
         detailed_count = min(hard_cap, len(model.experience))
         if model.experience:
             detailed_count = max(1, detailed_count)
-        return _build_candidate_view(model, detailed_count=detailed_count, page_target=page_target)
+        return _build_candidate_view(
+            model,
+            detailed_count=detailed_count,
+            page_target=page_target,
+            allowed_physical_pages=allowed_pages,
+            planning_attempts=[
+                {
+                    "detailed_experience_count": detailed_count,
+                    "measured_page_count": None,
+                    "fit": None,
+                    "reason": "hard_cap_override",
+                }
+            ],
+        )
 
     total_entries = len(model.experience)
     min_detailed = 1 if total_entries > 0 else 0
-    allowed_pages = _allowed_physical_pages(page_target)
-    tightest_candidate = _build_candidate_view(model, detailed_count=min_detailed, page_target=page_target)
+    planning_attempts: list[dict[str, int | bool | str | None]] = []
+    tightest_candidate = _build_candidate_view(
+        model,
+        detailed_count=min_detailed,
+        page_target=page_target,
+        allowed_physical_pages=allowed_pages,
+    )
 
     for detailed_count in range(total_entries, min_detailed - 1, -1):
-        candidate = _build_candidate_view(model, detailed_count=detailed_count, page_target=page_target)
+        candidate = _build_candidate_view(
+            model,
+            detailed_count=detailed_count,
+            page_target=page_target,
+            allowed_physical_pages=allowed_pages,
+            planning_attempts=planning_attempts,
+        )
         html = build_html(candidate)
         page_count = measure_html_page_count(html)
-        tightest_candidate = candidate
-        if page_count <= allowed_pages:
-            return candidate
+        fits = page_count <= allowed_pages
+        planning_attempts.append(
+            {
+                "detailed_experience_count": detailed_count,
+                "measured_page_count": page_count,
+                "fit": fits,
+            }
+        )
+        tightest_candidate = _build_candidate_view(
+            model,
+            detailed_count=detailed_count,
+            page_target=page_target,
+            allowed_physical_pages=allowed_pages,
+            measured_pages_final=page_count,
+            planning_attempts=planning_attempts,
+        )
+        if fits:
+            return tightest_candidate
 
     return tightest_candidate
 

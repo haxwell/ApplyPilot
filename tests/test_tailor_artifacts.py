@@ -131,19 +131,30 @@ def test_run_tailoring_prefers_structured_pdf_render_when_tailored_json_availabl
     monkeypatch.setattr(tailor, "get_jobs_by_stage", lambda **_: [job])
     monkeypatch.setattr(tailor, "tailor_resume", lambda *args, **kwargs: ("tailored resume", report))
 
-    def _fake_render_model_to_pdf(
+    def _fake_render_model_to_pdf_with_planning(
         model,
         output_path: Path,
         template_name: str = "professional_compact",
         html_only: bool = False,
-    ) -> Path:
+    ) -> tuple[Path, dict]:
         del model, template_name, html_only
         structured_called["value"] = True
         out = Path(output_path)
         out.write_bytes(b"%PDF-1.4 fake\n")
-        return out
+        return out, {
+            "template_used": "professional_compact",
+            "page_target_config": 2.5,
+            "allowed_physical_pages": 3,
+            "measured_pages_final": 2,
+            "planning_attempts": [{"detailed_experience_count": 4, "measured_page_count": 2, "fit": True}],
+            "detailed_roles": ["Example"],
+            "earlier_selected_roles": [],
+        }
 
-    monkeypatch.setattr("applypilot.scoring.pdf.render_model_to_pdf", _fake_render_model_to_pdf)
+    monkeypatch.setattr(
+        "applypilot.scoring.pdf.render_model_to_pdf_with_planning",
+        _fake_render_model_to_pdf_with_planning,
+    )
     monkeypatch.setattr(
         "applypilot.scoring.pdf.convert_to_pdf",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("fallback should not be used")),
@@ -154,6 +165,12 @@ def test_run_tailoring_prefers_structured_pdf_render_when_tailored_json_availabl
     assert result["approved"] == 1
     assert structured_called["value"] is True
     assert any("tailored_resume_path" in query for query, _ in conn.calls)
+    report_paths = list(tmp_path.glob("*_REPORT.json"))
+    assert len(report_paths) == 1
+    report_data = json.loads(report_paths[0].read_text(encoding="utf-8"))
+    assert report_data["pdf_render_planning"]["template_used"] == "professional_compact"
+    assert report_data["pdf_render_planning"]["allowed_physical_pages"] == 3
+    assert report_data["pdf_render_planning"]["measured_pages_final"] == 2
 
 
 def test_run_tailoring_falls_back_to_text_pdf_when_structured_render_fails(monkeypatch, tmp_path: Path) -> None:
@@ -179,7 +196,7 @@ def test_run_tailoring_falls_back_to_text_pdf_when_structured_render_fails(monke
     monkeypatch.setattr(tailor, "tailor_resume", lambda *args, **kwargs: ("tailored resume", report))
 
     monkeypatch.setattr(
-        "applypilot.scoring.pdf.render_model_to_pdf",
+        "applypilot.scoring.pdf.render_model_to_pdf_with_planning",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("structured boom")),
     )
 
@@ -197,6 +214,10 @@ def test_run_tailoring_falls_back_to_text_pdf_when_structured_render_fails(monke
     assert result["approved"] == 1
     assert fallback_called["value"] is True
     assert any("tailored_resume_path" in query for query, _ in conn.calls)
+    report_paths = list(tmp_path.glob("*_REPORT.json"))
+    assert len(report_paths) == 1
+    report_data = json.loads(report_paths[0].read_text(encoding="utf-8"))
+    assert report_data["pdf_render_planning"]["render_path"] == "text_fallback"
 
 
 def test_run_tailoring_invalid_configured_template_falls_back_to_default(
@@ -232,19 +253,22 @@ def test_run_tailoring_invalid_configured_template_falls_back_to_default(
     monkeypatch.setattr(tailor, "get_jobs_by_stage", lambda **_: [job])
     monkeypatch.setattr(tailor, "tailor_resume", lambda *args, **kwargs: ("tailored resume", report))
 
-    def _fake_render_model_to_pdf(
+    def _fake_render_model_to_pdf_with_planning(
         model,
         output_path: Path,
         template_name: str = "professional_compact",
         html_only: bool = False,
-    ) -> Path:
+    ) -> tuple[Path, dict]:
         del model, html_only
         captured_template["value"] = template_name
         out = Path(output_path)
         out.write_bytes(b"%PDF-1.4 fake\n")
-        return out
+        return out, {"template_used": template_name}
 
-    monkeypatch.setattr("applypilot.scoring.pdf.render_model_to_pdf", _fake_render_model_to_pdf)
+    monkeypatch.setattr(
+        "applypilot.scoring.pdf.render_model_to_pdf_with_planning",
+        _fake_render_model_to_pdf_with_planning,
+    )
     monkeypatch.setattr(
         "applypilot.scoring.pdf.convert_to_pdf",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("fallback text renderer should not run")),
@@ -363,6 +387,27 @@ def test_build_tailor_prompt_omits_compact_summary_guidance_when_not_requested()
 
     assert "## COMPACT SUMMARY (OPTIONAL WHEN USEFUL)" not in prompt
     assert '"compact_summary": "Optional concise sentence for compact layouts."' not in prompt
+
+
+def test_build_tailor_prompt_centralizes_global_voice_and_evidence_standard() -> None:
+    prompt = tailor._build_tailor_prompt(
+        profile={"personal": {}},
+        content_preparation_context={
+            "pdf_template": "professional_compact",
+            "pdf_template_input_preferences": {},
+        },
+    )
+
+    assert "## OUTPUT VOICE AND EVIDENCE STANDARD" in prompt
+    assert "Validator banned/generic phrase list:" in prompt
+    assert "robust" in prompt
+    assert "proven track record" in prompt
+    assert "extensive experience" in prompt
+    assert "rewrite the sentence using more concrete evidence before returning JSON" in prompt
+    assert "## SUMMARY" in prompt
+    assert "Use the global voice and evidence standard." in prompt
+    assert "## FINAL QUALITY CHECK BEFORE OUTPUT" in prompt
+    assert "Did I apply the global voice and evidence standard?" in prompt
 
 
 def test_run_tailoring_report_includes_pdf_template_preferences(monkeypatch, tmp_path: Path) -> None:

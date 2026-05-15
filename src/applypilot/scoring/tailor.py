@@ -194,6 +194,29 @@ def _build_tailor_prompt(
 
     Provide enough truthful material for downstream templates to decide what to render in detail or compact form.
 
+    ## OUTPUT VOICE AND EVIDENCE STANDARD
+
+    Write in grounded, specific engineering language.
+
+    Every summary sentence and bullet should be supported by source resume evidence.
+
+    Prefer concrete systems, technologies, actions, and outcomes over broad claims.
+
+    Avoid generic resume language, inflated adjectives, vague impact claims, and banned phrases.
+
+    Validator banned/generic phrase list:
+    {banned_str}
+
+    If a banned/generic phrase appears in a draft sentence, rewrite the sentence using more concrete evidence before returning JSON.
+
+    Do not use broad phrases like "robust", "extensive experience", "proven track record", "committed to", "seamless", "scalable solutions", "significantly", etc., unless unavoidable in a proper noun or source title.
+
+    Good:
+    "Built Java and Spring Boot microservices for payment and billing workflows, reducing deployment failures by improving validation and rollback handling."
+
+    Bad:
+    "Proven track record of building robust, scalable solutions and significantly improving outcomes."
+
     ## RECRUITER SCAN, 6 SECONDS
 
     A recruiter should immediately see:
@@ -252,6 +275,7 @@ def _build_tailor_prompt(
     Write 4-6 sentences.
 
     The summary should be specific, grounded, and senior.
+    Use the global voice and evidence standard.
 
     It should lead with the strongest overlap between the candidate and the target job:
     - backend systems
@@ -271,8 +295,6 @@ def _build_tailor_prompt(
 
     Bad:
     "Experienced software engineer with a proven track record of leveraging cutting-edge technologies to deliver robust and scalable solutions."
-
-    Avoid generic claims unless they are tied to specific evidence.
 
     ## SKILLS
 
@@ -355,6 +377,7 @@ def _build_tailor_prompt(
     ## BULLET STYLE
 
     Use short, direct engineering language.
+    Use the global voice and evidence standard.
 
     Strong verbs are good, but clarity matters more than verb variety.
 
@@ -362,22 +385,6 @@ def _build_tailor_prompt(
     Built, Designed, Implemented, Automated, Reduced, Improved, Created, Integrated, Migrated, Refactored, Documented, Mentored, Led, Supported
 
     Avoid forcing fancy verbs.
-
-    Avoid vague or inflated language:
-    - robust
-    - seamless
-    - advanced
-    - cutting-edge
-    - transformative
-    - drastically
-    - significantly
-    - maximized
-    - optimized, unless there is a concrete optimization
-    - leveraged, unless there is no simpler verb
-    - cultivated
-    - spearheaded, unless clearly true
-    - world-class
-    - best-in-class
 
     Do not use "Borrowed engineering practices."
 
@@ -465,7 +472,7 @@ def _build_tailor_prompt(
 
     1. Did I preserve exact metrics and what they measure?
     2. Did I avoid converting concrete evidence into vague claims?
-    3. Did I avoid generic AI resume language?
+    3. Did I apply the global voice and evidence standard?
     4. Did I preserve seniority and depth?
     5. Did the first half page make the target-job match obvious?
     6. Did I avoid inventing tools, responsibilities, or outcomes?
@@ -1439,7 +1446,7 @@ def run_tailoring(
             )
             job_path.write_text(job_desc, encoding="utf-8")
 
-            # Save validation report
+            # Save validation report (updated again after PDF planning/render outcomes)
             report_path = TAILORED_DIR / f"{prefix}_REPORT.json"
             report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
@@ -1449,7 +1456,7 @@ def run_tailoring(
             status = report["status"]
             if status in ("approved", "approved_with_judge_warning"):
                 try:
-                    from applypilot.scoring.pdf import convert_to_pdf, render_model_to_pdf
+                    from applypilot.scoring.pdf import convert_to_pdf, render_model_to_pdf_with_planning
                     from applypilot.scoring.pdf_render_model import build_render_model_from_tailored_json
 
                     generated_pdf = txt_path.with_suffix(".pdf")
@@ -1457,11 +1464,12 @@ def run_tailoring(
                     if isinstance(tailored_json, dict):
                         try:
                             model = build_render_model_from_tailored_json(tailored_json, profile)
-                            generated_pdf = render_model_to_pdf(
+                            generated_pdf, planning = render_model_to_pdf_with_planning(
                                 model,
                                 generated_pdf,
                                 template_name=pdf_template_name,
                             )
+                            report["pdf_render_planning"] = planning
                         except Exception as structured_exc:
                             log.warning(
                                 "Structured PDF render failed for %s, falling back to text-based render: %s",
@@ -1473,12 +1481,22 @@ def run_tailoring(
                                 output_path=generated_pdf,
                                 template_name=pdf_template_name,
                             )
+                            report["pdf_render_planning"] = {
+                                "template_used": pdf_template_name,
+                                "render_path": "text_fallback",
+                                "reason": str(structured_exc),
+                            }
                     else:
                         generated_pdf = convert_to_pdf(
                             txt_path,
                             output_path=generated_pdf,
                             template_name=pdf_template_name,
                         )
+                        report["pdf_render_planning"] = {
+                            "template_used": pdf_template_name,
+                            "render_path": "text_fallback",
+                            "reason": "missing_tailored_json",
+                        }
                     pdf_path = str(generated_pdf)
                     if not generated_pdf.exists() or generated_pdf.stat().st_size == 0:
                         raise RuntimeError(f"Generated PDF missing or empty: {generated_pdf}")
@@ -1486,6 +1504,9 @@ def run_tailoring(
                     # A submission-ready tailored resume needs both TXT and PDF.
                     log.error("PDF generation failed for %s: %s", txt_path, exc)
                     status = "error"
+
+            report["status"] = status
+            report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
             result = {
                 "url": job["url"],

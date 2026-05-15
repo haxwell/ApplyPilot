@@ -5,9 +5,11 @@ and exports to PDF using headless Chromium via Playwright.
 """
 
 import logging
+import math
 import re
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from applypilot.config import TAILORED_DIR
 from applypilot.scoring.pdf_render_model import (
@@ -210,6 +212,14 @@ def build_html_for_resume(model: ResumeRenderModel, template_name: str = DEFAULT
     `prepare_with_measurement(model, measure_html_page_count)`.
     """
 
+    html, _prepared = _build_html_and_prepared_for_resume(model, template_name=template_name)
+    return html
+
+
+def _build_html_and_prepared_for_resume(
+    model: ResumeRenderModel,
+    template_name: str = DEFAULT_PDF_TEMPLATE,
+) -> tuple[str, Any]:
     template = get_template(template_name)
     prepare_with_measurement = getattr(template, "prepare_with_measurement", None)
     if callable(prepare_with_measurement):
@@ -222,7 +232,63 @@ def build_html_for_resume(model: ResumeRenderModel, template_name: str = DEFAULT
                 "prepare_with_measurement(model, measure_html_page_count)."
             )
         prepared = prepare(model)
-    return template.build_html(prepared)
+    return template.build_html(prepared), prepared
+
+
+def _extract_company_label(entry: ResumeEntry) -> str:
+    subtitle = str(entry.subtitle).strip()
+    if subtitle:
+        first = subtitle.split("|", 1)[0].strip()
+        if first:
+            return first
+    return str(entry.title).strip()
+
+
+def extract_render_planning_report(
+    model: ResumeRenderModel,
+    prepared: Any,
+    template_name: str,
+) -> dict[str, Any]:
+    """Extract template planning telemetry for report artifacts."""
+
+    report: dict[str, Any] = {
+        "template_used": template_name,
+    }
+    page_target_raw = getattr(prepared, "page_target", None)
+    try:
+        page_target = float(page_target_raw) if page_target_raw is not None else None
+    except (TypeError, ValueError):
+        page_target = None
+    if page_target is not None and page_target > 0:
+        report["page_target_config"] = page_target
+        report["allowed_physical_pages"] = max(1, int(math.ceil(page_target)))
+
+    allowed_physical_pages = getattr(prepared, "allowed_physical_pages", None)
+    if isinstance(allowed_physical_pages, int) and allowed_physical_pages > 0:
+        report["allowed_physical_pages"] = allowed_physical_pages
+
+    measured_pages_final = getattr(prepared, "measured_pages_final", None)
+    if isinstance(measured_pages_final, int) and measured_pages_final > 0:
+        report["measured_pages_final"] = measured_pages_final
+
+    planning_attempts = getattr(prepared, "planning_attempts", None)
+    if isinstance(planning_attempts, list):
+        normalized_attempts: list[dict[str, Any]] = []
+        for attempt in planning_attempts:
+            if isinstance(attempt, dict):
+                normalized_attempts.append(dict(attempt))
+        report["planning_attempts"] = normalized_attempts
+
+    detailed_entries = getattr(prepared, "detailed_experience", model.experience)
+    compact_entries = getattr(prepared, "compact_experience", [])
+    if isinstance(detailed_entries, list):
+        report["detailed_roles"] = [_extract_company_label(entry) for entry in detailed_entries if isinstance(entry, ResumeEntry)]
+    if isinstance(compact_entries, list):
+        report["earlier_selected_roles"] = [
+            _extract_company_label(entry) for entry in compact_entries if isinstance(entry, ResumeEntry)
+        ]
+
+    return report
 
 
 def resolve_pdf_template_name(profile: dict, explicit_template: str | None = None) -> str:
@@ -255,7 +321,7 @@ def render_model_to_pdf(
     """Render a resume model directly to HTML or PDF."""
 
     out = Path(output_path)
-    html = build_html_for_resume(model, template_name=template_name)
+    html, _prepared = _build_html_and_prepared_for_resume(model, template_name=template_name)
 
     if html_only:
         out.write_text(html, encoding="utf-8")
@@ -265,6 +331,28 @@ def render_model_to_pdf(
     render_pdf(html, str(out))
     log.info("PDF generated: %s", out)
     return out
+
+
+def render_model_to_pdf_with_planning(
+    model: ResumeRenderModel,
+    output_path: Path,
+    template_name: str = DEFAULT_PDF_TEMPLATE,
+    html_only: bool = False,
+) -> tuple[Path, dict[str, Any]]:
+    """Render a resume model and return template planning telemetry."""
+
+    out = Path(output_path)
+    html, prepared = _build_html_and_prepared_for_resume(model, template_name=template_name)
+    planning = extract_render_planning_report(model, prepared, template_name)
+
+    if html_only:
+        out.write_text(html, encoding="utf-8")
+        log.info("HTML generated: %s", out)
+        return out, planning
+
+    render_pdf(html, str(out))
+    log.info("PDF generated: %s", out)
+    return out, planning
 
 
 def _count_pdf_pages(pdf_bytes: bytes) -> int:

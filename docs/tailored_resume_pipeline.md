@@ -263,3 +263,21 @@ DB write behavior remains unchanged:
 
 - approved statuses update `tailored_resume_path` and `tailored_at`
 - all statuses increment `tailor_attempts`
+
+## Render Planning Telemetry in `_REPORT.json`
+
+When structured rendering is used, tailoring reports now include a `pdf_render_planning` block
+to make template planning decisions observable.
+
+Typical fields:
+
+- `template_used`
+- `page_target_config`
+- `allowed_physical_pages`
+- `measured_pages_final`
+- `planning_attempts` (candidate detailed-role counts + measured pages + fit flag)
+- `detailed_roles`
+- `earlier_selected_roles`
+
+If structured rendering fails and text fallback is used, `pdf_render_planning` includes
+`render_path: "text_fallback"` plus a reason.
