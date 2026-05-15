@@ -297,12 +297,16 @@ def _build_tailor_prompt(
       (header, subtitle, or company field text).
     - No duplicate company entries in experience.
     - If any profile company is missing, output is invalid.
-    - Provide full role detail: each experience entry should include 3-4 concise, concrete bullets
-      grounded in source resume evidence.
+    - Provide enough truthful source material for the PDF template to decide what to render in detail or compact form.
+    - For recent or highly relevant roles, provide 3-4 concise, concrete bullets grounded in source resume evidence.
+    - For older roles, provide 2-3 concise, concrete bullets when source evidence exists.
+    - Do not reduce older roles to a single bullet merely to fit page length; page fitting is handled by the PDF template.
 
     ## BULLET STRATEGY
 
-    Tailor by selection, ordering, compression, and light editing.
+    Tailor by selection, ordering, emphasis, and light editing.
+
+    Do not pre-compact the resume to fit a page budget. The PDF template handles page fitting, detailed-vs-compact rendering, and Selected/Earlier Experience layout.
 
     Do NOT rewrite every bullet just to make it different.
 
