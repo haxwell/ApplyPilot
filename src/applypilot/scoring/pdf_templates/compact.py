@@ -1,19 +1,19 @@
-"""Default HTML/CSS template for scored resume PDF generation."""
+"""Compact HTML/CSS template for scored resume PDF generation."""
 
 from applypilot.scoring.pdf_render_model import ResumeRenderModel
 
 
 def prepare(model: ResumeRenderModel) -> ResumeRenderModel:
-    """Prepare a render model for the default template.
+    """Prepare a render model for the compact template.
 
-    This initial seam is intentionally a no-op and preserves existing behavior.
+    This initial seam is intentionally a no-op and preserves content behavior.
     """
 
     return model
 
 
 def build_html(resume: ResumeRenderModel) -> str:
-    """Build professional resume HTML from parsed data."""
+    """Build compact resume HTML from parsed data."""
 
     # Skills
     skills_html = ""
@@ -55,7 +55,7 @@ def build_html(resume: ResumeRenderModel) -> str:
 
     # Contact line parsing
     contact_parts = [p.strip() for p in resume.contact.split("|")] if resume.contact else []
-    contact_html = " &nbsp;|&nbsp; ".join(contact_parts)
+    contact_html = " | ".join(contact_parts)
 
     # Location line (may be empty)
     location_html = f'<div class="location">{resume.location}</div>' if resume.location else ""
@@ -67,7 +67,7 @@ def build_html(resume: ResumeRenderModel) -> str:
 <style>
 @page {{
     size: letter;
-    margin: 0.35in 0.5in;
+    margin: 0.25in 0.35in;
 }}
 * {{
     margin: 0;
@@ -75,94 +75,79 @@ def build_html(resume: ResumeRenderModel) -> str:
     box-sizing: border-box;
 }}
 body {{
-    font-family: 'Calibri', 'Segoe UI', Arial, sans-serif;
-    font-size: 10pt;
-    line-height: 1.35;
-    color: #1a1a1a;
+    font-family: Arial, sans-serif;
+    font-size: 9pt;
+    line-height: 1.25;
+    color: #111;
 }}
 .header {{
-    text-align: center;
-    margin-bottom: 4px;
-    padding-bottom: 4px;
-    border-bottom: 1.5px solid #2a7ab5;
+    margin-bottom: 3px;
+    padding-bottom: 2px;
+    border-bottom: 1px solid #333;
 }}
 .name {{
-    font-size: 18pt;
+    font-size: 14pt;
     font-weight: 700;
-    color: #1a3a5c;
-    letter-spacing: 0.5px;
 }}
 .title {{
-    font-size: 10.5pt;
-    color: #3a6b8c;
-    margin: 1px 0;
-}}
-.location {{
-    font-size: 9pt;
-    color: #555;
-}}
-.contact {{
-    font-size: 9pt;
-    color: #444;
+    font-size: 9.5pt;
     margin-top: 1px;
 }}
-.contact a {{
-    color: #2c3e50;
-    text-decoration: none;
+.location {{
+    font-size: 8.5pt;
+    color: #444;
+}}
+.contact {{
+    font-size: 8.5pt;
+    color: #333;
+    margin-top: 1px;
 }}
 .section {{
-    margin-top: 5px;
+    margin-top: 4px;
 }}
 .section-title {{
-    font-size: 10pt;
+    font-size: 9pt;
     font-weight: 700;
-    color: #1a3a5c;
     text-transform: uppercase;
-    letter-spacing: 0.8px;
-    border-bottom: 1.5px solid #2a7ab5;
+    border-bottom: 1px solid #333;
+    margin-bottom: 2px;
     padding-bottom: 1px;
-    margin-bottom: 3px;
 }}
 .summary {{
-    font-size: 9.5pt;
-    color: #333;
-    line-height: 1.4;
+    font-size: 8.8pt;
+    line-height: 1.3;
 }}
 .skill-row {{
-    font-size: 9.5pt;
-    margin: 0;
-    line-height: 1.35;
+    font-size: 8.8pt;
+    line-height: 1.2;
 }}
 .skill-cat {{
-    font-weight: 600;
-    color: #1a3a5c;
+    font-weight: 700;
 }}
 .entry {{
-    margin-bottom: 4px;
+    margin-bottom: 3px;
     break-inside: avoid;
 }}
 .entry-title {{
-    font-weight: 600;
-    font-size: 10pt;
-    color: #1a3a5c;
+    font-weight: 700;
+    font-size: 9pt;
 }}
 .entry-subtitle {{
-    font-size: 9pt;
-    color: #4a7a9b;
-    font-style: italic;
+    font-size: 8.4pt;
+    color: #444;
     margin-bottom: 1px;
 }}
 ul {{
-    margin-left: 14px;
+    margin-left: 12px;
     padding: 0;
 }}
 li {{
-    font-size: 9.5pt;
+    font-size: 8.8pt;
     margin-bottom: 1px;
-    line-height: 1.35;
+    line-height: 1.25;
 }}
 .edu {{
-    font-size: 10pt;
+    font-size: 8.8pt;
 }}
 </style>
 </head>

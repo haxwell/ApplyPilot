@@ -8,7 +8,12 @@ import logging
 from pathlib import Path
 
 from applypilot.config import TAILORED_DIR
-from applypilot.scoring.pdf_templates.default import build_html
+from applypilot.scoring.pdf_render_model import (
+    ResumeEntry,
+    ResumeRenderModel,
+    SkillSection,
+)
+from applypilot.scoring.pdf_templates.registry import get_template
 
 log = logging.getLogger(__name__)
 
@@ -146,6 +151,83 @@ def parse_entries(text: str) -> list[dict]:
     return entries
 
 
+def build_render_model(parsed: dict) -> ResumeRenderModel:
+    """Build a typed render model from parsed resume text output."""
+
+    sections = parsed.get("sections", {})
+    model = ResumeRenderModel(
+        name=str(parsed.get("name", "")),
+        title=str(parsed.get("title", "")),
+        location=str(parsed.get("location", "")),
+        contact=str(parsed.get("contact", "")),
+    )
+
+    summary_text = str(sections.get("SUMMARY", "")).strip()
+    if summary_text:
+        model.summary = summary_text
+
+    skills_text = sections.get("TECHNICAL SKILLS", "")
+    if isinstance(skills_text, str) and skills_text.strip():
+        model.skills = [SkillSection(category=cat, value=val) for cat, val in parse_skills(skills_text)]
+
+    exp_text = sections.get("EXPERIENCE", "")
+    if isinstance(exp_text, str) and exp_text.strip():
+        model.experience = [
+            ResumeEntry(
+                title=str(entry.get("title", "")),
+                subtitle=str(entry.get("subtitle", "")),
+                bullets=list(entry.get("bullets", [])),
+            )
+            for entry in parse_entries(exp_text)
+        ]
+
+    projects_text = sections.get("PROJECTS", "")
+    if isinstance(projects_text, str) and projects_text.strip():
+        model.projects = [
+            ResumeEntry(
+                title=str(entry.get("title", "")),
+                subtitle=str(entry.get("subtitle", "")),
+                bullets=list(entry.get("bullets", [])),
+            )
+            for entry in parse_entries(projects_text)
+        ]
+
+    education_text = str(sections.get("EDUCATION", "")).strip()
+    if education_text:
+        model.education = education_text
+
+    return model
+
+
+def build_html_for_resume(model: ResumeRenderModel, template_name: str = "default") -> str:
+    """Run template preparation + HTML generation for a render model."""
+
+    template = get_template(template_name)
+    prepared = template.prepare(model)
+    return template.build_html(prepared)
+
+
+def render_model_to_pdf(
+    model: ResumeRenderModel,
+    output_path: Path,
+    template_name: str = "default",
+    html_only: bool = False,
+) -> Path:
+    """Render a resume model directly to HTML or PDF."""
+
+    out = Path(output_path)
+    html = build_html_for_resume(model, template_name=template_name)
+
+    if html_only:
+        out.write_text(html, encoding="utf-8")
+        log.info("HTML generated: %s", out)
+        return out
+
+    render_pdf(html, str(out))
+    log.info("PDF generated: %s", out)
+    return out
+
+
 # ── PDF Renderer ─────────────────────────────────────────────────────────
 
 
@@ -174,7 +256,12 @@ def render_pdf(html: str, output_path: str) -> None:
 # ── Public API ───────────────────────────────────────────────────────────
 
 
-def convert_to_pdf(text_path: Path, output_path: Path | None = None, html_only: bool = False) -> Path:
+def convert_to_pdf(
+    text_path: Path,
+    output_path: Path | None = None,
+    html_only: bool = False,
+    template_name: str = "default",
+) -> Path:
     """Convert a text resume/cover letter to PDF.
 
     Args:
@@ -182,14 +269,16 @@ def convert_to_pdf(text_path: Path, output_path: Path | None = None, html_only: 
         output_path: Optional override for the output path. Defaults to same
             name with .pdf extension.
         html_only: If True, output HTML instead of PDF.
+        template_name: Template identifier used for HTML generation.
 
     Returns:
         Path to the generated PDF (or HTML) file.
     """
     text_path = Path(text_path)
     text = text_path.read_text(encoding="utf-8")
-    resume = parse_resume(text)
-    html = build_html(resume)
+    parsed = parse_resume(text)
+    model = build_render_model(parsed)
+    html = build_html_for_resume(model, template_name=template_name)
 
     if html_only:
         out = output_path or text_path.with_suffix(".html")
@@ -205,7 +294,7 @@ def convert_to_pdf(text_path: Path, output_path: Path | None = None, html_only: 
     return out
 
 
-def batch_convert(limit: int = 0) -> int:
+def batch_convert(limit: int = 0, template_name: str = "default") -> int:
     """Convert .txt files in TAILORED_DIR that don't have corresponding PDFs.
 
     Scans for .txt files (excluding _JOB.txt and _REPORT.json), checks if a
@@ -213,6 +302,7 @@ def batch_convert(limit: int = 0) -> int:
 
     Args:
         limit: Maximum number of files to convert (0 = all eligible files).
+        template_name: Template identifier used for HTML generation.
 
     Returns:
         Number of PDFs generated.
@@ -251,8 +341,9 @@ def batch_convert(limit: int = 0) -> int:
             for f in to_convert:
                 try:
                     text = f.read_text(encoding="utf-8")
-                    resume = parse_resume(text)
-                    html = build_html(resume)
+                    parsed = parse_resume(text)
+                    model = build_render_model(parsed)
+                    html = build_html_for_resume(model, template_name=template_name)
                     out = f.with_suffix(".pdf")
                     page.set_content(html, wait_until="networkidle")
                     page.pdf(
