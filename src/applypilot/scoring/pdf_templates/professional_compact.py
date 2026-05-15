@@ -10,7 +10,21 @@ from urllib.parse import urlparse
 
 from applypilot.scoring.pdf_render_model import ResumeEntry, ResumeRenderModel
 
-_DEFAULT_PAGE_TARGET = 2.0
+_DEFAULT_PAGE_TARGET = 2.5
+_MONTH_ABBR = {
+    1: "Jan",
+    2: "Feb",
+    3: "Mar",
+    4: "Apr",
+    5: "May",
+    6: "Jun",
+    7: "Jul",
+    8: "Aug",
+    9: "Sep",
+    10: "Oct",
+    11: "Nov",
+    12: "Dec",
+}
 TEMPLATE_INFO = {
     "name": "professional_compact",
     "display_name": "Professional Compact",
@@ -30,8 +44,8 @@ TEMPLATE_REQUIREMENTS = {
     "hooks": ["build_html", "prepare", "prepare_with_measurement"],
 }
 TEMPLATE_OPTIONS = {
-    "page_target": {"type": "float", "default": 2.0},
-    "max_resume_pages": {"type": "float", "default": 2.0},
+    "page_target": {"type": "float", "default": 2.5},
+    "max_resume_pages": {"type": "float", "default": 2.5},
     "compact_max_detailed_experience": {"type": "int", "min": 1},
 }
 
@@ -141,7 +155,7 @@ def _build_compact_entry_summary(entry: ResumeEntry) -> tuple[str, bool]:
 
     subtitle = entry.subtitle.strip()
     if subtitle:
-        return subtitle, True
+        return _format_date_text(subtitle), True
 
     return "", False
 
@@ -151,8 +165,8 @@ def _split_subtitle(subtitle: str) -> tuple[str, str]:
     if not parts:
         return "", ""
     if len(parts) == 1:
-        return "", parts[0]
-    return parts[0], " | ".join(parts[1:])
+        return "", _format_date_text(parts[0])
+    return parts[0], _format_date_text(" | ".join(parts[1:]))
 
 
 def _extract_project_context_and_dates(subtitle: str) -> tuple[str, str]:
@@ -160,8 +174,8 @@ def _extract_project_context_and_dates(subtitle: str) -> tuple[str, str]:
     if not parts:
         return "", ""
     if len(parts) == 1:
-        return "", parts[0]
-    return " | ".join(parts[:-1]), parts[-1]
+        return "", _format_date_text(parts[0])
+    return _format_date_text(" | ".join(parts[:-1])), _format_date_text(parts[-1])
 
 
 def _build_skill_lines(skills: list) -> list[str]:
@@ -184,6 +198,18 @@ def _build_skill_lines(skills: list) -> list[str]:
     for idx in range(0, len(flattened), chunk_size):
         lines.append(" • ".join(flattened[idx:idx + chunk_size]))
     return lines
+
+
+def _format_date_text(text: str) -> str:
+    def _replace(match: re.Match[str]) -> str:
+        year = int(match.group(1))
+        month = int(match.group(2))
+        month_text = _MONTH_ABBR.get(month)
+        if not month_text:
+            return match.group(0)
+        return f"{month_text} {year}"
+
+    return re.sub(r"\b(\d{4})-(\d{2})(?:-(\d{2}))?\b", _replace, text)
 
 
 def _is_email(value: str) -> bool:
@@ -214,7 +240,7 @@ def _is_url_like(value: str) -> bool:
     return any(domain in low for domain in ("github.com", "linkedin.com", "gitlab.com", "bitbucket.org"))
 
 
-def _build_contact_lines(location: str, contact: str) -> tuple[str, str]:
+def _build_contact_lines(location: str, contact: str, *, include_country_in_location: bool = False) -> tuple[str, str]:
     parts = [part.strip() for part in contact.split("|")] if contact else []
     phones: list[str] = []
     emails: list[str] = []
@@ -239,6 +265,8 @@ def _build_contact_lines(location: str, contact: str) -> tuple[str, str]:
 
     primary_parts: list[str] = []
     location_text = location.strip()
+    if not include_country_in_location:
+        location_text = re.sub(r",\s*(US|USA|United States)$", "", location_text, flags=re.IGNORECASE).strip()
     if location_text:
         primary_parts.append(location_text)
     primary_parts.extend(phones)
@@ -323,7 +351,12 @@ def build_html(view: ProfessionalCompactTemplateView) -> str:
         summary_html = f'<section class="section"><h2 class="section-title">Summary</h2><p class="summary">{resume.summary}</p></section>'
 
     # Contact line parsing
-    primary_contact_line, url_contact_line = _build_contact_lines(resume.location, resume.contact)
+    include_country = bool(resume.render_options.get("include_country_in_location", False))
+    primary_contact_line, url_contact_line = _build_contact_lines(
+        resume.location,
+        resume.contact,
+        include_country_in_location=include_country,
+    )
     header_contact_html = ""
     if primary_contact_line:
         header_contact_html += f'<div class="contact primary-contact">{primary_contact_line}</div>'

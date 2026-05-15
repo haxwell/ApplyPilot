@@ -113,6 +113,14 @@ def _extract_render_options(profile: dict) -> dict[str, Any]:
 
     tailoring_config = profile.get("tailoring_config", {})
     if isinstance(tailoring_config, dict):
+        global_rules = tailoring_config.get("global_rules")
+        if isinstance(global_rules, dict):
+            # Keep page-target semantics available to templates without requiring
+            # duplicate config under render_options/pdf_render_options.
+            max_pages = global_rules.get("max_resume_pages")
+            if max_pages is not None:
+                options["max_resume_pages"] = max_pages
+
         raw_tailoring_render_options = tailoring_config.get("render_options")
         if isinstance(raw_tailoring_render_options, dict):
             options.update(raw_tailoring_render_options)

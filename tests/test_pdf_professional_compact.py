@@ -36,8 +36,8 @@ def test_prepare_with_measurement_moves_later_entries_until_fit(monkeypatch) -> 
 
     prepared = professional_compact.prepare_with_measurement(model, lambda html: int(html))
 
-    assert [entry.title for entry in prepared.detailed_experience] == ["Role 1", "Role 2"]
-    assert [entry.title for entry in prepared.compact_experience] == ["Role 3", "Role 4", "Role 5", "Role 6"]
+    assert [entry.title for entry in prepared.detailed_experience] == ["Role 1", "Role 2", "Role 3"]
+    assert [entry.title for entry in prepared.compact_experience] == ["Role 4", "Role 5", "Role 6"]
 
 
 def test_prepare_with_measurement_returns_tightest_candidate_with_one_detailed_when_none_fit(monkeypatch) -> None:
@@ -85,6 +85,15 @@ def test_prepare_with_measurement_honors_page_target_option(monkeypatch) -> None
     assert [entry.title for entry in prepared.detailed_experience] == ["Role 1", "Role 2", "Role 3"]
     assert [entry.title for entry in prepared.compact_experience] == ["Role 4", "Role 5"]
     assert prepared.page_target == 3.0
+
+
+def test_prepare_with_measurement_defaults_to_two_point_five_pages(monkeypatch) -> None:
+    model = ResumeRenderModel(name="Alex Example", title="Senior Engineer", experience=_experience_entries(2))
+    monkeypatch.setattr(professional_compact, "build_html", lambda view: str(len(view.detailed_experience)))
+
+    prepared = professional_compact.prepare_with_measurement(model, lambda html: int(html))
+
+    assert prepared.page_target == 2.5
 
 
 def test_prepare_with_measurement_keeps_at_least_one_detailed_experience_entry(monkeypatch) -> None:
@@ -188,6 +197,45 @@ def test_professional_compact_build_html_renders_polished_header_and_sections() 
     assert '<div class="title">' not in html
 
 
+def test_professional_compact_header_omits_country_suffix_by_default() -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        location="Aurora, CO, US",
+        contact="alex@example.com | 303-521-3115 | https://github.com/haxwell",
+    )
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[],
+        compact_experience=[],
+        projects_to_render=[],
+    )
+
+    html = professional_compact.build_html(view)
+
+    assert "Aurora, CO • 303-521-3115 • alex@example.com" in html
+    assert "Aurora, CO, US" not in html
+    assert "github.com/haxwell" in html
+
+
+def test_professional_compact_header_keeps_country_when_explicitly_enabled() -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        location="Aurora, CO, US",
+        contact="alex@example.com | 303-521-3115",
+        render_options={"include_country_in_location": True},
+    )
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[],
+        compact_experience=[],
+        projects_to_render=[],
+    )
+
+    html = professional_compact.build_html(view)
+
+    assert "Aurora, CO, US • 303-521-3115 • alex@example.com" in html
+
+
 def test_professional_compact_build_html_renders_detailed_and_compact_experience_content() -> None:
     model = ResumeRenderModel(name="Alex Example", contact="alex@example.com")
     view = professional_compact.ProfessionalCompactTemplateView(
@@ -221,6 +269,27 @@ def test_professional_compact_build_html_renders_detailed_and_compact_experience
     assert "Built API services and improved production reliability." in html
 
 
+def test_professional_compact_formats_experience_dates_as_month_year() -> None:
+    model = ResumeRenderModel(name="Alex Example", contact="alex@example.com")
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[
+            ResumeEntry(
+                title="Senior Software Engineer",
+                subtitle="Scale AI | 2025-08 - 2026-03 | Remote",
+                bullets=["Led backend architecture improvements."],
+            )
+        ],
+        compact_experience=[],
+        projects_to_render=[],
+    )
+
+    html = professional_compact.build_html(view)
+
+    assert "Aug 2025 - Mar 2026 | Remote" in html
+    assert "2025-08 - 2026-03" not in html
+
+
 def test_professional_compact_build_html_renders_projects_in_experience_style() -> None:
     model = ResumeRenderModel(name="Alex Example", contact="alex@example.com")
     view = professional_compact.ProfessionalCompactTemplateView(
@@ -244,3 +313,24 @@ def test_professional_compact_build_html_renders_projects_in_experience_style() 
     assert "2023 - 2024" in html
     assert "Personal Project" in html
     assert "Designed backend service APIs." in html
+
+
+def test_professional_compact_selected_experience_subtitle_fallback_formats_dates() -> None:
+    model = ResumeRenderModel(name="Alex Example")
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[],
+        compact_experience=[
+            ResumeEntry(
+                title="Software Engineer",
+                subtitle="Example Corp | 2025-08 - 2026-03 | Remote",
+                bullets=[],
+            )
+        ],
+        projects_to_render=[],
+    )
+
+    html = professional_compact.build_html(view)
+
+    assert "Aug 2025 - Mar 2026" in html
+    assert "2025-08 - 2026-03" not in html

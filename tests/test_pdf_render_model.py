@@ -253,6 +253,20 @@ def test_build_render_model_from_tailored_json_render_options_priority_prefers_r
     assert model.render_options["render_only"] == "z"
 
 
+def test_build_render_model_from_tailored_json_maps_max_resume_pages_from_global_rules() -> None:
+    profile = {
+        "personal": {"full_name": "Alex Example"},
+        "tailoring_config": {
+            "global_rules": {"max_resume_pages": 2.5},
+        },
+    }
+    data = {"title": "Engineer", "summary": "Summary", "skills": {}, "experience": [], "projects": [], "education": ""}
+
+    model = build_render_model_from_tailored_json(data, profile)
+
+    assert model.render_options["max_resume_pages"] == 2.5
+
+
 def test_build_render_model_from_tailored_json_ignores_non_dict_render_options() -> None:
     profile = {
         "personal": {"full_name": "Alex Example"},
