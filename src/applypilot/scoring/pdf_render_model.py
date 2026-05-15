@@ -85,20 +85,20 @@ def _normalize_entry(entry: Any) -> ResumeEntry | None:
     )
 
 
-def _build_location(personal: dict) -> str:
+def _build_location(personal: dict, *, include_country: bool = False) -> str:
     city = str(personal.get("city", "")).strip()
     state = str(personal.get("province_state", "")).strip()
     country = str(personal.get("country", "")).strip()
     postal_code = str(personal.get("postal_code", "")).strip()
 
     city_state = ", ".join(part for part in (city, state) if part)
-    if city_state and country:
+    if city_state and country and include_country:
         return f"{city_state}, {country}"
     if city_state:
         return city_state
-    if country and postal_code:
+    if country and postal_code and include_country:
         return f"{postal_code}, {country}"
-    if country:
+    if country and include_country:
         return country
     if postal_code:
         return postal_code
@@ -135,13 +135,14 @@ def build_render_model_from_tailored_json(data: dict, profile: dict) -> ResumeRe
 
     personal = profile.get("personal", {}) if isinstance(profile, dict) else {}
     model = ResumeRenderModel()
+    model.render_options = _extract_render_options(profile)
+    include_country = bool(model.render_options.get("include_country_in_location", False))
 
     model.name = str(personal.get("full_name", "")).strip()
-    model.location = _build_location(personal)
+    model.location = _build_location(personal, include_country=include_country)
     model.title = str(data.get("title", "")).strip()
     model.summary = str(data.get("summary", "")).strip()
     model.education = str(data.get("education", "")).strip()
-    model.render_options = _extract_render_options(profile)
 
     contact_parts: list[str] = []
     for key in ("email", "phone", "github_url", "linkedin_url"):

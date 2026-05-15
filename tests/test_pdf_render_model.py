@@ -154,7 +154,7 @@ def test_resume_entry_supports_compact_summary() -> None:
     assert entry.compact_summary == "Led backend reliability improvements."
 
 
-def test_build_render_model_from_tailored_json_location_includes_country() -> None:
+def test_build_render_model_from_tailored_json_location_omits_country_by_default() -> None:
     profile = {
         "personal": {
             "full_name": "Alex Example",
@@ -162,6 +162,27 @@ def test_build_render_model_from_tailored_json_location_includes_country() -> No
             "province_state": "CO",
             "country": "US",
         }
+    }
+    data = {"title": "Engineer", "summary": "Summary", "skills": {}, "experience": [], "projects": [], "education": ""}
+
+    model = build_render_model_from_tailored_json(data, profile)
+
+    assert model.location == "Aurora, CO"
+
+
+def test_build_render_model_from_tailored_json_location_includes_country_when_enabled() -> None:
+    profile = {
+        "personal": {
+            "full_name": "Alex Example",
+            "city": "Aurora",
+            "province_state": "CO",
+            "country": "US",
+        },
+        "tailoring_config": {
+            "pdf_render_options": {
+                "include_country_in_location": True,
+            }
+        },
     }
     data = {"title": "Engineer", "summary": "Summary", "skills": {}, "experience": [], "projects": [], "education": ""}
 

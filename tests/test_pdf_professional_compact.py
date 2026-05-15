@@ -40,14 +40,14 @@ def test_prepare_with_measurement_moves_later_entries_until_fit(monkeypatch) -> 
     assert [entry.title for entry in prepared.compact_experience] == ["Role 3", "Role 4", "Role 5", "Role 6"]
 
 
-def test_prepare_with_measurement_returns_tightest_candidate_when_none_fit(monkeypatch) -> None:
+def test_prepare_with_measurement_returns_tightest_candidate_with_one_detailed_when_none_fit(monkeypatch) -> None:
     model = ResumeRenderModel(name="Alex Example", title="Senior Engineer", experience=_experience_entries(3))
     monkeypatch.setattr(professional_compact, "build_html", lambda _view: "10")
 
     prepared = professional_compact.prepare_with_measurement(model, lambda html: int(html))
 
-    assert prepared.detailed_experience == []
-    assert [entry.title for entry in prepared.compact_experience] == ["Role 1", "Role 2", "Role 3"]
+    assert [entry.title for entry in prepared.detailed_experience] == ["Role 1"]
+    assert [entry.title for entry in prepared.compact_experience] == ["Role 2", "Role 3"]
 
 
 def test_prepare_with_measurement_hard_cap_skips_measurement_loop(monkeypatch) -> None:
@@ -85,6 +85,57 @@ def test_prepare_with_measurement_honors_page_target_option(monkeypatch) -> None
     assert [entry.title for entry in prepared.detailed_experience] == ["Role 1", "Role 2", "Role 3"]
     assert [entry.title for entry in prepared.compact_experience] == ["Role 4", "Role 5"]
     assert prepared.page_target == 3.0
+
+
+def test_prepare_with_measurement_keeps_at_least_one_detailed_experience_entry(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        title="Senior Engineer",
+        experience=_experience_entries(3),
+        render_options={"page_target": 1},
+    )
+    monkeypatch.setattr(professional_compact, "build_html", lambda _view: "10")
+
+    prepared = professional_compact.prepare_with_measurement(model, lambda html: int(html))
+
+    assert len(prepared.detailed_experience) == 1
+    assert [entry.title for entry in prepared.compact_experience] == ["Role 2", "Role 3"]
+
+
+def test_prepare_with_measurement_page_target_two_allows_two_physical_pages(monkeypatch) -> None:
+    model = ResumeRenderModel(name="Alex Example", title="Senior Engineer", experience=_experience_entries(4), render_options={"page_target": 2})
+    monkeypatch.setattr(professional_compact, "build_html", lambda view: str(len(view.detailed_experience)))
+
+    prepared = professional_compact.prepare_with_measurement(model, lambda html: int(html))
+
+    assert len(prepared.detailed_experience) == 2
+
+
+def test_prepare_with_measurement_page_target_2_001_allows_three_physical_pages(monkeypatch) -> None:
+    model = ResumeRenderModel(name="Alex Example", title="Senior Engineer", experience=_experience_entries(4), render_options={"page_target": 2.001})
+    monkeypatch.setattr(professional_compact, "build_html", lambda view: str(len(view.detailed_experience)))
+
+    prepared = professional_compact.prepare_with_measurement(model, lambda html: int(html))
+
+    assert len(prepared.detailed_experience) == 3
+
+
+def test_prepare_with_measurement_page_target_2_5_allows_three_physical_pages(monkeypatch) -> None:
+    model = ResumeRenderModel(name="Alex Example", title="Senior Engineer", experience=_experience_entries(4), render_options={"page_target": 2.5})
+    monkeypatch.setattr(professional_compact, "build_html", lambda view: str(len(view.detailed_experience)))
+
+    prepared = professional_compact.prepare_with_measurement(model, lambda html: int(html))
+
+    assert len(prepared.detailed_experience) == 3
+
+
+def test_prepare_with_measurement_page_target_three_allows_three_physical_pages(monkeypatch) -> None:
+    model = ResumeRenderModel(name="Alex Example", title="Senior Engineer", experience=_experience_entries(4), render_options={"page_target": 3})
+    monkeypatch.setattr(professional_compact, "build_html", lambda view: str(len(view.detailed_experience)))
+
+    prepared = professional_compact.prepare_with_measurement(model, lambda html: int(html))
+
+    assert len(prepared.detailed_experience) == 3
 
 
 def test_professional_compact_build_html_renders_selected_experience() -> None:
@@ -130,7 +181,8 @@ def test_professional_compact_build_html_renders_polished_header_and_sections() 
     html = professional_compact.build_html(view)
 
     assert '<h1 class="name">Alex Example</h1>' in html
-    assert "Denver, CO • alex@example.com • 555-111-2222 • github.com/alex" in html
+    assert "Denver, CO • 555-111-2222 • alex@example.com" in html
+    assert "github.com/alex" in html
     assert '<h2 class="section-title">Summary</h2>' in html
     assert '<h2 class="section-title">Education</h2>' in html
     assert '<div class="title">' not in html
@@ -187,6 +239,8 @@ def test_professional_compact_build_html_renders_projects_in_experience_style() 
     html = professional_compact.build_html(view)
 
     assert '<h2 class="section-title">Projects</h2>' in html
-    assert "Personal Project - TribeApp Platform" in html
+    assert "TribeApp Platform" in html
+    assert 'class="project-title-row"' in html
     assert "2023 - 2024" in html
+    assert "Personal Project" in html
     assert "Designed backend service APIs." in html

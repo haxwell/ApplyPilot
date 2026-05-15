@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
+import re
 from typing import Callable
+from urllib.parse import urlparse
 
 from applypilot.scoring.pdf_render_model import ResumeEntry, ResumeRenderModel
 
@@ -69,6 +72,10 @@ def _resolve_page_target(model: ResumeRenderModel) -> float:
     return parsed
 
 
+def _allowed_physical_pages(page_target: float) -> int:
+    return max(1, int(math.ceil(page_target)))
+
+
 def _build_candidate_view(model: ResumeRenderModel, detailed_count: int, page_target: float) -> ProfessionalCompactTemplateView:
     detailed = list(model.experience[:detailed_count])
     compact = list(model.experience[detailed_count:])
@@ -102,17 +109,22 @@ def prepare_with_measurement(
     page_target = _resolve_page_target(model)
     hard_cap = _coerce_positive_int(model.render_options.get("compact_max_detailed_experience"))
     if hard_cap is not None:
-        return _build_candidate_view(model, detailed_count=min(hard_cap, len(model.experience)), page_target=page_target)
+        detailed_count = min(hard_cap, len(model.experience))
+        if model.experience:
+            detailed_count = max(1, detailed_count)
+        return _build_candidate_view(model, detailed_count=detailed_count, page_target=page_target)
 
     total_entries = len(model.experience)
-    tightest_candidate = _build_candidate_view(model, detailed_count=0, page_target=page_target)
+    min_detailed = 1 if total_entries > 0 else 0
+    allowed_pages = _allowed_physical_pages(page_target)
+    tightest_candidate = _build_candidate_view(model, detailed_count=min_detailed, page_target=page_target)
 
-    for detailed_count in range(total_entries, -1, -1):
+    for detailed_count in range(total_entries, min_detailed - 1, -1):
         candidate = _build_candidate_view(model, detailed_count=detailed_count, page_target=page_target)
         html = build_html(candidate)
         page_count = measure_html_page_count(html)
         tightest_candidate = candidate
-        if page_count <= page_target:
+        if page_count <= allowed_pages:
             return candidate
 
     return tightest_candidate
@@ -143,6 +155,15 @@ def _split_subtitle(subtitle: str) -> tuple[str, str]:
     return parts[0], " | ".join(parts[1:])
 
 
+def _extract_project_context_and_dates(subtitle: str) -> tuple[str, str]:
+    parts = [part.strip() for part in subtitle.split("|") if part.strip()]
+    if not parts:
+        return "", ""
+    if len(parts) == 1:
+        return "", parts[0]
+    return " | ".join(parts[:-1]), parts[-1]
+
+
 def _build_skill_lines(skills: list) -> list[str]:
     seen: set[str] = set()
     flattened: list[str] = []
@@ -163,6 +184,70 @@ def _build_skill_lines(skills: list) -> list[str]:
     for idx in range(0, len(flattened), chunk_size):
         lines.append(" • ".join(flattened[idx:idx + chunk_size]))
     return lines
+
+
+def _is_email(value: str) -> bool:
+    return "@" in value and "." in value.split("@")[-1]
+
+
+def _is_phone(value: str) -> bool:
+    digits = re.sub(r"\D", "", value)
+    return len(digits) >= 10 and bool(re.fullmatch(r"[0-9\-\+\(\)\.\s]+", value))
+
+
+def _normalize_display_url(value: str) -> str:
+    raw = value.strip()
+    if not raw:
+        return ""
+    if "://" not in raw:
+        raw = f"https://{raw}"
+    parsed = urlparse(raw)
+    host = parsed.netloc.lower().replace("www.", "")
+    path = parsed.path.rstrip("/")
+    return f"{host}{path}"
+
+
+def _is_url_like(value: str) -> bool:
+    low = value.lower().strip()
+    if low.startswith(("http://", "https://")):
+        return True
+    return any(domain in low for domain in ("github.com", "linkedin.com", "gitlab.com", "bitbucket.org"))
+
+
+def _build_contact_lines(location: str, contact: str) -> tuple[str, str]:
+    parts = [part.strip() for part in contact.split("|")] if contact else []
+    phones: list[str] = []
+    emails: list[str] = []
+    urls: list[str] = []
+    others: list[str] = []
+
+    for part in parts:
+        if not part:
+            continue
+        if _is_phone(part):
+            phones.append(part)
+            continue
+        if _is_email(part):
+            emails.append(part)
+            continue
+        if _is_url_like(part):
+            normalized = _normalize_display_url(part)
+            if normalized:
+                urls.append(normalized)
+            continue
+        others.append(part)
+
+    primary_parts: list[str] = []
+    location_text = location.strip()
+    if location_text:
+        primary_parts.append(location_text)
+    primary_parts.extend(phones)
+    primary_parts.extend(emails)
+    primary_parts.extend(others)
+
+    primary_line = " • ".join(primary_parts)
+    url_line = " • ".join(urls)
+    return primary_line, url_line
 
 
 def build_html(view: ProfessionalCompactTemplateView) -> str:
@@ -214,12 +299,17 @@ def build_html(view: ProfessionalCompactTemplateView) -> str:
     if view.projects_to_render:
         items = ""
         for entry in view.projects_to_render:
-            company, detail_line = _split_subtitle(entry.subtitle)
-            heading = f"{company} - {entry.title}" if company else entry.title
-            subtitle = f'<div class="entry-subtitle">{detail_line}</div>' if detail_line else ""
+            context_line, date_line = _extract_project_context_and_dates(entry.subtitle)
+            title_row = (
+                '<div class="project-title-row">'
+                f'<h3 class="entry-title">{entry.title}</h3>'
+                f'<span class="project-dates">{date_line}</span>'
+                "</div>"
+            )
+            subtitle = f'<div class="entry-subtitle">{context_line}</div>' if context_line else ""
             bullets = "".join(f"<li>{bullet}</li>" for bullet in entry.bullets)
             bullet_list = f'<ul class="entry-bullets">{bullets}</ul>' if bullets else ""
-            items += f'<article class="entry"><h3 class="entry-title">{heading}</h3>{subtitle}{bullet_list}</article>'
+            items += f'<article class="entry">{title_row}{subtitle}{bullet_list}</article>'
         proj_html = f'<section class="section"><h2 class="section-title">Projects</h2>{items}</section>'
 
     # Education
@@ -233,12 +323,12 @@ def build_html(view: ProfessionalCompactTemplateView) -> str:
         summary_html = f'<section class="section"><h2 class="section-title">Summary</h2><p class="summary">{resume.summary}</p></section>'
 
     # Contact line parsing
-    contact_parts = [p.strip() for p in resume.contact.split("|")] if resume.contact else []
-    if resume.location:
-        contact_parts.insert(0, resume.location)
-    contact_html = " • ".join(part for part in contact_parts if part)
-
-    header_contact_html = f'<div class="contact">{contact_html}</div>' if contact_html else ""
+    primary_contact_line, url_contact_line = _build_contact_lines(resume.location, resume.contact)
+    header_contact_html = ""
+    if primary_contact_line:
+        header_contact_html += f'<div class="contact primary-contact">{primary_contact_line}</div>'
+    if url_contact_line:
+        header_contact_html += f'<div class="contact links-contact">{url_contact_line}</div>'
 
     return f"""<!DOCTYPE html>
 <html>
@@ -265,8 +355,8 @@ body {{
     margin: 0 auto;
 }}
 .header {{
-    margin-bottom: 16px;
-    padding-bottom: 10px;
+    margin-bottom: 18px;
+    padding-bottom: 11px;
     border-bottom: 1px solid #222222;
 }}
 .name {{
@@ -275,9 +365,15 @@ body {{
     letter-spacing: 0.2px;
 }}
 .contact {{
-    margin-top: 6px;
+    margin-top: 4px;
     font-size: 10.4pt;
     color: #303030;
+}}
+.primary-contact {{
+    margin-top: 7px;
+}}
+.links-contact {{
+    margin-top: 2px;
 }}
 .section {{
     margin-top: 16px;
@@ -314,6 +410,18 @@ body {{
     font-size: 10.2pt;
     font-style: italic;
     color: #444444;
+}}
+.project-title-row {{
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    align-items: baseline;
+}}
+.project-dates {{
+    font-size: 10.2pt;
+    font-style: italic;
+    color: #444444;
+    white-space: nowrap;
 }}
 .entry-bullets {{
     margin: 6px 0 0 24px;
