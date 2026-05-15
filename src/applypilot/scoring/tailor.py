@@ -181,6 +181,18 @@ def _build_tailor_prompt(
     Your goal is to produce a credible, recruiter-ready, human-sounding resume by selecting, ordering, and lightly tailoring the strongest real evidence from the source resume.
 
     The resume should feel like a polished senior-engineer resume tailored to this job, not like generic AI-generated resume text.
+    
+    ## YOUR ROLE IN THE PIPELINE
+
+    You are the content tailoring step, not the final layout or page-fitting step.
+
+    Your job is to transform the source resume into complete, truthful, job-relevant structured resume content.
+
+    Do not shorten, omit, or over-compress content merely to fit a page count. A later PDF template step is responsible for layout, page fitting, detailed-vs-compact rendering, and deciding what can fit in the final PDF.
+
+    For this step, prefer complete and relevant evidence over premature brevity.
+
+    Provide enough truthful material for downstream templates to decide what to render in detail or compact form.
 
     ## RECRUITER SCAN, 6 SECONDS
 
@@ -299,7 +311,8 @@ def _build_tailor_prompt(
     - If any profile company is missing, output is invalid.
     - Provide enough truthful source material for the PDF template to decide what to render in detail or compact form.
     - For recent or highly relevant roles, provide 3-4 concise, concrete bullets grounded in source resume evidence.
-    - For older roles, provide 2-3 concise, concrete bullets when source evidence exists.
+    - For older roles, provide at least 2 concise, concrete bullets when source evidence exists. Use 3 when the role has strong relevant evidence.
+    - Do not reduce any role to a single bullet unless the source resume truly contains only one useful evidence point for that role.
     - Do not reduce older roles to a single bullet merely to fit page length; page fitting is handled by the PDF template.
 
     ## BULLET STRATEGY
