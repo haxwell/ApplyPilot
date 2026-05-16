@@ -299,22 +299,35 @@ def _build_tailor_prompt(
 
     ## SKILLS
 
-    Reorder skills so the job's must-haves appear first.
+    The skills section is not a complete inventory of source-resume skills.
 
-    Keep skills concise and scannable.
+    Include only skills that appear in the job description, are direct synonyms of job-description skills,
+    or are closely related to a key responsibility in the job description.
 
-    Prefer grouped, resume-friendly categories such as:
-    - Languages
-    - Backend
-    - Cloud / DevOps
-    - Data / Messaging
-    - Testing
-    - Frontend
-    - AI / Data Tooling
+    Do not include a skill merely because it appears in the source resume.
 
-    Only include categories that help this job.
+    Select skills by this priority:
+    1. Exact job-description must-haves.
+    2. Close synonyms or ecosystem equivalents.
+    3. Skills needed to support the job's core responsibilities.
+    4. Source skills that strengthen seniority only if space remains.
 
-    Do not bury the most important must-have skills.
+    Do not include a category unless it contains at least 2 strongly relevant skills,
+    except for a rare must-have single skill.
+
+    Prefer fewer, stronger skills over a broad catalog.
+
+    Keep the total skills section tight enough to scan in roughly 2-4 visual lines in the PDF.
+
+    Strongly prefer 12-20 total skill items across all categories.
+
+    Absolute maximum: 24 skill items unless the job description explicitly requires a broad stack.
+
+    Drop low-relevance frontend, testing, data science, ML, DevOps, or legacy skills unless
+    the job description asks for them or they directly support a key job responsibility.
+
+    If a skill is only weakly related, mention it in an experience bullet only if useful;
+    do not put it in Technical Skills.
 
     ## EXPERIENCE COVERAGE
 
@@ -523,13 +536,10 @@ def _build_tailor_prompt(
       "title": "Role Title",
       "summary": "4-6 tailored sentences.",
       "skills": {{
-        "Languages": "...",
-        "Backend": "...",
-        "Cloud / DevOps": "...",
+        "Backend / Platform": "...",
+        "Cloud / Infrastructure": "...",
         "Data / Messaging": "...",
-        "Testing": "...",
-        "Frontend": "...",
-        "AI / Data Tooling": "..."
+        "Testing / Delivery": "..."
       }},
       "experience": [
         {{
@@ -567,6 +577,12 @@ def _build_tailor_prompt(
       ],
       "education": "Legacy compatibility field; downstream rendering uses trusted profile education when available."
     }}
+
+    Skills schema notes:
+    - Use only categories that help this job.
+    - Omit empty or weak categories.
+    - Do not create Frontend or AI/Data Tooling categories unless the target job makes them important.
+    - Category names may vary based on the job, but keep them concise and resume-friendly.
     """
 
     return system_prompt;
@@ -1739,7 +1755,7 @@ def run_tailoring(
                     tailored_json = report.get("tailored_json")
                     if isinstance(tailored_json, dict):
                         try:
-                            model = build_render_model_from_tailored_json(tailored_json, profile)
+                            model = build_render_model_from_tailored_json(tailored_json, profile, job=job)
                             generated_pdf, planning = render_model_to_pdf_with_planning(
                                 model,
                                 generated_pdf,

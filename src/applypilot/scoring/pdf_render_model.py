@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from applypilot.resume_json import format_education_entry
+from applypilot.scoring.skills_relevance import build_relevant_skills
 
 @dataclass
 class SkillSection:
@@ -279,7 +280,11 @@ def _extract_render_options(profile: dict) -> dict[str, Any]:
     return options
 
 
-def build_render_model_from_tailored_json(data: dict, profile: dict) -> ResumeRenderModel:
+def build_render_model_from_tailored_json(
+    data: dict,
+    profile: dict,
+    job: dict | None = None,
+) -> ResumeRenderModel:
     """Build a render model directly from LLM-tailored JSON + profile context."""
 
     personal = profile.get("personal", {}) if isinstance(profile, dict) else {}
@@ -316,17 +321,29 @@ def build_render_model_from_tailored_json(data: dict, profile: dict) -> ResumeRe
     model.contact = " | ".join(contact_parts)
 
     raw_skills = data.get("skills", {})
-    if isinstance(raw_skills, dict):
-        for category, value in raw_skills.items():
-            category_text = str(category).strip()
-            value_text = str(value).strip()
-            if category_text and value_text:
-                model.skills.append(SkillSection(category=category_text, value=value_text))
-    elif isinstance(raw_skills, list):
-        for idx, value in enumerate(raw_skills):
-            value_text = str(value).strip()
-            if value_text:
-                model.skills.append(SkillSection(category=f"Skill {idx + 1}", value=value_text))
+    selected_skills, _ = build_relevant_skills(
+        raw_skills,
+        job=job,
+        profile=profile,
+        render_options=model.render_options,
+    )
+
+    grouped_skills: dict[str, list[str]] = {}
+    ordered_categories: list[str] = []
+    for category, token in selected_skills:
+        category_text = str(category).strip()
+        token_text = str(token).strip()
+        if not category_text or not token_text:
+            continue
+        if category_text not in grouped_skills:
+            grouped_skills[category_text] = []
+            ordered_categories.append(category_text)
+        grouped_skills[category_text].append(token_text)
+
+    for category in ordered_categories:
+        values = grouped_skills.get(category, [])
+        if values:
+            model.skills.append(SkillSection(category=category, value=", ".join(values)))
 
     raw_experience = data.get("experience", [])
     profile_work = profile.get("work", []) if isinstance(profile, dict) and isinstance(profile.get("work"), list) else []

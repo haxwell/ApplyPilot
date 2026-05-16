@@ -646,3 +646,64 @@ class TestValidationCompactSummary:
 
         assert result["passed"] is True
         assert result["errors"] == []
+
+    def test_validate_json_fields_warns_when_skills_are_too_broad(self):
+        profile = {
+            "work": [{"company": "Acme Corp"}],
+            "education": [{"institution": "State University"}],
+            "job_context": {"title": "Senior Software Engineer"},
+        }
+        data = {
+            "title": "Senior Software Engineer",
+            "summary": "Experienced backend engineer building scalable services.",
+            "skills": {
+                "Core": "Python, Java, JavaScript, TypeScript, SQL, Bash, HTML, CSS, GraphQL",
+                "Backend": "Spring Boot, REST APIs, Microservices, Distributed Systems, Event-Driven Architecture, OAuth2, OpenAPI, gRPC",
+                "Cloud": "AWS, Docker, Kubernetes, Terraform, CloudFoundry, Lambda, ECS, S3",
+            },
+            "experience": [
+                {
+                    "header": "Senior Software Engineer",
+                    "subtitle": "Acme Corp | 2020-2024",
+                    "bullets": ["Built APIs", "Improved reliability"],
+                }
+            ],
+            "projects": [],
+            "education": "State University | BS Computer Science",
+        }
+
+        result = validate_json_fields(data, profile, mode="normal")
+
+        assert result["passed"] is True
+        assert result["skills_item_count"] > 24
+        assert any("Skills section may be too broad:" in warning for warning in result["warnings"])
+
+    def test_validate_json_fields_does_not_warn_when_skills_are_24_or_fewer(self):
+        profile = {
+            "work": [{"company": "Acme Corp"}],
+            "education": [{"institution": "State University"}],
+            "job_context": {"title": "Senior Software Engineer"},
+        }
+        data = {
+            "title": "Senior Software Engineer",
+            "summary": "Experienced backend engineer building scalable services.",
+            "skills": {
+                "Backend": "Python, Java, Spring Boot, REST APIs, Microservices, Kafka",
+                "Cloud": "AWS, Docker, Kubernetes, Terraform, CI/CD, PostgreSQL",
+            },
+            "experience": [
+                {
+                    "header": "Senior Software Engineer",
+                    "subtitle": "Acme Corp | 2020-2024",
+                    "bullets": ["Built APIs", "Improved reliability"],
+                }
+            ],
+            "projects": [],
+            "education": "State University | BS Computer Science",
+        }
+
+        result = validate_json_fields(data, profile, mode="normal")
+
+        assert result["passed"] is True
+        assert result["skills_item_count"] <= 24
+        assert not any("Skills section may be too broad:" in warning for warning in result["warnings"])

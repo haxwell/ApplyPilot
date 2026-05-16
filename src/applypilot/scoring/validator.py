@@ -167,6 +167,30 @@ def _company_is_present(experience_entry: dict, company: str) -> bool:
     return bool(re.search(rf"(^| ){re.escape(company_norm)}( |$)", entry_norm))
 
 
+def _count_skill_items(skills_value: object) -> int:
+    """Count skill items across dict/list/string skills payloads."""
+
+    split_pattern = r"[,;|•\n]+"
+
+    def _tokens_from_value(value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, dict):
+            tokens: list[str] = []
+            for item in value.values():
+                tokens.extend(_tokens_from_value(item))
+            return tokens
+        if isinstance(value, list):
+            tokens: list[str] = []
+            for item in value:
+                tokens.extend(_tokens_from_value(item))
+            return tokens
+        parts = re.split(split_pattern, str(value))
+        return [part.strip() for part in parts if part and part.strip()]
+
+    return len(_tokens_from_value(skills_value))
+
+
 # ── JSON Field Validation ─────────────────────────────────────────────────
 
 def validate_json_fields(
@@ -240,6 +264,13 @@ def validate_json_fields(
         generated_has_odd = any(word in generated_words for word in odd_modifiers)
         if not shared or (generated_has_odd and not any(word in target_words for word in odd_modifiers)):
             errors.append(f"Generated title '{generated_title}' is not aligned with target '{target_title}'")
+
+    skills_item_count = _count_skill_items(data.get("skills"))
+    if skills_item_count > 24:
+        warnings.append(
+            "Skills section may be too broad: "
+            f"{skills_item_count} skills; prefer 12-20 and max 24 unless the job requires a broad stack."
+        )
 
     if isinstance(data["skills"], dict):
         skills_text = " ".join(str(v) for v in data["skills"].values()).lower()
@@ -330,7 +361,12 @@ def validate_json_fields(
             else:
                 warnings.append(msg)
 
-    return {"passed": len(errors) == 0, "errors": errors, "warnings": warnings}
+    return {
+        "passed": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "skills_item_count": skills_item_count,
+    }
 
 
 # ── Full Resume Text Validation ───────────────────────────────────────────

@@ -436,3 +436,41 @@ def test_compact_prepare_honors_render_options_from_profile_model() -> None:
 
     assert [entry.title for entry in prepared.detailed_experience] == ["Role 1", "Role 2"]
     assert [entry.title for entry in prepared.compact_experience] == ["Role 3", "Role 4"]
+
+
+def test_build_render_model_from_tailored_json_applies_relevance_capped_skills_for_job() -> None:
+    profile = {
+        "personal": {"full_name": "Alex Example"},
+    }
+    data = {
+        "title": "Engineer",
+        "summary": "Summary",
+        "skills": {
+            "Core": (
+                "Java, Spring Boot, REST APIs, Microservices, Distributed Systems, Kafka, "
+                "Event-Driven Architecture, SQL, PostgreSQL, MySQL, AWS, Docker, Kubernetes, "
+                "CI/CD, GitHub Actions, GitLab CI, Jenkins, Linux, React, Angular, TensorFlow, "
+                "Keras, Pandas, Helm, CloudFoundry, Redis, OAuth2, OpenAPI"
+            )
+        },
+        "experience": [],
+        "projects": [],
+        "education": "",
+    }
+    job = {
+        "title": "Senior Backend Engineer",
+        "full_description": (
+            "Build backend microservices in Java and Spring Boot, design REST APIs, "
+            "distributed systems, Kafka event-driven workflows, and AWS Kubernetes deployments."
+        ),
+    }
+
+    model = build_render_model_from_tailored_json(data, profile, job=job)
+
+    flattened = []
+    for section in model.skills:
+        flattened.extend([part.strip() for part in section.value.split(",") if part.strip()])
+
+    assert len(flattened) <= 24
+    assert "Java" in flattened
+    assert "Spring Boot" in flattened

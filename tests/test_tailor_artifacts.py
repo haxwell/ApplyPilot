@@ -468,6 +468,27 @@ def test_build_tailor_prompt_centralizes_global_voice_and_evidence_standard() ->
     assert 'The "education" field in output is legacy/compatibility only' in prompt
 
 
+def test_build_tailor_prompt_strengthens_skills_selection_guidance() -> None:
+    prompt = tailor._build_tailor_prompt(
+        profile={"personal": {}},
+        content_preparation_context={
+            "pdf_template": "professional_compact",
+            "pdf_template_input_preferences": {},
+        },
+    )
+
+    assert "The skills section is not a complete inventory of source-resume skills." in prompt
+    assert "Include only skills that appear in the job description" in prompt
+    assert "Strongly prefer 12-20 total skill items across all categories." in prompt
+    assert "Absolute maximum: 24 skill items unless the job description explicitly requires a broad stack." in prompt
+    assert "Use only categories that help this job." in prompt
+    assert "Omit empty or weak categories." in prompt
+    assert '"Backend / Platform": "..."' in prompt
+    assert '"Cloud / Infrastructure": "..."' in prompt
+    assert '"Data / Messaging": "..."' in prompt
+    assert '"Testing / Delivery": "..."' in prompt
+
+
 def test_run_tailoring_report_includes_pdf_template_preferences(monkeypatch, tmp_path: Path) -> None:
     conn = _FakeConnection()
     job = _make_job()
