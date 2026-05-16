@@ -540,9 +540,9 @@ def build_html(view: ProfessionalCompactTemplateView) -> str:
     box-sizing: border-box;
 }}
 body {{
-    font-family: Arial, Helvetica, sans-serif;
-    font-size: 11pt;
-    line-height: 1.42;
+    font-family: Arial, sans-serif;
+    font-size: 10pt;
+    line-height: 1.17;
     color: #111111;
 }}
 .page {{
@@ -558,11 +558,13 @@ body {{
     font-size: 24pt;
     font-weight: 700;
     letter-spacing: 0.2px;
+    line-height: 1.17;
 }}
 .contact {{
     margin-top: 4px;
     font-size: 10.4pt;
     color: #303030;
+    line-height: 1.17;
 }}
 .primary-contact {{
     margin-top: 7px;
@@ -579,15 +581,16 @@ body {{
     text-transform: uppercase;
     letter-spacing: 1.1px;
     margin-bottom: 8px;
+    line-height: 1.17;
 }}
 .summary {{
     font-size: 11pt;
-    line-height: 1.45;
+    line-height: 1.17;
     color: #222222;
 }}
 .skill-line {{
     font-size: 10.8pt;
-    line-height: 1.38;
+    line-height: 1.17;
     color: #1c1c1c;
     margin-bottom: 2px;
 }}
@@ -597,7 +600,7 @@ body {{
 .entry-title {{
     font-weight: 700;
     font-size: 11.4pt;
-    line-height: 1.3;
+    line-height: 1.17;
     break-after: avoid;
 }}
 .entry-subtitle {{
@@ -606,6 +609,7 @@ body {{
     font-style: italic;
     color: #444444;
     break-after: avoid;
+    line-height: 1.17;
 }}
 .project-title-row {{
     display: flex;
@@ -618,11 +622,12 @@ body {{
     font-style: italic;
     color: #444444;
     white-space: nowrap;
+    line-height: 1.17;
 }}
 .project-summary {{
     margin-top: 2px;
     font-size: 10.8pt;
-    line-height: 1.4;
+    line-height: 1.17;
     color: #222222;
 }}
 .entry-bullets {{
@@ -632,7 +637,7 @@ body {{
 .entry-bullets li {{
     margin-bottom: 4px;
     font-size: 10.9pt;
-    line-height: 1.42;
+    line-height: 1.17;
 }}
 .compact-entry {{
     margin-bottom: 10px;
@@ -640,7 +645,7 @@ body {{
 }}
 .compact-meta {{
     font-size: 10.7pt;
-    line-height: 1.36;
+    line-height: 1.17;
 }}
 .compact-company {{
     font-weight: 700;
@@ -651,12 +656,12 @@ body {{
 .compact-summary {{
     margin-top: 2px;
     font-size: 10.8pt;
-    line-height: 1.4;
+    line-height: 1.17;
     color: #222222;
 }}
 .edu {{
     font-size: 10.8pt;
-    line-height: 1.38;
+    line-height: 1.17;
     color: #1f1f1f;
 }}
 </style>
