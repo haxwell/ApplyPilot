@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from applypilot.scoring.pdf_render_model import ResumeEntry, ResumeRenderModel
+from applypilot.scoring.pdf_render_model import ResumeEntry, ResumeRenderModel, SkillSection
 from applypilot.scoring.pdf_templates import professional_compact
 
 
@@ -199,6 +199,26 @@ def test_professional_compact_build_html_renders_polished_header_and_sections() 
     assert '<h2 class="section-title">Summary</h2>' in html
     assert '<h2 class="section-title">Education</h2>' in html
     assert '<div class="title">' not in html
+
+
+def test_professional_compact_build_html_preserves_parenthetical_skill_groups() -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        skills=[
+            SkillSection(category="Cloud", value="AWS (EC2, S3, Lambda), PostgreSQL (RDS), Java"),
+        ],
+    )
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[],
+        compact_experience=[],
+        projects_to_render=[],
+    )
+
+    html = professional_compact.build_html(view)
+
+    assert "AWS (EC2, S3, Lambda)" in html
+    assert "PostgreSQL (RDS)" in html
 
 
 def test_professional_compact_header_omits_country_suffix_by_default() -> None:

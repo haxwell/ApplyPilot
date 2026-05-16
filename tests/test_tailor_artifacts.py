@@ -171,6 +171,8 @@ def test_run_tailoring_prefers_structured_pdf_render_when_tailored_json_availabl
     assert report_data["pdf_render_planning"]["template_used"] == "professional_compact"
     assert report_data["pdf_render_planning"]["allowed_physical_pages"] == 3
     assert report_data["pdf_render_planning"]["measured_pages_final"] == 2
+    assert report_data["skills_selection"]["before_count"] >= report_data["skills_selection"]["after_count"]
+    assert isinstance(report_data["skills_selection"]["dropped_skills"], list)
 
 
 def test_run_tailoring_falls_back_to_text_pdf_when_structured_render_fails(monkeypatch, tmp_path: Path) -> None:

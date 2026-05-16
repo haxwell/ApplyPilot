@@ -1749,12 +1749,20 @@ def run_tailoring(
             if status in ("approved", "approved_with_judge_warning"):
                 try:
                     from applypilot.scoring.pdf import convert_to_pdf, render_model_to_pdf_with_planning
-                    from applypilot.scoring.pdf_render_model import build_render_model_from_tailored_json
+                    from applypilot.scoring.pdf_render_model import (
+                        build_render_model_from_tailored_json,
+                        build_skills_selection_report_from_tailored_json,
+                    )
 
                     generated_pdf = txt_path.with_suffix(".pdf")
                     tailored_json = report.get("tailored_json")
                     if isinstance(tailored_json, dict):
                         try:
+                            report["skills_selection"] = build_skills_selection_report_from_tailored_json(
+                                tailored_json,
+                                profile,
+                                job=job,
+                            )
                             model = build_render_model_from_tailored_json(tailored_json, profile, job=job)
                             generated_pdf, planning = render_model_to_pdf_with_planning(
                                 model,

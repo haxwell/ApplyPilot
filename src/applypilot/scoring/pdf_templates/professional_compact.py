@@ -338,10 +338,35 @@ def _project_context_and_dates(entry: ResumeEntry) -> tuple[str, str]:
 
 
 def _build_skill_lines(skills: list) -> list[str]:
+    def _split_preserving_parentheses(text: str) -> list[str]:
+        parts: list[str] = []
+        buf: list[str] = []
+        depth = 0
+        for ch in text:
+            if ch == "(":
+                depth += 1
+                buf.append(ch)
+                continue
+            if ch == ")":
+                depth = max(0, depth - 1)
+                buf.append(ch)
+                continue
+            if ch == "," and depth == 0:
+                token = "".join(buf).strip()
+                if token:
+                    parts.append(token)
+                buf = []
+                continue
+            buf.append(ch)
+        tail = "".join(buf).strip()
+        if tail:
+            parts.append(tail)
+        return parts
+
     seen: set[str] = set()
     flattened: list[str] = []
     for skill in skills:
-        for raw in str(skill.value).split(","):
+        for raw in _split_preserving_parentheses(str(skill.value)):
             token = raw.strip()
             key = token.lower()
             if not token or key in seen:

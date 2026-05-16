@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 import re
 from typing import Any
 
-from applypilot.resume_json import format_education_entry
+from applypilot.resume_json import format_education_entry, get_profile_skill_keywords
 from applypilot.scoring.skills_relevance import build_relevant_skills
 
 @dataclass
@@ -280,6 +280,41 @@ def _extract_render_options(profile: dict) -> dict[str, Any]:
     return options
 
 
+def _canonical_skill_key(value: str) -> str:
+    text = value.strip().lower()
+    if not text:
+        return ""
+    text = re.sub(r"\([^)]*\)", "", text).strip()
+    text = re.sub(r"\b\d+(?:\.\d+)?(?:\.[a-z0-9]+)?\b", "", text).strip()
+    text = re.sub(r"\b\d+\s*-\s*\d+\b", "", text).strip()
+    text = re.sub(r"\s*-\s*$", "", text).strip()
+    text = re.sub(r"\s+", " ", text)
+    if text.startswith("apache "):
+        text = text[len("apache ") :].strip()
+    return text
+
+
+def _is_richer_display(candidate: str, current: str) -> bool:
+    candidate_has_detail = bool(re.search(r"[0-9\(\)]", candidate))
+    current_has_detail = bool(re.search(r"[0-9\(\)]", current))
+    if candidate_has_detail != current_has_detail:
+        return candidate_has_detail
+    return len(candidate) > len(current)
+
+
+def _build_profile_skill_display_map(profile: dict) -> dict[str, str]:
+    display_map: dict[str, str] = {}
+    for keyword in get_profile_skill_keywords(profile):
+        key = _canonical_skill_key(str(keyword))
+        value = str(keyword).strip()
+        if not key or not value:
+            continue
+        current = display_map.get(key, "")
+        if not current or _is_richer_display(value, current):
+            display_map[key] = value
+    return display_map
+
+
 def build_render_model_from_tailored_json(
     data: dict,
     profile: dict,
@@ -327,12 +362,15 @@ def build_render_model_from_tailored_json(
         profile=profile,
         render_options=model.render_options,
     )
+    profile_display_map = _build_profile_skill_display_map(profile)
 
     grouped_skills: dict[str, list[str]] = {}
     ordered_categories: list[str] = []
     for category, token in selected_skills:
         category_text = str(category).strip()
         token_text = str(token).strip()
+        canonical = _canonical_skill_key(token_text)
+        token_text = profile_display_map.get(canonical, token_text)
         if not category_text or not token_text:
             continue
         if category_text not in grouped_skills:
@@ -362,3 +400,21 @@ def build_render_model_from_tailored_json(
                 model.projects.append(normalized)
 
     return model
+
+
+def build_skills_selection_report_from_tailored_json(
+    data: dict,
+    profile: dict,
+    job: dict | None = None,
+) -> dict[str, Any]:
+    """Build deterministic skills selection metadata for reporting/debugging."""
+
+    render_options = _extract_render_options(profile)
+    raw_skills = data.get("skills", {}) if isinstance(data, dict) else {}
+    _selected_skills, meta = build_relevant_skills(
+        raw_skills,
+        job=job,
+        profile=profile,
+        render_options=render_options,
+    )
+    return dict(meta) if isinstance(meta, dict) else {}

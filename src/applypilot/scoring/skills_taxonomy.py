@@ -82,6 +82,32 @@ DEFAULT_SKILLS_CATALOG: dict[str, dict[str, Any]] = {
         "kind": "skill_set",
         "terms": ["tensorflow", "keras", "pandas", "scikit-learn", "pytorch"],
     },
+    "domain.delivery.cues": {
+        "kind": "cue_set",
+        "terms": [
+            "ci/cd",
+            "continuous integration",
+            "continuous delivery",
+            "deployment",
+            "delivery",
+            "release",
+            "pipeline",
+            "reliability",
+            "operational excellence",
+        ],
+    },
+    "domain.delivery.skills": {
+        "kind": "skill_set",
+        "terms": [
+            "ci/cd",
+            "github actions",
+            "gitlab ci",
+            "jenkins",
+            "integration testing",
+            "test-driven development",
+            "tdd",
+        ],
+    },
 }
 
 # Generic policy: references taxonomy IDs, no engine hardcoding.
@@ -117,6 +143,12 @@ DEFAULT_SKILLS_RELEVANCE_POLICY: dict[str, Any] = {
             "skill_set_ref": "domain.ml.skills",
             "weight_key": "weak_ml_penalty",
         },
+        {
+            "name": "delivery_support",
+            "when": "cue_present",
+            "cue_set_ref": "domain.delivery.cues",
+            "skill_set_ref": "domain.delivery.skills",
+            "weight_key": "delivery_support",
+        },
     ],
 }
-

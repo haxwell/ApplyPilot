@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from applypilot.scoring.pdf import build_render_model, parse_resume
-from applypilot.scoring.pdf_render_model import ResumeEntry, build_render_model_from_tailored_json
+from applypilot.scoring.pdf_render_model import (
+    ResumeEntry,
+    build_render_model_from_tailored_json,
+    build_skills_selection_report_from_tailored_json,
+)
 from applypilot.scoring.pdf_templates import classic as classic_template
 from applypilot.scoring.pdf_templates import compact as compact_template
 from applypilot.scoring.pdf_templates import default as default_template
@@ -438,6 +442,38 @@ def test_compact_prepare_honors_render_options_from_profile_model() -> None:
     assert [entry.title for entry in prepared.compact_experience] == ["Role 3", "Role 4"]
 
 
+def test_build_skills_selection_report_from_tailored_json_returns_counts_and_drops() -> None:
+    profile = {"personal": {"full_name": "Alex Example"}}
+    data = {
+        "title": "Engineer",
+        "summary": "Summary",
+        "skills": {
+            "Core": (
+                "Java, Spring Boot, REST APIs, Microservices, Distributed Systems, Kafka, "
+                "Event-Driven Architecture, SQL, PostgreSQL, MySQL, AWS, Docker, Kubernetes, "
+                "CI/CD, GitHub Actions, GitLab CI, Jenkins, Linux, React, Angular, TensorFlow, "
+                "Keras, Pandas, Helm, CloudFoundry, Redis, OAuth2, OpenAPI"
+            )
+        },
+        "experience": [],
+        "projects": [],
+        "education": "",
+    }
+    job = {
+        "title": "Senior Backend Engineer",
+        "full_description": (
+            "Build backend microservices in Java and Spring Boot, design REST APIs, "
+            "distributed systems, Kafka event-driven workflows, and AWS Kubernetes deployments."
+        ),
+    }
+
+    report = build_skills_selection_report_from_tailored_json(data, profile, job=job)
+
+    assert report["before_count"] > report["after_count"]
+    assert report["after_count"] <= 24
+    assert isinstance(report["dropped_skills"], list)
+
+
 def test_build_render_model_from_tailored_json_applies_relevance_capped_skills_for_job() -> None:
     profile = {
         "personal": {"full_name": "Alex Example"},
@@ -474,3 +510,34 @@ def test_build_render_model_from_tailored_json_applies_relevance_capped_skills_f
     assert len(flattened) <= 24
     assert "Java" in flattened
     assert "Spring Boot" in flattened
+
+
+def test_build_render_model_from_tailored_json_prefers_richer_profile_skill_display_variants() -> None:
+    profile = {
+        "personal": {"full_name": "Alex Example"},
+        "skills": [
+            {"name": "Languages", "keywords": ["Java 17-21"]},
+            {"name": "Backend", "keywords": ["Spring Boot 3.x"]},
+        ],
+    }
+    data = {
+        "title": "Engineer",
+        "summary": "Summary",
+        "skills": {"Core": "Java, Spring Boot, Kubernetes"},
+        "experience": [],
+        "projects": [],
+        "education": "",
+    }
+    job = {
+        "title": "Senior Backend Engineer",
+        "full_description": "Build backend services with Java and Spring Boot on Kubernetes.",
+    }
+
+    model = build_render_model_from_tailored_json(data, profile, job=job)
+
+    flattened = []
+    for section in model.skills:
+        flattened.extend([part.strip() for part in section.value.split(",") if part.strip()])
+
+    assert "Java 17-21" in flattened
+    assert "Spring Boot 3.x" in flattened
