@@ -1,0 +1,42 @@
+{
+  "name": "Jonathan James",
+  "title": "Senior Software Engineer - Connectivity",
+  "summary": "Senior backend engineer focused on distributed systems and production reliability.",
+  "experience": [
+    {"company": "Charles Schwab", "role": "Software Engineer", "subtitle": "Denver, CO | Aug 2025 - Mar 2026"},
+    {"company": "Savvato", "role": "Principal Engineer", "subtitle": "Aurora, CO | 2024 - 2025"},
+    {"company": "Scale AI", "role": "Senior Software Engineer", "subtitle": "Remote | 2023 - 2024"},
+    {"company": "Coinme", "role": "Backend Engineer", "subtitle": "Remote | 2021 - 2022"},
+    {"company": "Sling TV / Dish Networks", "role": "Senior Software Engineer", "subtitle": "Denver, CO | 2019 - 2021"},
+    {"company": "Charter Communications", "role": "Senior Software Engineer", "subtitle": "Denver, CO | 2017 - 2019"},
+    {"company": "IHS Markit", "role": "Software Engineer", "subtitle": "Boulder, CO | 2015 - 2017"},
+    {"company": "Health Language, Inc.", "role": "Software Engineer", "subtitle": "Denver, CO | 2013 - 2015"},
+    {"company": "Pinnacol Assurance", "role": "Software Engineer", "subtitle": "Denver, CO | 2011 - 2013"},
+    {"company": "IQNavigator", "role": "Software Engineer", "subtitle": "Denver, CO | 2009 - 2011"},
+    {"company": "Fox Interactive Media", "role": "Software Engineer", "subtitle": "Boulder, CO | 2007 - 2009"}
+  ],
+  "projects": [
+    {
+      "name": "TribeApp",
+      "subtitle": "Backend platform modernization | 2022 - Present",
+      "bullets": [
+        "Built Spring Boot APIs for multi-tenant content workflows.",
+        "Implemented scalable MySQL data model updates.",
+        "Integrated AWS service-to-service authentication.",
+        "Added delivery telemetry for mobile release workflows.",
+        "Improved CI/CD deployment reliability."
+      ]
+    },
+    {
+      "name": "AI Pipeline Assistant",
+      "subtitle": "LLM workflow tooling | 2024 - Present",
+      "bullets": [
+        "Integrated prompt orchestration for structured JSON outputs.",
+        "Built guardrails for non-fabrication checks.",
+        "Added validator feedback loops for failed drafts.",
+        "Implemented evaluation traces for retry decisions.",
+        "Tracked run quality metrics in artifact reports."
+      ]
+    }
+  ]
+}

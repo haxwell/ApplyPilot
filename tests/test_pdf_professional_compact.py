@@ -1,7 +1,41 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from applypilot.scoring.pdf_render_model import ResumeEntry, ResumeRenderModel, SkillSection
 from applypilot.scoring.pdf_templates import professional_compact
+
+
+def _load_scale_ai_case() -> ResumeRenderModel:
+    fixture_path = Path(__file__).resolve().parent / "fixtures" / "scale_ai_professional_compact_case.json"
+    payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    experience = [
+        ResumeEntry(
+            company=item["company"],
+            role=item["role"],
+            title=f"{item['company']} - {item['role']}",
+            subtitle=item["subtitle"],
+            bullets=[f"Impact bullet {index + 1}" for index in range(4)],
+        )
+        for index, item in enumerate(payload["experience"])
+    ]
+    projects = [
+        ResumeEntry(
+            title=item["name"],
+            subtitle=item["subtitle"],
+            bullets=item["bullets"],
+        )
+        for item in payload["projects"]
+    ]
+    return ResumeRenderModel(
+        name=payload["name"],
+        title=payload["title"],
+        summary=payload["summary"],
+        experience=experience,
+        projects=projects,
+    )
 
 
 def _experience_entries(count: int) -> list[ResumeEntry]:
@@ -358,6 +392,62 @@ def test_professional_compact_build_html_renders_projects_in_experience_style() 
     assert 'class="project-title-row"' in html
     assert "2023 - 2024" in html
     assert "Designed backend service APIs." in html
+
+
+def test_scale_ai_three_page_planning_matches_current_behavior(monkeypatch) -> None:
+    model = _load_scale_ai_case()
+    model.render_options = {"max_resume_pages": 3}
+
+    def _fake_build_html(view: professional_compact.ProfessionalCompactTemplateView) -> str:
+        return str(len(view.detailed_experience))
+
+    def _fake_measure(html: str) -> int:
+        detailed_count = int(html)
+        if detailed_count >= 8:
+            return 4
+        if detailed_count >= 7:
+            return 3
+        return 2
+
+    monkeypatch.setattr(professional_compact, "build_html", _fake_build_html)
+    prepared = professional_compact.prepare_with_measurement(model, _fake_measure)
+
+    assert prepared.allowed_physical_pages == 3
+    assert prepared.measured_pages_final == 3
+    assert len(prepared.detailed_experience) == 7
+    assert len(prepared.compact_experience) == 4
+    assert isinstance(prepared.planning_attempts, list)
+    assert prepared.planning_attempts[-1] == {
+        "detailed_experience_count": 7,
+        "measured_page_count": 3,
+        "fit": True,
+    }
+
+
+def test_scale_ai_two_page_planning_exposes_current_over_collapse_and_large_projects(monkeypatch) -> None:
+    model = _load_scale_ai_case()
+    model.render_options = {"max_resume_pages": 2}
+
+    def _fake_build_html(view: professional_compact.ProfessionalCompactTemplateView) -> str:
+        return str(len(view.detailed_experience))
+
+    def _fake_measure(html: str) -> int:
+        detailed_count = int(html)
+        if detailed_count >= 3:
+            return 3
+        return 2
+
+    monkeypatch.setattr(professional_compact, "build_html", _fake_build_html)
+    prepared = professional_compact.prepare_with_measurement(model, _fake_measure)
+
+    assert prepared.allowed_physical_pages == 2
+    assert prepared.measured_pages_final == 2
+    assert len(prepared.detailed_experience) == 2
+    assert len(prepared.compact_experience) == 9
+    # Current planner only compacts experience; projects remain unchanged.
+    assert len(prepared.projects_to_render) == 2
+    assert len(prepared.projects_to_render[0].bullets) == 5
+    assert len(prepared.projects_to_render[1].bullets) == 5
 
 
 def test_professional_compact_projects_use_summary_only_when_no_bullets() -> None:
