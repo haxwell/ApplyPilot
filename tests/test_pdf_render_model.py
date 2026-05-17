@@ -446,6 +446,24 @@ def test_build_render_model_from_tailored_json_ignores_non_dict_render_options()
     assert model.render_options == {}
 
 
+def test_build_render_model_from_tailored_json_preserves_profile_page_target_without_using_it() -> None:
+    profile = {
+        "personal": {"full_name": "Alex Example"},
+        "tailoring_config": {
+            "global_rules": {"max_resume_pages": 2.0},
+            "pdf_render_options": {"page_target": 3.0, "compact_max_detailed_experience": 2},
+        },
+        "render": {"options": {"page_target": 4.0}},
+    }
+    data = {"title": "Engineer", "summary": "Summary", "skills": {}, "experience": [], "projects": [], "education": ""}
+
+    model = build_render_model_from_tailored_json(data, profile)
+
+    assert model.render_options["max_resume_pages"] == 2.0
+    assert model.render_options["page_target"] == 4.0
+    assert model.render_options["compact_max_detailed_experience"] == 2
+
+
 def test_compact_prepare_honors_render_options_from_profile_model() -> None:
     profile = {
         "personal": {"full_name": "Alex Example"},

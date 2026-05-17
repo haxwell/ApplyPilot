@@ -99,9 +99,10 @@ Mapping rules:
   - `skills` -> `list[SkillSection]`
   - `experience`/`projects` -> `list[ResumeEntry]`
 - Template render options are copied into `ResumeRenderModel.render_options` with priority:
-  1. `profile["tailoring_config"]["render_options"]`
-  2. `profile["tailoring_config"]["pdf_render_options"]`
-  3. `profile["render"]["options"]` (highest)
+  1. `profile["tailoring_config"]["global_rules"]["max_resume_pages"]` -> mapped to `render_options["max_resume_pages"]`
+  2. `profile["tailoring_config"]["render_options"]`
+  3. `profile["tailoring_config"]["pdf_render_options"]`
+  4. `profile["render"]["options"]` (highest)
   Missing/non-dict values are ignored.
 
 Defensive normalization:
@@ -142,6 +143,10 @@ Current template behavior:
   - preserves order and keeps projects/summary/skills/education renderable
   - uses a roomier polished two-page visual style so page measurement/compaction has meaningful effect
   - allows detailed experience entries to flow across physical pages (instead of forcing full-entry page keeps), reducing large blank gaps
+  - resolves page target in this order:
+    1. template-local override (if the template defines one)
+    2. `model.render_options["max_resume_pages"]`
+    3. template default `2.5` (when neither value is present/valid)
 - `classic.prepare(model)` is the baseline/simple renderer:
   - no measurement-aware planning
   - all experience entries remain detailed
@@ -153,6 +158,20 @@ Current template behavior:
   - supports optional template-local override via `model.render_options["compact_max_detailed_experience"]`
   - template owns the final planning decision; `render_options` are hints/inputs, not upstream compaction logic
 - `default` is a compatibility alias to `professional_compact`.
+
+### Page Budget Policy
+
+ApplyPilot page-budget policy should be:
+
+1. User-level global default in profile settings:
+   - `tailoring_config.global_rules.max_resume_pages`
+2. Optional template-local override owned by the template implementation/config (not user profile).
+3. Hard default fallback when neither is provided.
+
+Design intent:
+- Keep user config global and simple.
+- Allow template-specific behavior only when a template explicitly needs a different page budget.
+- Avoid requiring users to set per-template page limits in `~/.applypilot/profile.json`.
 
 ## Contract 4: HTML Generation
 

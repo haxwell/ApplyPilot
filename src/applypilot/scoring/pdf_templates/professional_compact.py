@@ -11,6 +11,8 @@ from urllib.parse import urlparse
 from applypilot.scoring.pdf_render_model import ResumeEntry, ResumeRenderModel
 
 _DEFAULT_PAGE_TARGET = 2.5
+# Template-local override hook. Keep None to inherit user/global page budget.
+_TEMPLATE_PAGE_TARGET_OVERRIDE: float | None = None
 _MONTH_ABBR = {
     1: "Jan",
     2: "Feb",
@@ -44,7 +46,6 @@ TEMPLATE_REQUIREMENTS = {
     "hooks": ["build_html", "prepare", "prepare_with_measurement"],
 }
 TEMPLATE_OPTIONS = {
-    "page_target": {"type": "float", "default": 2.5},
     "max_resume_pages": {"type": "float", "default": 2.5},
     "compact_max_detailed_experience": {"type": "int", "min": 1},
 }
@@ -77,7 +78,7 @@ def _coerce_positive_int(value: object) -> int | None:
 
 
 def _resolve_page_target(model: ResumeRenderModel) -> float:
-    raw = model.render_options.get("page_target")
+    raw = _TEMPLATE_PAGE_TARGET_OVERRIDE
     if raw is None:
         raw = model.render_options.get("max_resume_pages")
     try:

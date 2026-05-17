@@ -20,7 +20,7 @@ def test_prepare_with_measurement_keeps_all_detailed_when_fit(monkeypatch) -> No
         name="Alex Example",
         title="Senior Engineer",
         experience=_experience_entries(4),
-        render_options={"page_target": 4},
+        render_options={"max_resume_pages": 4},
     )
     monkeypatch.setattr(professional_compact, "build_html", lambda view: str(len(view.detailed_experience)))
 
@@ -75,12 +75,12 @@ def test_prepare_with_measurement_hard_cap_skips_measurement_loop(monkeypatch) -
     assert calls["measure"] == 0
 
 
-def test_prepare_with_measurement_honors_page_target_option(monkeypatch) -> None:
+def test_prepare_with_measurement_honors_max_resume_pages_option(monkeypatch) -> None:
     model = ResumeRenderModel(
         name="Alex Example",
         title="Senior Engineer",
         experience=_experience_entries(5),
-        render_options={"page_target": 3},
+        render_options={"max_resume_pages": 3},
     )
     monkeypatch.setattr(professional_compact, "build_html", lambda view: str(len(view.detailed_experience)))
 
@@ -105,7 +105,7 @@ def test_prepare_with_measurement_keeps_at_least_one_detailed_experience_entry(m
         name="Alex Example",
         title="Senior Engineer",
         experience=_experience_entries(3),
-        render_options={"page_target": 1},
+        render_options={"max_resume_pages": 1},
     )
     monkeypatch.setattr(professional_compact, "build_html", lambda _view: "10")
 
@@ -115,8 +115,13 @@ def test_prepare_with_measurement_keeps_at_least_one_detailed_experience_entry(m
     assert [entry.title for entry in prepared.compact_experience] == ["Role 2", "Role 3"]
 
 
-def test_prepare_with_measurement_page_target_two_allows_two_physical_pages(monkeypatch) -> None:
-    model = ResumeRenderModel(name="Alex Example", title="Senior Engineer", experience=_experience_entries(4), render_options={"page_target": 2})
+def test_prepare_with_measurement_max_resume_pages_two_allows_two_physical_pages(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        title="Senior Engineer",
+        experience=_experience_entries(4),
+        render_options={"max_resume_pages": 2},
+    )
     monkeypatch.setattr(professional_compact, "build_html", lambda view: str(len(view.detailed_experience)))
 
     prepared = professional_compact.prepare_with_measurement(model, lambda html: int(html))
@@ -124,8 +129,13 @@ def test_prepare_with_measurement_page_target_two_allows_two_physical_pages(monk
     assert len(prepared.detailed_experience) == 2
 
 
-def test_prepare_with_measurement_page_target_2_001_allows_three_physical_pages(monkeypatch) -> None:
-    model = ResumeRenderModel(name="Alex Example", title="Senior Engineer", experience=_experience_entries(4), render_options={"page_target": 2.001})
+def test_prepare_with_measurement_max_resume_pages_2_001_allows_three_physical_pages(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        title="Senior Engineer",
+        experience=_experience_entries(4),
+        render_options={"max_resume_pages": 2.001},
+    )
     monkeypatch.setattr(professional_compact, "build_html", lambda view: str(len(view.detailed_experience)))
 
     prepared = professional_compact.prepare_with_measurement(model, lambda html: int(html))
@@ -133,8 +143,13 @@ def test_prepare_with_measurement_page_target_2_001_allows_three_physical_pages(
     assert len(prepared.detailed_experience) == 3
 
 
-def test_prepare_with_measurement_page_target_2_5_allows_three_physical_pages(monkeypatch) -> None:
-    model = ResumeRenderModel(name="Alex Example", title="Senior Engineer", experience=_experience_entries(4), render_options={"page_target": 2.5})
+def test_prepare_with_measurement_max_resume_pages_2_5_allows_three_physical_pages(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        title="Senior Engineer",
+        experience=_experience_entries(4),
+        render_options={"max_resume_pages": 2.5},
+    )
     monkeypatch.setattr(professional_compact, "build_html", lambda view: str(len(view.detailed_experience)))
 
     prepared = professional_compact.prepare_with_measurement(model, lambda html: int(html))
@@ -142,8 +157,13 @@ def test_prepare_with_measurement_page_target_2_5_allows_three_physical_pages(mo
     assert len(prepared.detailed_experience) == 3
 
 
-def test_prepare_with_measurement_page_target_three_allows_three_physical_pages(monkeypatch) -> None:
-    model = ResumeRenderModel(name="Alex Example", title="Senior Engineer", experience=_experience_entries(4), render_options={"page_target": 3})
+def test_prepare_with_measurement_max_resume_pages_three_allows_three_physical_pages(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        title="Senior Engineer",
+        experience=_experience_entries(4),
+        render_options={"max_resume_pages": 3},
+    )
     monkeypatch.setattr(professional_compact, "build_html", lambda view: str(len(view.detailed_experience)))
 
     prepared = professional_compact.prepare_with_measurement(model, lambda html: int(html))

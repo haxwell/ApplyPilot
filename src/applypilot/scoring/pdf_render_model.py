@@ -250,6 +250,12 @@ def _build_location(personal: dict, *, include_country: bool = False) -> str:
 
 
 def _extract_render_options(profile: dict) -> dict[str, Any]:
+    def _merge_profile_options(raw: Any) -> None:
+        if not isinstance(raw, dict):
+            return
+        for key, value in raw.items():
+            options[key] = value
+
     options: dict[str, Any] = {}
     if not isinstance(profile, dict):
         return options
@@ -265,18 +271,15 @@ def _extract_render_options(profile: dict) -> dict[str, Any]:
                 options["max_resume_pages"] = max_pages
 
         raw_tailoring_render_options = tailoring_config.get("render_options")
-        if isinstance(raw_tailoring_render_options, dict):
-            options.update(raw_tailoring_render_options)
+        _merge_profile_options(raw_tailoring_render_options)
 
         raw_pdf_render_options = tailoring_config.get("pdf_render_options")
-        if isinstance(raw_pdf_render_options, dict):
-            options.update(raw_pdf_render_options)
+        _merge_profile_options(raw_pdf_render_options)
 
     render = profile.get("render", {})
     if isinstance(render, dict):
         raw_render_options = render.get("options")
-        if isinstance(raw_render_options, dict):
-            options.update(raw_render_options)
+        _merge_profile_options(raw_render_options)
 
     return options
 
