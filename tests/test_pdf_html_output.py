@@ -307,6 +307,8 @@ def test_render_model_to_pdf_with_planning_returns_planning_report(monkeypatch, 
     assert "projects_mode" in planning["render_modes_final"]
     if "detailed_bullet_cap_final" in planning:
         assert isinstance(planning["detailed_bullet_cap_final"], int)
+    assert "selected_skills_max_lines_final" in planning
+    assert "min_protected_detailed_roles" in planning
 
 
 def test_compact_template_ignores_compact_summary_and_renders_bullets(tmp_path: Path) -> None:

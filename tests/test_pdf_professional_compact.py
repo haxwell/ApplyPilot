@@ -487,6 +487,51 @@ def test_professional_compact_supports_skills_modes() -> None:
     assert html.count('class="skill-line"') == 1
 
 
+def test_professional_compact_selected_skills_default_max_lines_is_two() -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        skills=[
+            SkillSection(category="Backend", value="Java, Spring Boot, REST, Kafka, PostgreSQL, MySQL"),
+            SkillSection(category="Cloud", value="AWS, Docker, Kubernetes, Terraform, Linux, GitHub Actions"),
+            SkillSection(category="Delivery", value="CI/CD, Git, Monitoring, SRE, Incident Response, Testing"),
+        ],
+    )
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[],
+        compact_experience=[],
+        projects_to_render=[],
+        skills_mode="selected",
+    )
+
+    html = professional_compact.build_html(view)
+    assert html.count('class="skill-line"') == 2
+
+
+def test_professional_compact_selected_skills_expansion_uses_next_retained_skill_lines() -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        skills=[
+            SkillSection(category="Core", value="Skill1, Skill2, Skill3, Skill4, Skill5, Skill6"),
+            SkillSection(category="Next", value="Skill7, Skill8, Skill9, Skill10, Skill11, Skill12"),
+            SkillSection(category="Later", value="Skill13, Skill14, Skill15, Skill16, Skill17, Skill18"),
+        ],
+    )
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[],
+        compact_experience=[],
+        projects_to_render=[],
+        skills_mode="selected",
+        selected_skills_max_lines=3,
+    )
+
+    html = professional_compact.build_html(view)
+    assert "Skill1 • Skill2 • Skill3 • Skill4 • Skill5 • Skill6" in html
+    assert "Skill7 • Skill8 • Skill9 • Skill10 • Skill11 • Skill12" in html
+    assert "Skill13 • Skill14 • Skill15 • Skill16 • Skill17 • Skill18" in html
+
+
 def test_professional_compact_supports_experience_modes() -> None:
     model = ResumeRenderModel(name="Alex Example")
     view = professional_compact.ProfessionalCompactTemplateView(
@@ -502,6 +547,26 @@ def test_professional_compact_supports_experience_modes() -> None:
     assert "Earlier Experience (Selected)" not in html
     assert "Built services Reduced MTTR" in html
     assert '<ul class="entry-bullets">' not in html
+
+
+def test_professional_compact_grouped_earlier_experience_uses_compact_summaries() -> None:
+    model = ResumeRenderModel(name="Alex Example")
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[],
+        compact_experience=[
+            ResumeEntry(company="Alpha Corp", title="Engineer", compact_summary="Built event-driven APIs."),
+            ResumeEntry(company="Beta Labs", title="Engineer", compact_summary="Reduced production incidents."),
+            ResumeEntry(company="Gamma Co", title="Engineer", compact_summary="Improved deployment reliability."),
+        ],
+        projects_to_render=[],
+        earlier_experience_mode="grouped",
+    )
+
+    html = professional_compact.build_html(view)
+    assert "Alpha Corp / Beta Labs - Built event-driven APIs.; Reduced production incidents." in html
+    assert "Gamma Co - Improved deployment reliability." in html
+    assert "202" not in html
 
 
 def test_professional_compact_supports_projects_modes() -> None:
@@ -548,7 +613,9 @@ def _fake_state_html(view: professional_compact.ProfessionalCompactTemplateView)
     return (
         f"projects={view.projects_mode};skills={view.skills_mode};summary={view.summary_mode};"
         f"earlier={view.earlier_experience_mode};cap={view.detailed_bullet_cap if view.detailed_bullet_cap is not None else 5};"
-        f"certs={view.certifications_mode};detailed={len(view.detailed_experience)}"
+        f"certs={view.certifications_mode};selected_lines={view.selected_skills_max_lines};"
+        f"min_protected={view.min_protected_detailed_roles if view.min_protected_detailed_roles is not None else 0};"
+        f"detailed={len(view.detailed_experience)}"
     )
 
 
@@ -566,6 +633,27 @@ def test_prepare_with_measurement_no_compaction_when_initial_render_fits(monkeyp
 
     assert prepared.measured_pages_final == 2
     assert prepared.planning_operations == []
+    assert prepared.selected_skills_max_lines == 2
+
+
+def test_prepare_with_measurement_expanded_selected_skills_reverts_when_not_fit(monkeypatch) -> None:
+    model = ResumeRenderModel(name="Alex Example", experience=_experience_entries(4))
+    model.render_options = {"max_resume_pages": 2}
+    monkeypatch.setattr(professional_compact, "build_html", _fake_state_html)
+
+    def _measure(html: str) -> int:
+        state = _parse_state_html(html)
+        if state["skills"] == "full":
+            return 3
+        if int(state["selected_lines"]) == 3:
+            return 3
+        return 2
+
+    prepared = professional_compact.prepare_with_measurement(model, _measure)
+    expansion_ops = [op for op in prepared.planning_operations if op["step"] == "selected_skills_max_lines"]
+    assert expansion_ops
+    assert expansion_ops[-1]["kept"] is False
+    assert prepared.selected_skills_max_lines == 2
 
 
 def test_prepare_with_measurement_applies_projects_before_skills_and_detailed_count(monkeypatch) -> None:
@@ -615,6 +703,62 @@ def test_prepare_with_measurement_reduces_to_floor_before_skills_minimal_for_two
     assert "skills_mode" in steps
     assert reduction_steps_before_minimal
     assert reduction_steps_before_minimal[-1]["to"] == 6
+
+
+def test_prepare_with_measurement_can_reallocate_detailed_role_for_skills_expansion_above_floor(monkeypatch) -> None:
+    model = ResumeRenderModel(name="Alex Example", experience=_experience_entries(7))
+    model.render_options = {"max_resume_pages": 2}
+    monkeypatch.setattr(professional_compact, "build_html", _fake_state_html)
+
+    def _measure(html: str) -> int:
+        state = _parse_state_html(html)
+        detailed = int(state["detailed"])
+        skills = state["skills"]
+        selected_lines = int(state["selected_lines"])
+        if skills == "full":
+            return 3
+        if selected_lines == 2 and detailed == 7:
+            return 2
+        if selected_lines == 3 and detailed == 7:
+            return 3
+        if selected_lines == 3 and detailed == 6:
+            return 2
+        return 2
+
+    prepared = professional_compact.prepare_with_measurement(model, _measure)
+    assert prepared.selected_skills_max_lines == 3
+    assert len(prepared.detailed_experience) == 6
+    reallocation_ops = [
+        op
+        for op in prepared.planning_operations
+        if op["step"] == "detailed_experience_count"
+        and op.get("reason") == "post_fit_reallocation_for_selected_skills_expansion"
+    ]
+    assert reallocation_ops
+    assert reallocation_ops[-1]["kept"] is True
+
+
+def test_prepare_with_measurement_post_fit_reallocation_respects_protected_floor(monkeypatch) -> None:
+    model = ResumeRenderModel(name="Alex Example", experience=_experience_entries(6))
+    model.render_options = {"max_resume_pages": 2}
+    monkeypatch.setattr(professional_compact, "build_html", _fake_state_html)
+
+    def _measure(html: str) -> int:
+        state = _parse_state_html(html)
+        if int(state["selected_lines"]) == 3:
+            return 3
+        return 2
+
+    prepared = professional_compact.prepare_with_measurement(model, _measure)
+    assert prepared.min_protected_detailed_roles == 5
+    # Starting at 6 detailed roles, post-fit reallocation can at most move to 5; it should not go below 5.
+    assert len(prepared.detailed_experience) >= 5
+    assert not any(
+        op["step"] == "detailed_experience_count"
+        and op.get("reason") == "post_fit_reallocation_for_selected_skills_expansion"
+        and int(op["to"]) < 5
+        for op in prepared.planning_operations
+    )
 
 
 def test_prepare_with_measurement_records_operation_measurement_and_stops_on_fit(monkeypatch) -> None:

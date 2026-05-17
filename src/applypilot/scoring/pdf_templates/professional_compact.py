@@ -81,6 +81,8 @@ class ProfessionalCompactTemplateView:
     certifications_mode: CertificationsMode = "full"
     detailed_bullet_cap: int | None = None
     planning_operations: list[dict[str, int | bool | str | float | None]] = field(default_factory=list)
+    selected_skills_max_lines: int = 2
+    min_protected_detailed_roles: int | None = None
 
 
 def _coerce_positive_int(value: object) -> int | None:
@@ -118,6 +120,7 @@ def _build_candidate_view(
     page_target: float,
     *,
     allowed_physical_pages: int | None = None,
+    min_protected_detailed_roles: int | None = None,
     measured_pages_final: int | None = None,
     planning_attempts: list[dict[str, int | bool | str | None]] | None = None,
 ) -> ProfessionalCompactTemplateView:
@@ -130,9 +133,20 @@ def _build_candidate_view(
         projects_to_render=list(model.projects),
         page_target=page_target,
         allowed_physical_pages=allowed_physical_pages,
+        min_protected_detailed_roles=min_protected_detailed_roles,
         measured_pages_final=measured_pages_final,
         planning_attempts=list(planning_attempts or []),
     )
+
+
+def _min_protected_detailed_roles_for_target(allowed_pages: int, total_experience_entries: int) -> int | None:
+    if allowed_pages <= 0:
+        return None
+    if allowed_pages <= 2:
+        return min(5, total_experience_entries)
+    if allowed_pages == 3:
+        return min(7, total_experience_entries)
+    return None
 
 
 def _measure_view(
@@ -153,17 +167,22 @@ def _record_operation(
     to_value: object,
     measured_pages: int,
     fit: bool,
+    kept: bool | None = None,
+    reason: str | None = None,
 ) -> ProfessionalCompactTemplateView:
     operations = list(view.planning_operations)
-    operations.append(
-        {
-            "step": step,
-            "from": from_value,
-            "to": to_value,
-            "measured_pages": measured_pages,
-            "fit": fit,
-        }
-    )
+    operation: dict[str, int | bool | str | float | None] = {
+        "step": step,
+        "from": from_value,
+        "to": to_value,
+        "measured_pages": measured_pages,
+        "fit": fit,
+    }
+    if kept is not None:
+        operation["kept"] = kept
+    if reason:
+        operation["reason"] = reason
+    operations.append(operation)
     return replace(view, planning_operations=operations, measured_pages_final=measured_pages)
 
 
@@ -222,6 +241,7 @@ def prepare_with_measurement(
     hard_cap = _coerce_positive_int(model.render_options.get("compact_max_detailed_experience"))
     allowed_pages = _allowed_physical_pages(page_target)
     total_entries = len(model.experience)
+    min_protected_detailed_roles = _min_protected_detailed_roles_for_target(allowed_pages, total_entries)
     detailed_count = total_entries
     if hard_cap is not None:
         detailed_count = min(hard_cap, total_entries)
@@ -233,6 +253,7 @@ def prepare_with_measurement(
         detailed_count=detailed_count,
         page_target=page_target,
         allowed_physical_pages=allowed_pages,
+        min_protected_detailed_roles=min_protected_detailed_roles,
         planning_attempts=(
             [
                 {
@@ -249,10 +270,116 @@ def prepare_with_measurement(
 
     page_count, fits = _measure_view(view, measure_html_page_count, allowed_pages)
     view = replace(view, measured_pages_final=page_count)
+
+    def _attempt_post_fit_expansion() -> None:
+        nonlocal view
+        if view.skills_mode != "selected" or view.selected_skills_max_lines != 2:
+            return
+
+        expanded = replace(view, selected_skills_max_lines=3)
+        measured, fit = _measure_view(expanded, measure_html_page_count, allowed_pages)
+        if fit:
+            view = _record_operation(
+                expanded,
+                step="selected_skills_max_lines",
+                from_value=2,
+                to_value=3,
+                measured_pages=measured,
+                fit=True,
+                kept=True,
+            )
+            return
+
+        view = _record_operation(
+            view,
+            step="selected_skills_max_lines",
+            from_value=2,
+            to_value=3,
+            measured_pages=measured,
+            fit=False,
+            kept=False,
+        )
+
+        floor = view.min_protected_detailed_roles
+        if floor is None or len(view.detailed_experience) <= floor:
+            return
+
+        reduced = _maybe_reduce_detailed_count(view)
+        if reduced is None:
+            return
+        measured_reduced, fit_reduced = _measure_view(reduced, measure_html_page_count, allowed_pages)
+        if not fit_reduced:
+            view = _record_operation(
+                view,
+                step="detailed_experience_count",
+                from_value=len(view.detailed_experience),
+                to_value=len(reduced.detailed_experience),
+                measured_pages=measured_reduced,
+                fit=False,
+                kept=False,
+                reason="post_fit_reallocation_for_selected_skills_expansion",
+            )
+            return
+
+        expanded_reduced = replace(reduced, selected_skills_max_lines=3)
+        measured_expanded, fit_expanded = _measure_view(expanded_reduced, measure_html_page_count, allowed_pages)
+        if fit_expanded:
+            reduced_with_op = _record_operation(
+                reduced,
+                step="detailed_experience_count",
+                from_value=len(view.detailed_experience),
+                to_value=len(reduced.detailed_experience),
+                measured_pages=measured_reduced,
+                fit=True,
+                kept=True,
+                reason="post_fit_reallocation_for_selected_skills_expansion",
+            )
+            view = _record_operation(
+                replace(
+                    expanded_reduced,
+                    planning_operations=reduced_with_op.planning_operations,
+                ),
+                step="selected_skills_max_lines",
+                from_value=2,
+                to_value=3,
+                measured_pages=measured_expanded,
+                fit=True,
+                kept=True,
+                reason="after_post_fit_reallocation",
+            )
+            return
+
+        view = _record_operation(
+            view,
+            step="detailed_experience_count",
+            from_value=len(view.detailed_experience),
+            to_value=len(reduced.detailed_experience),
+            measured_pages=measured_reduced,
+            fit=True,
+            kept=False,
+            reason="post_fit_reallocation_for_selected_skills_expansion",
+        )
+        view = _record_operation(
+            view,
+            step="selected_skills_max_lines",
+            from_value=2,
+            to_value=3,
+            measured_pages=measured_expanded,
+            fit=False,
+            kept=False,
+            reason="after_post_fit_reallocation",
+        )
+
     if fits:
+        _attempt_post_fit_expansion()
         return view
 
-    def _apply_step(step: str, apply_fn: Callable[[ProfessionalCompactTemplateView], ProfessionalCompactTemplateView | None], from_value: object, to_value: object) -> bool:
+    def _apply_step(
+        step: str,
+        apply_fn: Callable[[ProfessionalCompactTemplateView], ProfessionalCompactTemplateView | None],
+        from_value: object,
+        to_value: object,
+    ) -> bool:
         nonlocal view
         updated = apply_fn(view)
         if updated is None:
@@ -294,6 +421,7 @@ def prepare_with_measurement(
     ]
     for step, apply_fn, from_value, to_value in initial_ladder:
         if _apply_step(step, apply_fn, from_value, to_value):
+            _attempt_post_fit_expansion()
             return view
 
     def _reduce_detailed_until_floor(floor: int) -> bool:
@@ -327,6 +455,7 @@ def prepare_with_measurement(
 
     floor_for_two_pages = 6 if allowed_pages <= 2 else 1
     if _reduce_detailed_until_floor(floor_for_two_pages):
+        _attempt_post_fit_expansion()
         return view
 
     if _apply_step(
@@ -335,6 +464,7 @@ def prepare_with_measurement(
         "selected",
         "minimal",
     ):
+        _attempt_post_fit_expansion()
         return view
 
     if _apply_step(
@@ -343,10 +473,13 @@ def prepare_with_measurement(
         "selected",
         "hidden",
     ):
+        _attempt_post_fit_expansion()
         return view
 
     if _reduce_detailed_until_floor(1):
+        _attempt_post_fit_expansion()
         return view
+    _attempt_post_fit_expansion()
     return view
 
 
@@ -368,6 +501,30 @@ def _build_compact_entry_summary(entry: ResumeEntry) -> tuple[str, bool]:
         return _format_date_text(subtitle), True
 
     return "", False
+
+
+def _compact_entry_signal_summary(entry: ResumeEntry) -> str:
+    compact_summary = entry.compact_summary.strip()
+    if compact_summary:
+        return compact_summary
+    for bullet in entry.bullets:
+        cleaned = bullet.strip()
+        if cleaned:
+            return cleaned
+    return ""
+
+
+def _compact_entry_company_label(entry: ResumeEntry) -> str:
+    company = entry.company.strip()
+    if company:
+        return company
+    company_legacy, _detail_legacy = _split_subtitle(entry.subtitle)
+    if company_legacy:
+        return company_legacy
+    title = entry.title.strip()
+    if " - " in title:
+        return title.split(" - ", 1)[0].strip()
+    return title
 
 
 def _split_subtitle(subtitle: str) -> tuple[str, str]:
@@ -624,12 +781,12 @@ def _render_summary(resume: ResumeRenderModel, mode: SummaryMode) -> str:
     return f'<section class="section"><h2 class="section-title">Summary</h2><p class="summary">{text}</p></section>'
 
 
-def _render_skills(resume: ResumeRenderModel, mode: SkillsMode) -> str:
+def _render_skills(resume: ResumeRenderModel, mode: SkillsMode, *, selected_skills_max_lines: int = 2) -> str:
     if not resume.skills:
         return ""
     lines = _build_skill_lines(resume.skills)
     if mode == "selected":
-        lines = lines[:2]
+        lines = lines[: max(1, selected_skills_max_lines)]
     elif mode == "minimal":
         lines = lines[:1]
     if not lines:
@@ -709,12 +866,20 @@ def _render_experience(view: ProfessionalCompactTemplateView, mode: ExperienceMo
     if compact_entries:
         if view.earlier_experience_mode == "grouped":
             grouped_lines: list[str] = []
-            for entry in compact_entries:
-                heading = _experience_heading(entry)
-                detail_line = _experience_detail_line(entry)
-                grouped_lines.append(f"{heading} ({detail_line})" if detail_line else heading)
-            grouped_text = " • ".join(line for line in grouped_lines if line)
-            items = f'<p class="compact-summary">{grouped_text}</p>' if grouped_text else ""
+            for idx in range(0, len(compact_entries), 2):
+                group = compact_entries[idx:idx + 2]
+                companies = " / ".join(
+                    label for label in (_compact_entry_company_label(entry) for entry in group) if label
+                )
+                summaries = [_compact_entry_signal_summary(entry) for entry in group]
+                summaries = [summary for summary in summaries if summary]
+                if companies and summaries:
+                    grouped_lines.append(f"{companies} - {'; '.join(summaries)}")
+                elif companies:
+                    grouped_lines.append(companies)
+                elif summaries:
+                    grouped_lines.append("; ".join(summaries))
+            items = "".join(f'<p class="compact-summary">{line}</p>' for line in grouped_lines)
         else:
             one_line = view.earlier_experience_mode == "earlier_one_line"
             items = "".join(_render_compact_entry(entry, one_line=one_line) for entry in compact_entries)
@@ -764,10 +929,15 @@ def _render_education(resume: ResumeRenderModel, mode: EducationMode) -> str:
     return f'<section class="section"><h2 class="section-title">Education</h2><p class="edu">{text}</p></section>'
 
 
-def _selected_skill_tokens(resume: ResumeRenderModel, skills_mode: SkillsMode) -> set[str]:
+def _selected_skill_tokens(
+    resume: ResumeRenderModel,
+    skills_mode: SkillsMode,
+    *,
+    selected_skills_max_lines: int,
+) -> set[str]:
     lines = _build_skill_lines(resume.skills)
     if skills_mode == "selected":
-        lines = lines[:2]
+        lines = lines[: max(1, selected_skills_max_lines)]
     elif skills_mode == "minimal":
         lines = lines[:1]
     text = " ".join(lines).lower()
@@ -801,7 +971,11 @@ def _render_certifications(view: ProfessionalCompactTemplateView, mode: Certific
         return ""
     if mode == "selected":
         if view.allowed_physical_pages is not None and view.allowed_physical_pages <= 2:
-            skill_tokens = _selected_skill_tokens(resume, view.skills_mode)
+            skill_tokens = _selected_skill_tokens(
+                resume,
+                view.skills_mode,
+                selected_skills_max_lines=view.selected_skills_max_lines,
+            )
             lines = [_pick_best_certification(lines, skill_tokens)]
         else:
             lines = lines[:3]
@@ -817,7 +991,11 @@ def build_html(view: ProfessionalCompactTemplateView) -> str:
     resume = view.model
 
     summary_html = _render_summary(resume, view.summary_mode)
-    skills_html = _render_skills(resume, view.skills_mode)
+    skills_html = _render_skills(
+        resume,
+        view.skills_mode,
+        selected_skills_max_lines=view.selected_skills_max_lines,
+    )
     exp_html, selected_exp_html = _render_experience(view, view.experience_mode)
     proj_html = _render_projects(view, view.projects_mode)
     edu_html = _render_education(resume, view.education_mode)

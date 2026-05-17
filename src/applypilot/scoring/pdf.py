@@ -308,6 +308,14 @@ def extract_render_planning_report(
     if isinstance(detailed_bullet_cap_final, int) and detailed_bullet_cap_final > 0:
         report["detailed_bullet_cap_final"] = detailed_bullet_cap_final
 
+    selected_skills_max_lines_final = getattr(prepared, "selected_skills_max_lines", None)
+    if isinstance(selected_skills_max_lines_final, int) and selected_skills_max_lines_final > 0:
+        report["selected_skills_max_lines_final"] = selected_skills_max_lines_final
+
+    min_protected_detailed_roles = getattr(prepared, "min_protected_detailed_roles", None)
+    if isinstance(min_protected_detailed_roles, int) and min_protected_detailed_roles > 0:
+        report["min_protected_detailed_roles"] = min_protected_detailed_roles
+
     detailed_entries = getattr(prepared, "detailed_experience", model.experience)
     compact_entries = getattr(prepared, "compact_experience", [])
     if isinstance(detailed_entries, list):
