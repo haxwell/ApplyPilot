@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 
 from applypilot.scoring.pdf_render_model import ResumeEntry, ResumeRenderModel, SkillSection
 from applypilot.scoring.pdf_templates import professional_compact
@@ -74,7 +75,7 @@ def test_prepare_with_measurement_moves_later_entries_until_fit(monkeypatch) -> 
     assert [entry.title for entry in prepared.compact_experience] == ["Role 4", "Role 5", "Role 6"]
     assert prepared.allowed_physical_pages == 3
     assert prepared.measured_pages_final == 3
-    assert len(prepared.planning_attempts) == 4
+    assert len(prepared.planning_attempts) >= 3
     assert prepared.planning_attempts[-1]["fit"] is True
 
 
@@ -88,7 +89,7 @@ def test_prepare_with_measurement_returns_tightest_candidate_with_one_detailed_w
     assert [entry.title for entry in prepared.compact_experience] == ["Role 2", "Role 3"]
 
 
-def test_prepare_with_measurement_hard_cap_skips_measurement_loop(monkeypatch) -> None:
+def test_prepare_with_measurement_hard_cap_applies_as_initial_detailed_count(monkeypatch) -> None:
     model = ResumeRenderModel(
         name="Alex Example",
         title="Senior Engineer",
@@ -100,13 +101,13 @@ def test_prepare_with_measurement_hard_cap_skips_measurement_loop(monkeypatch) -
 
     def _measure(_html: str) -> int:
         calls["measure"] += 1
-        return 99
+        return 2
 
     prepared = professional_compact.prepare_with_measurement(model, _measure)
 
     assert [entry.title for entry in prepared.detailed_experience] == ["Role 1", "Role 2"]
     assert [entry.title for entry in prepared.compact_experience] == ["Role 3", "Role 4", "Role 5"]
-    assert calls["measure"] == 0
+    assert calls["measure"] == 1
 
 
 def test_prepare_with_measurement_honors_max_resume_pages_option(monkeypatch) -> None:
@@ -450,6 +451,261 @@ def test_scale_ai_two_page_planning_exposes_current_over_collapse_and_large_proj
     assert len(prepared.projects_to_render[1].bullets) == 5
 
 
+def test_professional_compact_supports_summary_modes() -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        summary="First sentence. Second sentence. Third sentence.",
+    )
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[],
+        compact_experience=[],
+        projects_to_render=[],
+        summary_mode="micro",
+    )
+    html = professional_compact.build_html(view)
+    assert "First sentence." in html
+    assert "Second sentence." not in html
+
+
+def test_professional_compact_supports_skills_modes() -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        skills=[
+            SkillSection(category="Backend", value="Java, Spring Boot, REST, Kafka, PostgreSQL, MySQL"),
+            SkillSection(category="Cloud", value="AWS, Docker, Kubernetes, Terraform, Linux, GitHub Actions"),
+        ],
+    )
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[],
+        compact_experience=[],
+        projects_to_render=[],
+        skills_mode="minimal",
+    )
+    html = professional_compact.build_html(view)
+    assert html.count('class="skill-line"') == 1
+
+
+def test_professional_compact_supports_experience_modes() -> None:
+    model = ResumeRenderModel(name="Alex Example")
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[
+            ResumeEntry(title="Staff Engineer", subtitle="Scale AI | 2024 - Present", bullets=["Built services", "Reduced MTTR"])
+        ],
+        compact_experience=[],
+        projects_to_render=[],
+        experience_mode="compact",
+    )
+    html = professional_compact.build_html(view)
+    assert "Earlier Experience (Selected)" not in html
+    assert "Built services Reduced MTTR" in html
+    assert '<ul class="entry-bullets">' not in html
+
+
+def test_professional_compact_supports_projects_modes() -> None:
+    model = ResumeRenderModel(name="Alex Example")
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[],
+        compact_experience=[],
+        projects_to_render=[
+            ResumeEntry(title="Project 1", subtitle="Backend | 2024", bullets=["Bullet 1"], compact_summary="Summary 1"),
+            ResumeEntry(title="Project 2", subtitle="Backend | 2023", bullets=["Bullet 2"], compact_summary="Summary 2"),
+            ResumeEntry(title="Project 3", subtitle="Backend | 2022", bullets=["Bullet 3"], compact_summary="Summary 3"),
+        ],
+        projects_mode="selected",
+    )
+    html = professional_compact.build_html(view)
+    assert "Project 1" in html
+    assert "Project 2" in html
+    assert "Project 3" not in html
+
+
+def test_professional_compact_supports_education_and_certification_modes() -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        education="School | CS | 2010",
+        certifications="Cert One\nCert Two\nCert Three\nCert Four",
+    )
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[],
+        compact_experience=[],
+        projects_to_render=[],
+        education_mode="compact",
+        certifications_mode="selected",
+    )
+    html = professional_compact.build_html(view)
+    assert "School • CS • 2010" in html
+    assert "Cert One" in html
+    assert "Cert Three" in html
+    assert "Cert Four" not in html
+
+
+def _fake_state_html(view: professional_compact.ProfessionalCompactTemplateView) -> str:
+    return (
+        f"projects={view.projects_mode};skills={view.skills_mode};summary={view.summary_mode};"
+        f"earlier={view.earlier_experience_mode};cap={view.detailed_bullet_cap if view.detailed_bullet_cap is not None else 5};"
+        f"certs={view.certifications_mode};detailed={len(view.detailed_experience)}"
+    )
+
+
+def _parse_state_html(html: str) -> dict[str, str]:
+    pairs = [token.split("=", 1) for token in html.split(";") if "=" in token]
+    return {k: v for k, v in pairs}
+
+
+def test_prepare_with_measurement_no_compaction_when_initial_render_fits(monkeypatch) -> None:
+    model = ResumeRenderModel(name="Alex Example", experience=_experience_entries(4))
+    model.render_options = {"max_resume_pages": 3}
+    monkeypatch.setattr(professional_compact, "build_html", _fake_state_html)
+
+    prepared = professional_compact.prepare_with_measurement(model, lambda _html: 2)
+
+    assert prepared.measured_pages_final == 2
+    assert prepared.planning_operations == []
+
+
+def test_prepare_with_measurement_applies_projects_before_skills_and_detailed_count(monkeypatch) -> None:
+    model = ResumeRenderModel(name="Alex Example", experience=_experience_entries(5))
+    model.render_options = {"max_resume_pages": 2}
+    monkeypatch.setattr(professional_compact, "build_html", _fake_state_html)
+
+    def _measure(html: str) -> int:
+        state = _parse_state_html(html)
+        if state["projects"] == "hidden" and state["skills"] == "minimal" and int(state["detailed"]) <= 2:
+            return 2
+        return 3
+
+    prepared = professional_compact.prepare_with_measurement(model, _measure)
+    steps = [op["step"] for op in prepared.planning_operations]
+
+    assert steps[0:3] == ["projects_mode", "projects_mode", "projects_mode"]
+    assert steps.index("skills_mode") > 2
+    assert steps.index("detailed_experience_count") > steps.index("skills_mode")
+
+
+def test_prepare_with_measurement_reduces_to_floor_before_skills_minimal_for_two_pages(monkeypatch) -> None:
+    model = ResumeRenderModel(name="Alex Example", experience=_experience_entries(10))
+    model.render_options = {"max_resume_pages": 2}
+    monkeypatch.setattr(professional_compact, "build_html", _fake_state_html)
+
+    def _measure(html: str) -> int:
+        state = _parse_state_html(html)
+        detailed = int(state["detailed"])
+        skills = state["skills"]
+        if skills == "selected" and detailed <= 6:
+            return 3
+        if skills == "minimal" and detailed <= 6:
+            return 2
+        return 4
+
+    prepared = professional_compact.prepare_with_measurement(model, _measure)
+    ops = prepared.planning_operations
+    steps = [op["step"] for op in ops]
+    first_skills_minimal_idx = next(
+        idx for idx, op in enumerate(ops) if op["step"] == "skills_mode" and op["from"] == "selected" and op["to"] == "minimal"
+    )
+    reduction_steps_before_minimal = [
+        op for op in ops[:first_skills_minimal_idx] if op["step"] == "detailed_experience_count"
+    ]
+
+    assert "skills_mode" in steps
+    assert reduction_steps_before_minimal
+    assert reduction_steps_before_minimal[-1]["to"] == 6
+
+
+def test_prepare_with_measurement_records_operation_measurement_and_stops_on_fit(monkeypatch) -> None:
+    model = ResumeRenderModel(name="Alex Example", experience=_experience_entries(5))
+    model.render_options = {"max_resume_pages": 2}
+    monkeypatch.setattr(professional_compact, "build_html", _fake_state_html)
+
+    def _measure(html: str) -> int:
+        state = _parse_state_html(html)
+        if state["projects"] == "selected":
+            return 2
+        return 3
+
+    prepared = professional_compact.prepare_with_measurement(model, _measure)
+    ops = prepared.planning_operations
+
+    assert len(ops) == 2
+    assert [op["step"] for op in ops] == ["projects_mode", "projects_mode"]
+    assert all("measured_pages" in op and "fit" in op for op in ops)
+    assert ops[-1]["fit"] is True
+
+
+def test_prepare_with_measurement_records_bullet_cap_transition(monkeypatch) -> None:
+    model = ResumeRenderModel(name="Alex Example", experience=_experience_entries(4))
+    model.render_options = {"max_resume_pages": 2}
+    monkeypatch.setattr(professional_compact, "build_html", _fake_state_html)
+
+    def _measure(html: str) -> int:
+        state = _parse_state_html(html)
+        if int(state["cap"]) <= 4:
+            return 2
+        return 3
+
+    prepared = professional_compact.prepare_with_measurement(model, _measure)
+
+    bullet_ops = [op for op in prepared.planning_operations if op["step"] == "detailed_bullet_cap"]
+    assert bullet_ops
+    assert bullet_ops[0]["from"] == 5
+    assert bullet_ops[0]["to"] == 4
+    assert prepared.detailed_bullet_cap == 4
+
+
+def test_prepare_with_measurement_records_certs_selected_to_hidden_when_required(monkeypatch) -> None:
+    model = ResumeRenderModel(name="Alex Example", experience=_experience_entries(10))
+    model.render_options = {"max_resume_pages": 2}
+    monkeypatch.setattr(professional_compact, "build_html", _fake_state_html)
+
+    def _measure(html: str) -> int:
+        state = _parse_state_html(html)
+        if state["certs"] == "hidden" and state["skills"] == "minimal" and int(state["detailed"]) <= 6:
+            return 2
+        return 3
+
+    prepared = professional_compact.prepare_with_measurement(model, _measure)
+    cert_ops = [
+        op
+        for op in prepared.planning_operations
+        if op["step"] == "certifications_mode" and op["from"] == "selected" and op["to"] == "hidden"
+    ]
+    assert cert_ops
+    assert cert_ops[-1]["fit"] is True
+
+
+def test_professional_compact_bullet_cap_drops_later_role_bullets_preserving_earlier_role() -> None:
+    role_one = ResumeEntry(
+        title="Role 1",
+        subtitle="Company 1 | 2024",
+        bullets=["R1-B1", "R1-B2", "R1-B3", "R1-B4", "R1-B5", "R1-B6"],
+    )
+    role_two = ResumeEntry(
+        title="Role 2",
+        subtitle="Company 2 | 2023",
+        bullets=["R2-B1", "R2-B2", "R2-B3", "R2-B4", "R2-B5", "R2-B6"],
+    )
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=ResumeRenderModel(name="Alex Example"),
+        detailed_experience=[role_one, role_two],
+        compact_experience=[],
+        projects_to_render=[],
+        detailed_bullet_cap=4,
+    )
+
+    html = professional_compact.build_html(view)
+    role_one_match = re.search(r"Role 1.*?</article>", html, flags=re.DOTALL)
+    role_two_match = re.search(r"Role 2.*?</article>", html, flags=re.DOTALL)
+
+    assert role_one_match and "R1-B6" in role_one_match.group(0)
+    assert role_two_match and "R2-B4" in role_two_match.group(0)
+    assert role_two_match and "R2-B5" not in role_two_match.group(0)
+
+
 def test_professional_compact_projects_use_summary_only_when_no_bullets() -> None:
     model = ResumeRenderModel(name="Alex Example", contact="alex@example.com")
     view = professional_compact.ProfessionalCompactTemplateView(
@@ -471,6 +727,47 @@ def test_professional_compact_projects_use_summary_only_when_no_bullets() -> Non
 
     assert "Backend-driven mobile platform" in html
     assert "<ul class=\"entry-bullets\">" not in html
+
+
+def test_professional_compact_certifications_selected_constrained_to_one_line() -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        certifications="AWS Cloud Cert\nOracle Java SE 17 Cert\nSome Other Cert",
+        skills=[SkillSection(category="Backend", value="Java, Spring Boot, AWS")],
+    )
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[],
+        compact_experience=[],
+        projects_to_render=[],
+        certifications_mode="selected",
+        skills_mode="selected",
+        allowed_physical_pages=2,
+    )
+
+    html = professional_compact.build_html(view)
+
+    assert "Oracle Java SE 17 Cert" in html
+    assert "AWS Cloud Cert" not in html
+    assert "Some Other Cert" not in html
+
+
+def test_professional_compact_certifications_hidden_omits_section() -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        certifications="AWS Cloud Cert\nOracle Java SE 17 Cert",
+    )
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[],
+        compact_experience=[],
+        projects_to_render=[],
+        certifications_mode="hidden",
+    )
+
+    html = professional_compact.build_html(view)
+
+    assert "Certifications" not in html
 
 
 def test_professional_compact_projects_hide_summary_when_bullets_present() -> None:

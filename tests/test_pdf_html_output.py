@@ -302,6 +302,11 @@ def test_render_model_to_pdf_with_planning_returns_planning_report(monkeypatch, 
     assert planning["template_used"] == "professional_compact"
     assert planning["allowed_physical_pages"] == 3
     assert isinstance(planning.get("planning_attempts"), list)
+    assert isinstance(planning.get("planning_operations"), list)
+    assert isinstance(planning.get("render_modes_final"), dict)
+    assert "projects_mode" in planning["render_modes_final"]
+    if "detailed_bullet_cap_final" in planning:
+        assert isinstance(planning["detailed_bullet_cap_final"], int)
 
 
 def test_compact_template_ignores_compact_summary_and_renders_bullets(tmp_path: Path) -> None:

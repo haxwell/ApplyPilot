@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from dataclasses import replace
 import math
 import re
-from typing import Callable
+from typing import Callable, Literal
 from urllib.parse import urlparse
 
 from applypilot.scoring.pdf_render_model import ResumeEntry, ResumeRenderModel
@@ -50,6 +51,14 @@ TEMPLATE_OPTIONS = {
     "compact_max_detailed_experience": {"type": "int", "min": 1},
 }
 
+SummaryMode = Literal["full", "compact", "micro"]
+SkillsMode = Literal["full", "selected", "minimal"]
+ProjectsMode = Literal["full", "compact", "selected", "hidden"]
+ExperienceMode = Literal["detailed", "medium", "compact", "earlier_one_line", "grouped", "hidden"]
+EducationMode = Literal["full", "compact", "hidden"]
+CertificationsMode = Literal["full", "selected", "hidden"]
+EarlierExperienceMode = Literal["compact", "earlier_one_line", "grouped"]
+
 
 @dataclass
 class ProfessionalCompactTemplateView:
@@ -63,6 +72,15 @@ class ProfessionalCompactTemplateView:
     allowed_physical_pages: int | None = None
     measured_pages_final: int | None = None
     planning_attempts: list[dict[str, int | bool | str | None]] = field(default_factory=list)
+    summary_mode: SummaryMode = "full"
+    skills_mode: SkillsMode = "full"
+    projects_mode: ProjectsMode = "full"
+    experience_mode: ExperienceMode = "detailed"
+    earlier_experience_mode: EarlierExperienceMode = "compact"
+    education_mode: EducationMode = "full"
+    certifications_mode: CertificationsMode = "full"
+    detailed_bullet_cap: int | None = None
+    planning_operations: list[dict[str, int | bool | str | float | None]] = field(default_factory=list)
 
 
 def _coerce_positive_int(value: object) -> int | None:
@@ -117,6 +135,66 @@ def _build_candidate_view(
     )
 
 
+def _measure_view(
+    view: ProfessionalCompactTemplateView,
+    measure_html_page_count: Callable[[str], int],
+    allowed_pages: int,
+) -> tuple[int, bool]:
+    html = build_html(view)
+    page_count = measure_html_page_count(html)
+    return page_count, page_count <= allowed_pages
+
+
+def _record_operation(
+    view: ProfessionalCompactTemplateView,
+    *,
+    step: str,
+    from_value: object,
+    to_value: object,
+    measured_pages: int,
+    fit: bool,
+) -> ProfessionalCompactTemplateView:
+    operations = list(view.planning_operations)
+    operations.append(
+        {
+            "step": step,
+            "from": from_value,
+            "to": to_value,
+            "measured_pages": measured_pages,
+            "fit": fit,
+        }
+    )
+    return replace(view, planning_operations=operations, measured_pages_final=measured_pages)
+
+
+def _apply_mode_transition(view: ProfessionalCompactTemplateView, *, field_name: str, from_value: str, to_value: str) -> ProfessionalCompactTemplateView | None:
+    current = getattr(view, field_name)
+    if current != from_value:
+        return None
+    return replace(view, **{field_name: to_value})
+
+
+def _apply_bullet_cap_transition(view: ProfessionalCompactTemplateView, *, from_value: int, to_value: int) -> ProfessionalCompactTemplateView | None:
+    current = view.detailed_bullet_cap
+    effective = 5 if current is None else current
+    if effective != from_value:
+        return None
+    return replace(view, detailed_bullet_cap=to_value)
+
+
+def _maybe_reduce_detailed_count(view: ProfessionalCompactTemplateView) -> ProfessionalCompactTemplateView | None:
+    current = len(view.detailed_experience)
+    if current <= 1:
+        return None
+    new_detailed_count = current - 1
+    all_entries = list(view.detailed_experience) + list(view.compact_experience)
+    return replace(
+        view,
+        detailed_experience=list(all_entries[:new_detailed_count]),
+        compact_experience=list(all_entries[new_detailed_count:]),
+    )
+
+
 def prepare(model: ResumeRenderModel) -> ProfessionalCompactTemplateView:
     """Prepare template view without measurement-aware planning."""
 
@@ -143,65 +221,133 @@ def prepare_with_measurement(
     page_target = _resolve_page_target(model)
     hard_cap = _coerce_positive_int(model.render_options.get("compact_max_detailed_experience"))
     allowed_pages = _allowed_physical_pages(page_target)
+    total_entries = len(model.experience)
+    detailed_count = total_entries
     if hard_cap is not None:
-        detailed_count = min(hard_cap, len(model.experience))
-        if model.experience:
-            detailed_count = max(1, detailed_count)
-        return _build_candidate_view(
-            model,
-            detailed_count=detailed_count,
-            page_target=page_target,
-            allowed_physical_pages=allowed_pages,
-            planning_attempts=[
+        detailed_count = min(hard_cap, total_entries)
+    if total_entries > 0:
+        detailed_count = max(1, detailed_count)
+
+    view = _build_candidate_view(
+        model,
+        detailed_count=detailed_count,
+        page_target=page_target,
+        allowed_physical_pages=allowed_pages,
+        planning_attempts=(
+            [
                 {
                     "detailed_experience_count": detailed_count,
                     "measured_page_count": None,
                     "fit": None,
                     "reason": "hard_cap_override",
                 }
-            ],
-        )
-
-    total_entries = len(model.experience)
-    min_detailed = 1 if total_entries > 0 else 0
-    planning_attempts: list[dict[str, int | bool | str | None]] = []
-    tightest_candidate = _build_candidate_view(
-        model,
-        detailed_count=min_detailed,
-        page_target=page_target,
-        allowed_physical_pages=allowed_pages,
+            ]
+            if hard_cap is not None
+            else None
+        ),
     )
 
-    for detailed_count in range(total_entries, min_detailed - 1, -1):
-        candidate = _build_candidate_view(
-            model,
-            detailed_count=detailed_count,
-            page_target=page_target,
-            allowed_physical_pages=allowed_pages,
-            planning_attempts=planning_attempts,
-        )
-        html = build_html(candidate)
-        page_count = measure_html_page_count(html)
-        fits = page_count <= allowed_pages
-        planning_attempts.append(
-            {
-                "detailed_experience_count": detailed_count,
-                "measured_page_count": page_count,
-                "fit": fits,
-            }
-        )
-        tightest_candidate = _build_candidate_view(
-            model,
-            detailed_count=detailed_count,
-            page_target=page_target,
-            allowed_physical_pages=allowed_pages,
-            measured_pages_final=page_count,
-            planning_attempts=planning_attempts,
-        )
-        if fits:
-            return tightest_candidate
+    page_count, fits = _measure_view(view, measure_html_page_count, allowed_pages)
+    view = replace(view, measured_pages_final=page_count)
+    if fits:
+        return view
 
-    return tightest_candidate
+    def _apply_step(step: str, apply_fn: Callable[[ProfessionalCompactTemplateView], ProfessionalCompactTemplateView | None], from_value: object, to_value: object) -> bool:
+        nonlocal view
+        updated = apply_fn(view)
+        if updated is None:
+            return False
+        measured, fit = _measure_view(updated, measure_html_page_count, allowed_pages)
+        updated = _record_operation(
+            updated,
+            step=step,
+            from_value=from_value,
+            to_value=to_value,
+            measured_pages=measured,
+            fit=fit,
+        )
+        view = updated
+        return fit
+
+    initial_ladder = [
+        ("projects_mode", lambda v: _apply_mode_transition(v, field_name="projects_mode", from_value="full", to_value="compact"), "full", "compact"),
+        ("projects_mode", lambda v: _apply_mode_transition(v, field_name="projects_mode", from_value="compact", to_value="selected"), "compact", "selected"),
+        ("projects_mode", lambda v: _apply_mode_transition(v, field_name="projects_mode", from_value="selected", to_value="hidden"), "selected", "hidden"),
+        ("certifications_mode", lambda v: _apply_mode_transition(v, field_name="certifications_mode", from_value="full", to_value="selected"), "full", "selected"),
+        ("education_mode", lambda v: _apply_mode_transition(v, field_name="education_mode", from_value="full", to_value="compact"), "full", "compact"),
+        (
+            "earlier_experience_mode",
+            lambda v: _apply_mode_transition(v, field_name="earlier_experience_mode", from_value="compact", to_value="earlier_one_line"),
+            "compact",
+            "earlier_one_line",
+        ),
+        (
+            "earlier_experience_mode",
+            lambda v: _apply_mode_transition(v, field_name="earlier_experience_mode", from_value="earlier_one_line", to_value="grouped"),
+            "earlier_one_line",
+            "grouped",
+        ),
+        ("detailed_bullet_cap", lambda v: _apply_bullet_cap_transition(v, from_value=5, to_value=4), 5, 4),
+        ("detailed_bullet_cap", lambda v: _apply_bullet_cap_transition(v, from_value=4, to_value=3), 4, 3),
+        ("summary_mode", lambda v: _apply_mode_transition(v, field_name="summary_mode", from_value="full", to_value="compact"), "full", "compact"),
+        ("skills_mode", lambda v: _apply_mode_transition(v, field_name="skills_mode", from_value="full", to_value="selected"), "full", "selected"),
+    ]
+    for step, apply_fn, from_value, to_value in initial_ladder:
+        if _apply_step(step, apply_fn, from_value, to_value):
+            return view
+
+    def _reduce_detailed_until_floor(floor: int) -> bool:
+        nonlocal view
+        while len(view.detailed_experience) > floor:
+            next_view = _maybe_reduce_detailed_count(view)
+            if next_view is None:
+                return False
+            measured, fit = _measure_view(next_view, measure_html_page_count, allowed_pages)
+            attempts = list(view.planning_attempts)
+            attempts.append(
+                {
+                    "detailed_experience_count": len(next_view.detailed_experience),
+                    "measured_page_count": measured,
+                    "fit": fit,
+                }
+            )
+            next_view = replace(next_view, planning_attempts=attempts)
+            next_view = _record_operation(
+                next_view,
+                step="detailed_experience_count",
+                from_value=len(view.detailed_experience),
+                to_value=len(next_view.detailed_experience),
+                measured_pages=measured,
+                fit=fit,
+            )
+            view = next_view
+            if fit:
+                return True
+        return False
+
+    floor_for_two_pages = 6 if allowed_pages <= 2 else 1
+    if _reduce_detailed_until_floor(floor_for_two_pages):
+        return view
+
+    if _apply_step(
+        "skills_mode",
+        lambda v: _apply_mode_transition(v, field_name="skills_mode", from_value="selected", to_value="minimal"),
+        "selected",
+        "minimal",
+    ):
+        return view
+
+    if _apply_step(
+        "certifications_mode",
+        lambda v: _apply_mode_transition(v, field_name="certifications_mode", from_value="selected", to_value="hidden"),
+        "selected",
+        "hidden",
+    ):
+        return view
+
+    if _reduce_detailed_until_floor(1):
+        return view
+    return view
 
 
 def _build_compact_entry_summary(entry: ResumeEntry) -> tuple[str, bool]:
@@ -463,91 +609,219 @@ def _build_contact_lines(location: str, contact: str, *, include_country_in_loca
     return primary_line, url_line
 
 
+def _render_summary(resume: ResumeRenderModel, mode: SummaryMode) -> str:
+    text = resume.summary.strip()
+    if not text or mode == "hidden":  # hidden not exposed, but keep helper defensive.
+        return ""
+    if mode == "compact":
+        parts = re.split(r"(?<=[.!?])\s+", text)
+        text = " ".join(parts[:2]).strip()
+    elif mode == "micro":
+        parts = re.split(r"(?<=[.!?])\s+", text)
+        text = parts[0].strip()
+    if not text:
+        return ""
+    return f'<section class="section"><h2 class="section-title">Summary</h2><p class="summary">{text}</p></section>'
+
+
+def _render_skills(resume: ResumeRenderModel, mode: SkillsMode) -> str:
+    if not resume.skills:
+        return ""
+    lines = _build_skill_lines(resume.skills)
+    if mode == "selected":
+        lines = lines[:2]
+    elif mode == "minimal":
+        lines = lines[:1]
+    if not lines:
+        return ""
+    rows = "".join(f'<div class="skill-line">{line}</div>' for line in lines)
+    return f'<section class="section"><h2 class="section-title">Technical Skills</h2>{rows}</section>'
+
+
+def _render_experience_entry(entry: ResumeEntry, *, bullet_limit: int | None = None) -> str:
+    heading = _experience_heading(entry)
+    detail_line = _experience_detail_line(entry)
+    subtitle = f'<div class="entry-subtitle">{detail_line}</div>' if detail_line else ""
+    bullets_src = entry.bullets if bullet_limit is None else entry.bullets[:bullet_limit]
+    bullets = "".join(f"<li>{bullet}</li>" for bullet in bullets_src)
+    bullet_list = f'<ul class="entry-bullets">{bullets}</ul>' if bullets else ""
+    return f'<article class="entry"><h3 class="entry-title">{heading}</h3>{subtitle}{bullet_list}</article>'
+
+
+def _render_compact_entry(entry: ResumeEntry, *, one_line: bool = False) -> str:
+    summary, used_subtitle_as_summary = _build_compact_entry_summary(entry)
+    heading = _experience_heading(entry)
+    detail_line = _experience_detail_line(entry)
+    detail_suffix = f" | {detail_line}" if detail_line and not used_subtitle_as_summary else ""
+    if one_line:
+        one_line_text = f"{heading}{detail_suffix}"
+        return f'<article class="compact-entry"><div class="compact-meta">{one_line_text}</div></article>'
+    summary_html = f'<p class="compact-summary">{summary}</p>' if summary else ""
+    return (
+        '<article class="compact-entry">'
+        f'<div class="compact-meta"><strong class="compact-company">{heading}</strong>'
+        f'<span class="compact-date">{detail_suffix}</span></div>'
+        f"{summary_html}"
+        "</article>"
+    )
+
+
+def _render_experience(view: ProfessionalCompactTemplateView, mode: ExperienceMode) -> tuple[str, str]:
+    detailed_entries = list(view.detailed_experience)
+    compact_entries = list(view.compact_experience)
+    if mode == "hidden":
+        return "", ""
+    if mode == "earlier_one_line":
+        compact_entries = detailed_entries + compact_entries
+        detailed_entries = []
+    elif mode == "grouped":
+        lines: list[str] = []
+        for entry in detailed_entries + compact_entries:
+            heading = _experience_heading(entry)
+            detail_line = _experience_detail_line(entry)
+            lines.append(f"{heading} ({detail_line})" if detail_line else heading)
+        if not lines:
+            return "", ""
+        grouped = " • ".join(line for line in lines if line)
+        html = (
+            '<section class="section"><h2 class="section-title">Experience</h2>'
+            f'<p class="compact-summary">{grouped}</p></section>'
+        )
+        return html, ""
+
+    exp_html = ""
+    if detailed_entries:
+        items = ""
+        for idx, entry in enumerate(detailed_entries):
+            entry_bullet_cap = None
+            if idx > 0 and isinstance(view.detailed_bullet_cap, int) and view.detailed_bullet_cap > 0:
+                entry_bullet_cap = view.detailed_bullet_cap
+            if mode == "detailed":
+                items += _render_experience_entry(entry, bullet_limit=entry_bullet_cap)
+            elif mode == "medium":
+                medium_limit = 2 if entry_bullet_cap is None else min(2, entry_bullet_cap)
+                items += _render_experience_entry(entry, bullet_limit=medium_limit)
+            elif mode == "compact":
+                items += _render_compact_entry(entry)
+        exp_html = f'<section class="section"><h2 class="section-title">Experience</h2>{items}</section>'
+
+    selected_exp_html = ""
+    if compact_entries:
+        if view.earlier_experience_mode == "grouped":
+            grouped_lines: list[str] = []
+            for entry in compact_entries:
+                heading = _experience_heading(entry)
+                detail_line = _experience_detail_line(entry)
+                grouped_lines.append(f"{heading} ({detail_line})" if detail_line else heading)
+            grouped_text = " • ".join(line for line in grouped_lines if line)
+            items = f'<p class="compact-summary">{grouped_text}</p>' if grouped_text else ""
+        else:
+            one_line = view.earlier_experience_mode == "earlier_one_line"
+            items = "".join(_render_compact_entry(entry, one_line=one_line) for entry in compact_entries)
+        selected_exp_html = (
+            '<section class="section"><h2 class="section-title">Earlier Experience (Selected)</h2>'
+            f"{items}</section>"
+        )
+    return exp_html, selected_exp_html
+
+
+def _render_projects(view: ProfessionalCompactTemplateView, mode: ProjectsMode) -> str:
+    if mode == "hidden":
+        return ""
+    entries = list(view.projects_to_render)
+    if mode == "selected":
+        entries = entries[:2]
+    if not entries:
+        return ""
+    items = ""
+    for entry in entries:
+        context_line, date_line = _project_context_and_dates(entry)
+        title_row = (
+            '<div class="project-title-row">'
+            f'<h3 class="entry-title">{entry.title}</h3>'
+            f'<span class="project-dates">{date_line}</span>'
+            "</div>"
+        )
+        if mode == "compact":
+            summary = entry.compact_summary.strip() or context_line
+            summary_html = f'<p class="project-summary">{summary}</p>' if summary else ""
+            items += f'<article class="entry">{title_row}{summary_html}</article>'
+            continue
+        bullets = "".join(f"<li>{bullet}</li>" for bullet in entry.bullets)
+        has_bullets = bool(bullets)
+        summary_html = f'<p class="project-summary">{context_line}</p>' if context_line and not has_bullets else ""
+        bullet_list = f'<ul class="entry-bullets">{bullets}</ul>' if has_bullets else ""
+        items += f'<article class="entry">{title_row}{summary_html}{bullet_list}</article>'
+    return f'<section class="section"><h2 class="section-title">Projects</h2>{items}</section>'
+
+
+def _render_education(resume: ResumeRenderModel, mode: EducationMode) -> str:
+    text = resume.education.strip()
+    if not text or mode == "hidden":
+        return ""
+    if mode == "compact":
+        text = text.replace(" | ", " • ")
+    return f'<section class="section"><h2 class="section-title">Education</h2><p class="edu">{text}</p></section>'
+
+
+def _selected_skill_tokens(resume: ResumeRenderModel, skills_mode: SkillsMode) -> set[str]:
+    lines = _build_skill_lines(resume.skills)
+    if skills_mode == "selected":
+        lines = lines[:2]
+    elif skills_mode == "minimal":
+        lines = lines[:1]
+    text = " ".join(lines).lower()
+    return set(re.findall(r"[a-z0-9\+\#\.\-/]{2,}", text))
+
+
+def _pick_best_certification(lines: list[str], skill_tokens: set[str]) -> str:
+    def _score(line: str) -> tuple[int, int]:
+        low = line.lower()
+        java_score = 1 if "java" in low else 0
+        skill_score = 0
+        for token in skill_tokens:
+            if token and token in low:
+                skill_score += 1
+        return java_score, skill_score
+
+    best = lines[0]
+    best_score = _score(best)
+    for line in lines[1:]:
+        score = _score(line)
+        if score > best_score:
+            best = line
+            best_score = score
+    return best
+
+
+def _render_certifications(view: ProfessionalCompactTemplateView, mode: CertificationsMode) -> str:
+    resume = view.model
+    lines = [line.strip() for line in str(resume.certifications).splitlines() if line.strip()]
+    if not lines or mode == "hidden":
+        return ""
+    if mode == "selected":
+        if view.allowed_physical_pages is not None and view.allowed_physical_pages <= 2:
+            skill_tokens = _selected_skill_tokens(resume, view.skills_mode)
+            lines = [_pick_best_certification(lines, skill_tokens)]
+        else:
+            lines = lines[:3]
+    certifications_html = "<br>".join(lines)
+    return (
+        f'<section class="section"><h2 class="section-title">Certifications</h2>'
+        f'<p class="edu">{certifications_html}</p></section>'
+    )
+
+
 def build_html(view: ProfessionalCompactTemplateView) -> str:
     """Build professional compact resume HTML from a prepared view."""
     resume = view.model
 
-    # Skills
-    skills_html = ""
-    if resume.skills:
-        rows = "".join(f'<div class="skill-line">{line}</div>' for line in _build_skill_lines(resume.skills))
-        skills_html = f'<section class="section"><h2 class="section-title">Technical Skills</h2>{rows}</section>'
-
-    # Experience
-    exp_html = ""
-    if view.detailed_experience:
-        items = ""
-        for entry in view.detailed_experience:
-            heading = _experience_heading(entry)
-            detail_line = _experience_detail_line(entry)
-            subtitle = f'<div class="entry-subtitle">{detail_line}</div>' if detail_line else ""
-            bullets = "".join(f"<li>{bullet}</li>" for bullet in entry.bullets)
-            bullet_list = f'<ul class="entry-bullets">{bullets}</ul>' if bullets else ""
-            items += f'<article class="entry"><h3 class="entry-title">{heading}</h3>{subtitle}{bullet_list}</article>'
-        exp_html = f'<section class="section"><h2 class="section-title">Experience</h2>{items}</section>'
-
-    # Earlier Experience (compact entries)
-    selected_exp_html = ""
-    if view.compact_experience:
-        items = ""
-        for entry in view.compact_experience:
-            summary, used_subtitle_as_summary = _build_compact_entry_summary(entry)
-            heading = _experience_heading(entry)
-            detail_line = _experience_detail_line(entry)
-            detail_suffix = f" | {detail_line}" if detail_line and not used_subtitle_as_summary else ""
-            summary_html = f'<p class="compact-summary">{summary}</p>' if summary else ""
-            items += (
-                '<article class="compact-entry">'
-                f'<div class="compact-meta"><strong class="compact-company">{heading}</strong>'
-                f'<span class="compact-date">{detail_suffix}</span></div>'
-                f"{summary_html}"
-                "</article>"
-            )
-        selected_exp_html = (
-            f'<section class="section"><h2 class="section-title">Earlier Experience (Selected)</h2>{items}</section>'
-        )
-
-    # Projects
-    proj_html = ""
-    if view.projects_to_render:
-        items = ""
-        for entry in view.projects_to_render:
-            context_line, date_line = _project_context_and_dates(entry)
-            title_row = (
-                '<div class="project-title-row">'
-                f'<h3 class="entry-title">{entry.title}</h3>'
-                f'<span class="project-dates">{date_line}</span>'
-                "</div>"
-            )
-            bullets = "".join(f"<li>{bullet}</li>" for bullet in entry.bullets)
-            has_bullets = bool(bullets)
-            # Project rendering is mutually exclusive: summary-only when compact,
-            # or bullet-detail when space allows.
-            summary_html = f'<p class="project-summary">{context_line}</p>' if context_line and not has_bullets else ""
-            bullet_list = f'<ul class="entry-bullets">{bullets}</ul>' if has_bullets else ""
-            items += f'<article class="entry">{title_row}{summary_html}{bullet_list}</article>'
-        proj_html = f'<section class="section"><h2 class="section-title">Projects</h2>{items}</section>'
-
-    # Education
-    edu_html = ""
-    if resume.education:
-        edu_html = f'<section class="section"><h2 class="section-title">Education</h2><p class="edu">{resume.education}</p></section>'
-
-    # Certifications
-    cert_html = ""
-    if resume.certifications:
-        certifications_html = "<br>".join(
-            line.strip() for line in str(resume.certifications).splitlines() if line.strip()
-        )
-        cert_html = (
-            f'<section class="section"><h2 class="section-title">Certifications</h2>'
-            f'<p class="edu">{certifications_html}</p></section>'
-        )
-
-    # Summary
-    summary_html = ""
-    if resume.summary:
-        summary_html = f'<section class="section"><h2 class="section-title">Summary</h2><p class="summary">{resume.summary}</p></section>'
+    summary_html = _render_summary(resume, view.summary_mode)
+    skills_html = _render_skills(resume, view.skills_mode)
+    exp_html, selected_exp_html = _render_experience(view, view.experience_mode)
+    proj_html = _render_projects(view, view.projects_mode)
+    edu_html = _render_education(resume, view.education_mode)
+    cert_html = _render_certifications(view, view.certifications_mode)
 
     # Contact line parsing
     include_country = bool(resume.render_options.get("include_country_in_location", False))

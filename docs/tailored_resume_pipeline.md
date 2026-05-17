@@ -147,6 +147,12 @@ Current template behavior:
     1. template-local override (if the template defines one)
     2. `model.render_options["max_resume_pages"]`
     3. template default `2.5` (when neither value is present/valid)
+  - supports explicit renderer modes in its prepared view (summary/skills/projects/experience/education/certifications).
+  - applies an idempotent staged compaction ladder when over page budget:
+    - each stage performs one deterministic transition
+    - full HTML is measured after each transition
+    - planner stops immediately on first fit
+    - detailed-experience count reduction is the final fallback stage
 - `classic.prepare(model)` is the baseline/simple renderer:
   - no measurement-aware planning
   - all experience entries remain detailed
@@ -295,6 +301,9 @@ Typical fields:
 - `allowed_physical_pages`
 - `measured_pages_final`
 - `planning_attempts` (candidate detailed-role counts + measured pages + fit flag)
+- `planning_operations` (ordered compaction operations with `step`, `from`, `to`, `measured_pages`, `fit`)
+- `render_modes_final`
+- `detailed_bullet_cap_final`
 - `detailed_roles`
 - `earlier_selected_roles`
 

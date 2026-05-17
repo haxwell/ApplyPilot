@@ -283,6 +283,31 @@ def extract_render_planning_report(
                 normalized_attempts.append(dict(attempt))
         report["planning_attempts"] = normalized_attempts
 
+    planning_operations = getattr(prepared, "planning_operations", None)
+    if isinstance(planning_operations, list):
+        normalized_operations: list[dict[str, Any]] = []
+        for operation in planning_operations:
+            if isinstance(operation, dict):
+                normalized_operations.append(dict(operation))
+        report["planning_operations"] = normalized_operations
+
+    render_modes_final = {
+        "summary_mode": getattr(prepared, "summary_mode", None),
+        "skills_mode": getattr(prepared, "skills_mode", None),
+        "projects_mode": getattr(prepared, "projects_mode", None),
+        "experience_mode": getattr(prepared, "experience_mode", None),
+        "earlier_experience_mode": getattr(prepared, "earlier_experience_mode", None),
+        "education_mode": getattr(prepared, "education_mode", None),
+        "certifications_mode": getattr(prepared, "certifications_mode", None),
+    }
+    render_modes_final = {k: v for k, v in render_modes_final.items() if isinstance(v, str) and v}
+    if render_modes_final:
+        report["render_modes_final"] = render_modes_final
+
+    detailed_bullet_cap_final = getattr(prepared, "detailed_bullet_cap", None)
+    if isinstance(detailed_bullet_cap_final, int) and detailed_bullet_cap_final > 0:
+        report["detailed_bullet_cap_final"] = detailed_bullet_cap_final
+
     detailed_entries = getattr(prepared, "detailed_experience", model.experience)
     compact_entries = getattr(prepared, "compact_experience", [])
     if isinstance(detailed_entries, list):
