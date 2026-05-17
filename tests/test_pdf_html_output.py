@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from applypilot.scoring.pdf import convert_to_pdf, render_model_to_pdf, render_model_to_pdf_with_planning
+from applypilot.scoring.pdf import build_html_for_resume, convert_to_pdf, render_model_to_pdf, render_model_to_pdf_with_planning
 from applypilot.scoring.pdf_render_model import (
     ResumeEntry,
     ResumeRenderModel,
@@ -130,6 +130,20 @@ def test_convert_to_pdf_html_only_compact_contains_expected_sections(tmp_path: P
     assert "Technical Skills" in compact_html
     assert "Experience" in compact_html
     assert "Education" in compact_html
+
+
+def test_render_model_html_outputs_certifications_section_when_present() -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        title="Senior Engineer",
+        summary="Built and shipped reliable systems.",
+        certifications="AWS Certified Developer | Amazon | 2023",
+    )
+
+    html = build_html_for_resume(model, template_name="classic")
+
+    assert "Certifications" in html
+    assert "AWS Certified Developer | Amazon | 2023" in html
 
 
 def test_compact_html_differs_from_classic_html(tmp_path: Path) -> None:

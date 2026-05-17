@@ -40,6 +40,9 @@ def _sample_resume_text() -> str:
             "",
             "EDUCATION",
             "State University | BS Computer Science | 2018",
+            "",
+            "CERTIFICATIONS",
+            "AWS Certified Developer | Amazon | 2023",
         ]
     )
 
@@ -77,6 +80,7 @@ def test_build_render_model_maps_expected_fields() -> None:
     assert len(model.projects) == 1
     assert model.projects[0].title == "Side Project"
     assert model.education == "State University | BS Computer Science | 2018"
+    assert model.certifications == "AWS Certified Developer | Amazon | 2023"
 
 
 def test_classic_prepare_is_noop_equivalent() -> None:
@@ -317,6 +321,32 @@ def test_build_render_model_from_tailored_json_prefers_profile_education_over_ll
 
     assert model.education == "Metropolitan State College of Denver | Computer Science coursework | 1994 - 1996"
     assert "Major Computer Science" not in model.education
+
+
+def test_build_render_model_from_tailored_json_prefers_profile_certifications_over_llm_field() -> None:
+    profile = {
+        "personal": {"full_name": "Alex Example"},
+        "certifications": [
+            {
+                "name": "AWS Certified Developer",
+                "issuer": "Amazon",
+                "date": "2023",
+            }
+        ],
+    }
+    data = {
+        "title": "Engineer",
+        "summary": "Summary",
+        "skills": {},
+        "experience": [],
+        "projects": [],
+        "education": "",
+        "certifications": "Legacy cert string from LLM",
+    }
+
+    model = build_render_model_from_tailored_json(data, profile)
+
+    assert model.certifications == "AWS Certified Developer | Amazon | 2023"
 
 
 def test_build_render_model_from_tailored_json_uses_llm_education_when_profile_missing() -> None:

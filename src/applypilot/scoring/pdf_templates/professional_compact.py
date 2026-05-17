@@ -532,6 +532,17 @@ def build_html(view: ProfessionalCompactTemplateView) -> str:
     if resume.education:
         edu_html = f'<section class="section"><h2 class="section-title">Education</h2><p class="edu">{resume.education}</p></section>'
 
+    # Certifications
+    cert_html = ""
+    if resume.certifications:
+        certifications_html = "<br>".join(
+            line.strip() for line in str(resume.certifications).splitlines() if line.strip()
+        )
+        cert_html = (
+            f'<section class="section"><h2 class="section-title">Certifications</h2>'
+            f'<p class="edu">{certifications_html}</p></section>'
+        )
+
     # Summary
     summary_html = ""
     if resume.summary:
@@ -703,6 +714,7 @@ body {{
 {selected_exp_html}
 {proj_html}
 {edu_html}
+{cert_html}
 </div>
 </body>
 </html>"""

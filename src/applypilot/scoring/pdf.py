@@ -201,6 +201,10 @@ def build_render_model(parsed: dict) -> ResumeRenderModel:
     if education_text:
         model.education = education_text
 
+    certifications_text = str(sections.get("CERTIFICATIONS", "") or sections.get("CERTIFICATES", "")).strip()
+    if certifications_text:
+        model.certifications = certifications_text
+
     return model
 
 

@@ -513,6 +513,22 @@ def _normalize_projects(projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return normalized
 
 
+def _normalize_certificates(certificates: list[dict[str, Any]]) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    for item in certificates:
+        if not isinstance(item, dict):
+            continue
+        normalized.append(
+            {
+                "name": _coerce_str(item.get("name")),
+                "issuer": _coerce_str(item.get("issuer")),
+                "date": _coerce_str(item.get("date")),
+                "url": _coerce_str(item.get("url")),
+            }
+        )
+    return normalized
+
+
 def _merge_unique(base: list[str], extra: list[str]) -> list[str]:
     merged = list(base)
     for item in extra:
@@ -631,11 +647,13 @@ def normalize_profile_from_resume_json(data: dict, settings: dict | None = None)
     education_entries = data.get("education", []) if isinstance(data.get("education"), list) else []
     skills_entries = data.get("skills", []) if isinstance(data.get("skills"), list) else []
     projects_entries = data.get("projects", []) if isinstance(data.get("projects"), list) else []
+    certificates_entries = data.get("certificates", []) if isinstance(data.get("certificates"), list) else []
 
     work = _normalize_work_entries(work_entries)
     education, education_level = _normalize_education(education_entries)
     skills = _normalize_skills(skills_entries)
     projects = _normalize_projects(projects_entries)
+    certifications = _normalize_certificates(certificates_entries)
     current_work = _select_current_role(work)
 
     experience_total = _coerce_str(applypilot.get("years_of_experience_total")) or _compute_years_experience(work_entries)
@@ -665,6 +683,7 @@ def normalize_profile_from_resume_json(data: dict, settings: dict | None = None)
         "education": education,
         "skills": skills,
         "projects": projects,
+        "certifications": certifications,
         "eeo_voluntary": profile_settings["eeo_voluntary"],
         "tailoring_config": profile_settings["tailoring_config"],
         "files": profile_settings["files"],
@@ -682,6 +701,7 @@ def normalize_legacy_profile(profile: dict) -> dict:
     skills_boundary = raw.get("skills_boundary", {}) if isinstance(raw.get("skills_boundary"), dict) else {}
     project_raw = raw.get("projects", []) if isinstance(raw.get("projects"), list) else []
     project_highlights = raw.get("project_highlights", []) if isinstance(raw.get("project_highlights"), list) else []
+    certificates_raw = raw.get("certificates", []) if isinstance(raw.get("certificates"), list) else []
 
     work = _normalize_work_entries(work_history_raw)
     education, education_level = _normalize_education(education_raw)
@@ -694,6 +714,7 @@ def normalize_legacy_profile(profile: dict) -> dict:
     projects = _normalize_projects(project_raw)
     if not projects and project_highlights:
         projects = _normalize_projects(project_highlights)
+    certifications = _normalize_certificates(certificates_raw)
 
     current_work = _select_current_role(work)
     current_title = _coerce_str(_safe_get(experience_raw, "current_title", "current_job_title")) or _coerce_str(
@@ -737,6 +758,7 @@ def normalize_legacy_profile(profile: dict) -> dict:
         "education": education,
         "skills": skills,
         "projects": projects,
+        "certifications": certifications,
         "eeo_voluntary": settings["eeo_voluntary"],
         "tailoring_config": settings["tailoring_config"],
         "files": settings["files"],

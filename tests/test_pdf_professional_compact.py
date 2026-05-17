@@ -183,6 +183,7 @@ def test_professional_compact_build_html_renders_polished_header_and_sections() 
         contact="alex@example.com | 555-111-2222 | github.com/alex",
         summary="Built and shipped reliable systems.",
         education="State University | BS Computer Science | 2018",
+        certifications="AWS Certified Developer | Amazon | 2023",
     )
     view = professional_compact.ProfessionalCompactTemplateView(
         model=model,
@@ -198,6 +199,7 @@ def test_professional_compact_build_html_renders_polished_header_and_sections() 
     assert "github.com/alex" in html
     assert '<h2 class="section-title">Summary</h2>' in html
     assert '<h2 class="section-title">Education</h2>' in html
+    assert '<h2 class="section-title">Certifications</h2>' in html
     assert '<div class="title">' not in html
 
 

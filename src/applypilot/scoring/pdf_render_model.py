@@ -43,6 +43,7 @@ class ResumeRenderModel:
     experience: list[ResumeEntry] = field(default_factory=list)
     projects: list[ResumeEntry] = field(default_factory=list)
     education: str = ""
+    certifications: str = ""
     render_options: dict[str, Any] = field(default_factory=dict)
 
 
@@ -315,6 +316,14 @@ def _build_profile_skill_display_map(profile: dict) -> dict[str, str]:
     return display_map
 
 
+def _format_certification_entry(entry: dict[str, Any]) -> str:
+    name = str(entry.get("name", "")).strip()
+    issuer = str(entry.get("issuer", "")).strip()
+    date = str(entry.get("date", "")).strip()
+    parts = [part for part in (name, issuer, date) if part]
+    return " | ".join(parts)
+
+
 def build_render_model_from_tailored_json(
     data: dict,
     profile: dict,
@@ -347,6 +356,22 @@ def build_render_model_from_tailored_json(
         model.education = "\n".join(rendered_education)
     else:
         model.education = str(data.get("education", "")).strip()
+
+    profile_certifications = profile.get("certifications", []) if isinstance(profile, dict) else []
+    if isinstance(profile_certifications, list):
+        cert_lines: list[str] = []
+        for entry in profile_certifications:
+            if not isinstance(entry, dict):
+                continue
+            rendered = _format_certification_entry(entry)
+            if rendered:
+                cert_lines.append(rendered)
+        if cert_lines:
+            model.certifications = "\n".join(cert_lines)
+        else:
+            model.certifications = str(data.get("certifications", "")).strip()
+    else:
+        model.certifications = str(data.get("certifications", "")).strip()
 
     contact_parts: list[str] = []
     for key in ("email", "phone", "github_url", "linkedin_url"):
