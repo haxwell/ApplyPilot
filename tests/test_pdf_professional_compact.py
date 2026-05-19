@@ -564,8 +564,9 @@ def test_professional_compact_grouped_earlier_experience_uses_compact_summaries(
     )
 
     html = professional_compact.build_html(view)
-    assert "Alpha Corp / Beta Labs - Built event-driven APIs.; Reduced production incidents." in html
+    assert "Alpha Corp / Beta Labs - Built event-driven APIs; Reduced production incidents." in html
     assert "Gamma Co - Improved deployment reliability." in html
+    assert ".;" not in html
     assert "202" not in html
 
 

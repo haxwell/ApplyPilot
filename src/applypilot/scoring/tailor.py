@@ -1768,6 +1768,7 @@ def run_tailoring(
                                 model,
                                 generated_pdf,
                                 template_name=pdf_template_name,
+                                job_description=str(job.get("full_description", "")),
                             )
                             report["pdf_render_planning"] = planning
                         except Exception as structured_exc:

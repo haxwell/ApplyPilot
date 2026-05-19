@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from applypilot.config import TAILORED_DIR
+from applypilot.resume.evidence import build_evidence_mapping_report
 from applypilot.scoring.pdf_render_model import (
     ResumeEntry,
     ResumeRenderModel,
@@ -375,12 +376,22 @@ def render_model_to_pdf_with_planning(
     output_path: Path,
     template_name: str = DEFAULT_PDF_TEMPLATE,
     html_only: bool = False,
+    job_description: str = "",
 ) -> tuple[Path, dict[str, Any]]:
     """Render a resume model and return template planning telemetry."""
 
     out = Path(output_path)
     html, prepared = _build_html_and_prepared_for_resume(model, template_name=template_name)
     planning = extract_render_planning_report(model, prepared, template_name)
+    try:
+        evidence_report = build_evidence_mapping_report(
+            job_description=job_description,
+            model=model,
+            prepared=prepared,
+        )
+        planning.update(evidence_report)
+    except Exception as exc:  # pragma: no cover - diagnostics should never break rendering
+        planning["evidence_mapping_error"] = str(exc)
 
     if html_only:
         out.write_text(html, encoding="utf-8")

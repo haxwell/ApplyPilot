@@ -872,13 +872,13 @@ def _render_experience(view: ProfessionalCompactTemplateView, mode: ExperienceMo
                     label for label in (_compact_entry_company_label(entry) for entry in group) if label
                 )
                 summaries = [_compact_entry_signal_summary(entry) for entry in group]
-                summaries = [summary for summary in summaries if summary]
+                summaries = [summary.rstrip(" .;") for summary in summaries if summary and summary.rstrip(" .;")]
                 if companies and summaries:
-                    grouped_lines.append(f"{companies} - {'; '.join(summaries)}")
+                    grouped_lines.append(f"{companies} - {'; '.join(summaries)}.")
                 elif companies:
-                    grouped_lines.append(companies)
+                    grouped_lines.append(f"{companies}.")
                 elif summaries:
-                    grouped_lines.append("; ".join(summaries))
+                    grouped_lines.append(f"{'; '.join(summaries)}.")
             items = "".join(f'<p class="compact-summary">{line}</p>' for line in grouped_lines)
         else:
             one_line = view.earlier_experience_mode == "earlier_one_line"
