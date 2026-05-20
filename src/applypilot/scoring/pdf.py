@@ -1501,7 +1501,16 @@ def _apply_evidence_aware_skill_replacements(
                     previous_reason = str(disp.get("reason", "")).strip()
                     previous_replacement = disp.pop("replacement", None)
                     if previous_action:
-                        previous_item: dict[str, Any] = {"action": previous_action}
+                        history_action = previous_action
+                        if previous_action == "kept":
+                            if previous_reason in {
+                                "no_supported_retained_replacement_available",
+                                "replacement_duplicate_or_alias_conflict",
+                            }:
+                                history_action = "replacement_not_found"
+                            else:
+                                history_action = "replacement_not_kept"
+                        previous_item: dict[str, Any] = {"action": history_action}
                         if previous_replacement:
                             previous_item["replacement"] = previous_replacement
                         if previous_reason:

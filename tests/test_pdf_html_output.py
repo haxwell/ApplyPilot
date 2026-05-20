@@ -1049,6 +1049,89 @@ def test_second_unsupported_skill_removed_when_only_supported_candidate_was_alre
     assert "user_action" in postgres_disp
 
 
+def test_removed_disposition_action_history_does_not_use_kept_for_intermediate_state(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="PostgreSQL, Kafka")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built Kafka event pipelines."])],
+    )
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [
+            {"claim": "PostgreSQL", "coverage_status": "unsupported", "primary_supporting_evidence_count": 0},
+        ],
+        "unsupported_visible_claims": ["PostgreSQL"],
+        "weak_visible_claims": [],
+    }
+    monkeypatch.setattr(
+        pdf_module,
+        "build_claim_coverage_for_claims",
+        lambda **_kwargs: [
+            ClaimCoverage(
+                claim="Kafka",
+                claim_type="skill",
+                is_visible=False,
+                supporting_evidence_count=1,
+                retained_supporting_evidence_count=1,
+                primary_supporting_evidence_count=1,
+                retained_primary_supporting_evidence_count=1,
+                secondary_supporting_evidence_count=0,
+                coverage_status="supported",
+                top_supporting_evidence=["Acme: Built Kafka event pipelines."],
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        pdf_module,
+        "_build_html_and_prepared_for_resume",
+        lambda *_args, **_kwargs: ("<html/>", SimpleNamespace(skills_mode="selected", selected_skills_max_lines=1)),
+    )
+
+    def _planning_for_model(**kwargs):
+        model_arg = kwargs["model"]
+        claims = extract_all_skill_claims(model_arg)
+        if any(claim.lower() == "postgresql" for claim in claims):
+            return {
+                "allowed_physical_pages": 2,
+                "measured_pages_final": 3,
+                "claim_coverage": [
+                    {"claim": "PostgreSQL", "coverage_status": "unsupported", "primary_supporting_evidence_count": 0},
+                ],
+                "unsupported_visible_claims": ["PostgreSQL"],
+                "weak_visible_claims": [],
+            }
+        return {
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [{"claim": "Kafka", "coverage_status": "supported", "primary_supporting_evidence_count": 1}],
+            "unsupported_visible_claims": [],
+            "weak_visible_claims": [],
+        }
+
+    monkeypatch.setattr(pdf_module, "_build_planning_with_evidence", _planning_for_model)
+
+    _new_model, _html, _prepared, updated = _apply_evidence_aware_skill_replacements(
+        model=model,
+        html="<html/>",
+        prepared=SimpleNamespace(skills_mode="selected", selected_skills_max_lines=1),
+        planning=planning,
+        template_name="professional_compact",
+        job_description="Build backend systems.",
+        skills_selection={"retained_skills": [{"skill": "PostgreSQL", "score": 99.0}, {"skill": "Kafka", "score": 98.0}], "min_count": 1},
+    )
+
+    disp = next(item for item in updated["final_weak_or_unsupported_claim_dispositions"] if item.get("claim") == "PostgreSQL")
+    assert disp.get("final_action") == "removed"
+    assert disp.get("reason") == "unsupported_no_replacement_no_source_evidence"
+    assert "replacement" not in disp
+    history = disp.get("action_history")
+    assert isinstance(history, list) and len(history) == 2
+    assert history[0]["action"] == "replacement_not_kept"
+    assert history[0]["reason"] == "replacement_would_overflow_page_target"
+    assert history[1] == {"action": "removed", "reason": "unsupported_no_replacement_no_source_evidence"}
+    assert "user_action" in disp
+
+
 def test_evidence_preservation_restore_trimmed_bullet_kept_when_fit(monkeypatch) -> None:
     model = ResumeRenderModel(
         skills=[SkillSection(category="Core", value="Docker, Java, Spring Boot")],
