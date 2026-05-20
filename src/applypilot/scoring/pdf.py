@@ -12,6 +12,14 @@ from pathlib import Path
 from typing import Any
 
 from applypilot.config import TAILORED_DIR
+from applypilot.resume.evidence import (
+    build_claim_coverage_for_claims,
+    build_evidence_mapping_report,
+    claim_distinctive_tokens,
+    claim_supports_distinctive_tokens,
+    claim_variants,
+    extract_all_skill_claims,
+)
 from applypilot.scoring.pdf_render_model import (
     ResumeEntry,
     ResumeRenderModel,
@@ -328,6 +336,847 @@ def extract_render_planning_report(
     return report
 
 
+def _normalize_skill_claim_key(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value).strip().lower())
+
+
+def _split_skill_tokens_preserving_parentheses(text: str) -> list[str]:
+    parts: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    for ch in text:
+        if ch == "(":
+            depth += 1
+            buf.append(ch)
+            continue
+        if ch == ")":
+            depth = max(0, depth - 1)
+            buf.append(ch)
+            continue
+        if ch == "," and depth == 0:
+            token = "".join(buf).strip()
+            if token:
+                parts.append(token)
+            buf = []
+            continue
+        buf.append(ch)
+    tail = "".join(buf).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _clone_model_with_swapped_skills(model: ResumeRenderModel, from_skill: str, to_skill: str) -> ResumeRenderModel | None:
+    from_key = _normalize_skill_claim_key(from_skill)
+    to_key = _normalize_skill_claim_key(to_skill)
+    if not from_key or not to_key or from_key == to_key:
+        return None
+
+    sections: list[tuple[str, list[str]]] = []
+    from_pos: tuple[int, int] | None = None
+    to_pos: tuple[int, int] | None = None
+
+    for sidx, section in enumerate(model.skills):
+        tokens = _split_skill_tokens_preserving_parentheses(str(section.value))
+        for tidx, token in enumerate(tokens):
+            key = _normalize_skill_claim_key(token)
+            if from_pos is None and key == from_key:
+                from_pos = (sidx, tidx)
+            if to_pos is None and key == to_key:
+                to_pos = (sidx, tidx)
+        sections.append((section.category, tokens))
+
+    if from_pos is None or to_pos is None:
+        return None
+
+    (from_sidx, from_tidx), (to_sidx, to_tidx) = from_pos, to_pos
+    sections[from_sidx][1][from_tidx], sections[to_sidx][1][to_tidx] = (
+        sections[to_sidx][1][to_tidx],
+        sections[from_sidx][1][from_tidx],
+    )
+
+    cloned = ResumeRenderModel(
+        name=model.name,
+        title=model.title,
+        location=model.location,
+        contact=model.contact,
+        summary=model.summary,
+        skills=[SkillSection(category=cat, value=", ".join(tokens)) for cat, tokens in sections],
+        experience=list(model.experience),
+        projects=list(model.projects),
+        education=model.education,
+        certifications=model.certifications,
+        render_options=dict(model.render_options),
+    )
+    return cloned
+
+
+def _skill_score_map_from_selection(skills_selection: dict[str, Any] | None) -> dict[str, float]:
+    mapping: dict[str, float] = {}
+    if not isinstance(skills_selection, dict):
+        return mapping
+    retained = skills_selection.get("retained_skills")
+    if not isinstance(retained, list):
+        return mapping
+    for entry in retained:
+        if not isinstance(entry, dict):
+            continue
+        skill = str(entry.get("skill", "")).strip()
+        key = _normalize_skill_claim_key(skill)
+        if not key:
+            continue
+        try:
+            score = float(entry.get("score", 0.0))
+        except (TypeError, ValueError):
+            score = 0.0
+        mapping[key] = score
+    return mapping
+
+
+def _measured_fit(planning: dict[str, Any]) -> tuple[int | None, bool]:
+    measured = planning.get("measured_pages_final")
+    allowed = planning.get("allowed_physical_pages")
+    measured_pages = measured if isinstance(measured, int) and measured > 0 else None
+    allowed_pages = allowed if isinstance(allowed, int) and allowed > 0 else None
+    if measured_pages is None or allowed_pages is None:
+        return measured_pages, True
+    return measured_pages, measured_pages <= allowed_pages
+
+
+def _build_planning_with_evidence(
+    *,
+    model: ResumeRenderModel,
+    prepared: Any,
+    template_name: str,
+    job_description: str,
+) -> dict[str, Any]:
+    planning = extract_render_planning_report(model, prepared, template_name)
+    try:
+        evidence_report = build_evidence_mapping_report(
+            job_description=job_description,
+            model=model,
+            prepared=prepared,
+        )
+        planning.update(evidence_report)
+    except Exception as exc:  # pragma: no cover - diagnostics should never break rendering
+        planning["evidence_mapping_error"] = str(exc)
+    return planning
+
+
+def _parse_source_path(source_path: str) -> tuple[str, int, int | None] | None:
+    match = re.match(r"^(experience|projects)\[(\d+)\]\.(compact_summary|bullets\[(\d+)\])$", source_path.strip())
+    if not match:
+        return None
+    section = str(match.group(1))
+    entry_idx = int(match.group(2))
+    bullet_idx = int(match.group(4)) if match.group(4) is not None else None
+    return section, entry_idx, bullet_idx
+
+
+def _clone_model_with_restored_experience_bullet(
+    model: ResumeRenderModel,
+    entry_idx: int,
+    bullet_idx: int,
+    cap: int,
+) -> ResumeRenderModel | None:
+    if entry_idx < 0 or entry_idx >= len(model.experience):
+        return None
+    entry = model.experience[entry_idx]
+    bullets = list(entry.bullets)
+    if bullet_idx < 0 or bullet_idx >= len(bullets):
+        return None
+    if cap <= 0 or bullet_idx < cap:
+        return None
+    # Move supporting bullet into retained cap window and push the displaced bullet out.
+    supporting = bullets.pop(bullet_idx)
+    insert_at = min(max(cap - 1, 0), len(bullets))
+    bullets.insert(insert_at, supporting)
+    experience = list(model.experience)
+    updated_entry = ResumeEntry(
+        title=entry.title,
+        subtitle=entry.subtitle,
+        bullets=bullets,
+        compact_summary=entry.compact_summary,
+        company=entry.company,
+        role=entry.role,
+        location=entry.location,
+        technologies=list(entry.technologies),
+        is_contract=entry.is_contract,
+        start_date=entry.start_date,
+        end_date=entry.end_date,
+        dates=entry.dates,
+        metadata=dict(entry.metadata),
+    )
+    experience[entry_idx] = updated_entry
+    return ResumeRenderModel(
+        name=model.name,
+        title=model.title,
+        location=model.location,
+        contact=model.contact,
+        summary=model.summary,
+        skills=list(model.skills),
+        experience=experience,
+        projects=list(model.projects),
+        education=model.education,
+        certifications=model.certifications,
+        render_options=dict(model.render_options),
+    )
+
+
+def _clone_model_with_compact_summary_from_bullet(
+    model: ResumeRenderModel,
+    entry_idx: int,
+    bullet_idx: int,
+) -> ResumeRenderModel | None:
+    if entry_idx < 0 or entry_idx >= len(model.experience):
+        return None
+    entry = model.experience[entry_idx]
+    bullets = list(entry.bullets)
+    if bullet_idx < 0 or bullet_idx >= len(bullets):
+        return None
+    summary = bullets[bullet_idx].strip()
+    if not summary:
+        return None
+    experience = list(model.experience)
+    updated_entry = ResumeEntry(
+        title=entry.title,
+        subtitle=entry.subtitle,
+        bullets=bullets,
+        compact_summary=summary,
+        company=entry.company,
+        role=entry.role,
+        location=entry.location,
+        technologies=list(entry.technologies),
+        is_contract=entry.is_contract,
+        start_date=entry.start_date,
+        end_date=entry.end_date,
+        dates=entry.dates,
+        metadata=dict(entry.metadata),
+    )
+    experience[entry_idx] = updated_entry
+    return ResumeRenderModel(
+        name=model.name,
+        title=model.title,
+        location=model.location,
+        contact=model.contact,
+        summary=model.summary,
+        skills=list(model.skills),
+        experience=experience,
+        projects=list(model.projects),
+        education=model.education,
+        certifications=model.certifications,
+        render_options=dict(model.render_options),
+    )
+
+
+def _clone_model_with_preserved_project_line(
+    model: ResumeRenderModel,
+    project_idx: int,
+    *,
+    source_path: str,
+    claim: str,
+) -> ResumeRenderModel | None:
+    if project_idx < 0 or project_idx >= len(model.projects):
+        return None
+    project = model.projects[project_idx]
+    projects = list(model.projects)
+    summary = ""
+    compact = project.compact_summary.strip()
+    if compact and claim_supports_distinctive_tokens(claim, compact):
+        summary = compact
+    if not summary:
+        parsed = _parse_source_path(source_path)
+        bullet_idx = parsed[2] if parsed and parsed[0] == "projects" and parsed[2] is not None else None
+        if bullet_idx is not None and 0 <= bullet_idx < len(project.bullets):
+            bullet_text = project.bullets[bullet_idx].strip()
+            if bullet_text and claim_supports_distinctive_tokens(claim, bullet_text):
+                summary = bullet_text
+        if not summary:
+            for bullet in project.bullets:
+                bullet_text = bullet.strip()
+                if bullet_text and claim_supports_distinctive_tokens(claim, bullet_text):
+                    summary = bullet_text
+                    break
+    if not summary and compact:
+        summary = compact
+    if not summary:
+        summary = str(project.metadata.get("description", "")).strip() or (project.bullets[0].strip() if project.bullets else "")
+    if not summary:
+        return None
+
+    updated_project = ResumeEntry(
+        title=project.title,
+        subtitle=project.subtitle,
+        bullets=list(project.bullets),
+        compact_summary=summary,
+        company=project.company,
+        role=project.role,
+        location=project.location,
+        technologies=list(project.technologies),
+        is_contract=project.is_contract,
+        start_date=project.start_date,
+        end_date=project.end_date,
+        dates=project.dates,
+        metadata=dict(project.metadata),
+    )
+    projects[project_idx] = updated_project
+    render_options = dict(model.render_options)
+    existing = render_options.get("preserve_selected_project_indices")
+    indices: list[int] = []
+    if isinstance(existing, list):
+        for raw in existing:
+            try:
+                parsed = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if parsed >= 0:
+                indices.append(parsed)
+    if project_idx not in indices:
+        indices.append(project_idx)
+    render_options["preserve_selected_project_indices"] = indices[:1]
+    return ResumeRenderModel(
+        name=model.name,
+        title=model.title,
+        location=model.location,
+        contact=model.contact,
+        summary=model.summary,
+        skills=list(model.skills),
+        experience=list(model.experience),
+        projects=projects,
+        education=model.education,
+        certifications=model.certifications,
+        render_options=render_options,
+    )
+
+
+def _apply_evidence_preservation(
+    *,
+    model: ResumeRenderModel,
+    html: str,
+    prepared: Any,
+    planning: dict[str, Any],
+    template_name: str,
+    job_description: str,
+) -> tuple[ResumeRenderModel, str, Any, dict[str, Any]]:
+    """Attempt to preserve hidden primary evidence for weak/unsupported visible claims."""
+
+    def _coverage_rank(status: str) -> int:
+        return {
+            "unsupported": 0,
+            "weak_summary_only": 1,
+            "weak": 2,
+            "supported": 3,
+        }.get(status, -1)
+
+    preservation_attempts: list[dict[str, Any]] = []
+    preservation_decisions: list[dict[str, Any]] = []
+    current_model = model
+    current_html = html
+    current_prepared = prepared
+    current_planning = planning
+    claim_coverage_lookup = {
+        _normalize_skill_claim_key(str(item.get("claim", ""))): item
+        for item in current_planning.get("claim_coverage", [])
+        if isinstance(item, dict)
+    }
+    target_claims = list(dict.fromkeys([*current_planning.get("unsupported_visible_claims", []), *current_planning.get("weak_visible_claims", [])]))
+    preserved_claims: set[str] = set()
+
+    detailed_bullet_cap = getattr(current_prepared, "detailed_bullet_cap", None)
+    effective_cap = int(detailed_bullet_cap) if isinstance(detailed_bullet_cap, int) and detailed_bullet_cap > 0 else None
+    earlier_mode = str(getattr(current_prepared, "earlier_experience_mode", "compact"))
+
+    for claim in target_claims:
+        claim_key = _normalize_skill_claim_key(claim)
+        coverage = claim_coverage_lookup.get(claim_key)
+        if not isinstance(coverage, dict):
+            continue
+        source_primary = int(coverage.get("primary_supporting_evidence_count", 0) or 0)
+        retained_primary = int(coverage.get("retained_primary_supporting_evidence_count", 0) or 0)
+        if source_primary <= retained_primary:
+            continue
+
+        candidates = []
+        for entry in current_planning.get("evidence_available_but_not_rendered", []):
+            if not isinstance(entry, dict):
+                continue
+            if _normalize_skill_claim_key(str(entry.get("claim", ""))) != claim_key:
+                continue
+            for item in entry.get("candidate_evidence_items", []):
+                if isinstance(item, dict):
+                    candidates.append(item)
+
+        decision: dict[str, Any] = {
+            "claim": claim,
+            "coverage_status": str(coverage.get("coverage_status", "")),
+            "candidate_evidence_count": len(candidates),
+        }
+        if not candidates:
+            decision["decision"] = "skipped_no_supported_operation"
+            decision["reason"] = "no_supported_preservation_operation_for_candidate_evidence"
+            decision["attempted_operations"] = []
+            decision["candidate_sources"] = []
+            preservation_decisions.append(decision)
+            continue
+        candidates = sorted(candidates, key=lambda item: float(item.get("evidence_score", 0.0)), reverse=True)
+
+        kept = False
+        attempted_ops: list[str] = []
+        candidate_sources = [
+            {
+                "source_type": str(item.get("source_type", "")),
+                "source_label": str(item.get("source_label", "")),
+                "source_path": str(item.get("source_path", "")),
+                "reason_not_rendered": str(item.get("reason_not_rendered", "unknown")),
+            }
+            for item in candidates
+        ]
+        for candidate in candidates:
+            source_path = str(candidate.get("source_path", ""))
+            reason_not_rendered = str(candidate.get("reason_not_rendered", "unknown"))
+            evidence_score = float(candidate.get("evidence_score", 0.0) or 0.0)
+            parsed = _parse_source_path(source_path)
+            operation = "unknown"
+            next_model: ResumeRenderModel | None = None
+            if evidence_score < 0.25:
+                continue
+            if parsed and parsed[0] == "projects":
+                project_idx = parsed[1]
+                if reason_not_rendered == "hidden_project":
+                    operation = "add_selected_project_line"
+                    next_model = _clone_model_with_preserved_project_line(
+                        current_model,
+                        project_idx,
+                        source_path=source_path,
+                        claim=claim,
+                    )
+            elif parsed and parsed[0] == "experience" and parsed[2] is not None:
+                entry_idx, bullet_idx = parsed[1], parsed[2]
+                if reason_not_rendered in {"bullet_trimmed", "not_selected_by_bullet_cap"} and effective_cap is not None:
+                    operation = "restore_trimmed_bullet"
+                    next_model = _clone_model_with_restored_experience_bullet(current_model, entry_idx, bullet_idx, effective_cap)
+                elif reason_not_rendered in {"bullet_trimmed", "not_selected_by_bullet_cap"} and effective_cap is None:
+                    decision["decision"] = "not_attempted"
+                    decision["reason"] = "cannot_identify_trimmed_bullet_retention_state"
+                    decision["attempted_operations"] = []
+                    decision["candidate_sources"] = candidate_sources
+                    preservation_decisions.append(decision)
+                    kept = False
+                    break
+                elif reason_not_rendered in {"earlier_grouped", "role_collapsed"} and earlier_mode == "grouped":
+                    operation = "promote_grouped_support_signal"
+                    next_model = _clone_model_with_compact_summary_from_bullet(current_model, entry_idx, bullet_idx)
+
+            if next_model is None:
+                continue
+            attempted_ops.append(operation)
+
+            next_html, next_prepared = _build_html_and_prepared_for_resume(next_model, template_name=template_name)
+            next_planning = _build_planning_with_evidence(
+                model=next_model,
+                prepared=next_prepared,
+                template_name=template_name,
+                job_description=job_description,
+            )
+            measured_pages, fit = _measured_fit(next_planning)
+            before_status = str(coverage.get("coverage_status", ""))
+            before_retained = int(coverage.get("retained_primary_supporting_evidence_count", 0) or 0)
+            before_rank = _coverage_rank(before_status)
+            after_coverage_lookup = {
+                _normalize_skill_claim_key(str(item.get("claim", ""))): item
+                for item in next_planning.get("claim_coverage", [])
+                if isinstance(item, dict)
+            }
+            after_item = after_coverage_lookup.get(claim_key, {})
+            after_status = str(after_item.get("coverage_status", ""))
+            after_retained = int(after_item.get("retained_primary_supporting_evidence_count", 0) or 0)
+            after_rank = _coverage_rank(after_status)
+            coverage_improved = after_rank > before_rank or (
+                after_rank == before_rank and after_retained > before_retained
+            )
+            required_tokens = claim_distinctive_tokens(claim)
+            matched_tokens = list(after_item.get("distinctive_tokens_matched", [])) if isinstance(after_item, dict) else []
+            attempt = {
+                "step": "evidence_preservation",
+                "claim": claim,
+                "operation": operation,
+                "source_label": str(candidate.get("source_label", "")),
+                "source_path": source_path,
+                "snippet": str(candidate.get("text", ""))[:180],
+                "reason": "visible_claim_weak_or_unsupported_with_source_primary_evidence",
+                "measured_pages": measured_pages,
+                "fit": fit,
+                "kept": bool(fit and coverage_improved),
+                "target_claim_status_before": before_status,
+                "target_claim_status_after": after_status,
+                "retained_primary_count_before": before_retained,
+                "retained_primary_count_after": after_retained,
+                "claim_coverage_improved": bool(coverage_improved),
+                "distinctive_tokens_required": required_tokens,
+                "distinctive_tokens_matched": matched_tokens,
+            }
+            if fit and not coverage_improved:
+                attempt["reason"] = "no_claim_coverage_improvement_after_render"
+            preservation_attempts.append(attempt)
+            if fit and coverage_improved:
+                current_model = next_model
+                current_html = next_html
+                current_prepared = next_prepared
+                current_planning = next_planning
+                preserved_claims.add(claim_key)
+                kept = True
+                break
+        if any(
+            isinstance(item, dict)
+            and str(item.get("decision", "")) in {"not_attempted", "attempted"}
+            and str(item.get("claim", "")) == claim
+            for item in preservation_decisions
+        ):
+            continue
+        if kept:
+            decision["decision"] = "attempted"
+            decision["reason"] = "source_primary_evidence_available_and_candidate_operation_supported"
+            decision["attempted_operations"] = attempted_ops
+            preservation_decisions.append(decision)
+        else:
+            overflow_attempted = any(not bool(attempt.get("fit", True)) for attempt in preservation_attempts if attempt.get("claim") == claim)
+            no_improvement = any(
+                attempt.get("claim") == claim
+                and bool(attempt.get("fit", False))
+                and not bool(attempt.get("claim_coverage_improved", False))
+                for attempt in preservation_attempts
+            )
+            decision["decision"] = "skipped_would_exceed_page_target" if overflow_attempted else "not_attempted"
+            decision["reason"] = (
+                "all_candidate_operations_exceeded_page_target"
+                if overflow_attempted
+                else ("no_claim_coverage_improvement_after_render" if no_improvement else "no_supported_preservation_operation_for_candidate_evidence")
+            )
+            decision["attempted_operations"] = attempted_ops
+            decision["candidate_sources"] = candidate_sources
+            preservation_decisions.append(decision)
+        if kept:
+            # refresh lookup for subsequent claims
+            claim_coverage_lookup = {
+                _normalize_skill_claim_key(str(item.get("claim", ""))): item
+                for item in current_planning.get("claim_coverage", [])
+                if isinstance(item, dict)
+            }
+
+    existing_ops = current_planning.get("planning_operations")
+    if not isinstance(existing_ops, list):
+        existing_ops = []
+    if preservation_attempts:
+        current_planning["planning_operations"] = [*existing_ops, *preservation_attempts]
+    current_planning["evidence_preservation_attempts"] = preservation_attempts
+    current_planning["evidence_preservation_decisions"] = preservation_decisions
+    current_planning["unsupported_visible_claims_without_source_evidence"] = [
+        {"claim": item.get("claim"), "reason": "no_primary_source_evidence_found"}
+        for item in current_planning.get("claim_coverage", [])
+        if isinstance(item, dict)
+        and str(item.get("coverage_status")) == "unsupported"
+        and int(item.get("primary_supporting_evidence_count", 0) or 0) == 0
+    ]
+    return current_model, current_html, current_prepared, current_planning
+
+
+def _apply_evidence_aware_skill_replacements(
+    *,
+    model: ResumeRenderModel,
+    html: str,
+    prepared: Any,
+    planning: dict[str, Any],
+    template_name: str,
+    job_description: str,
+    skills_selection: dict[str, Any] | None,
+) -> tuple[ResumeRenderModel, str, Any, dict[str, Any]]:
+    """Prefer supported visible skills over weak/unsupported claims."""
+
+    def _claim_variants_set(claim_text: str) -> set[str]:
+        return {_normalize_skill_claim_key(item) for item in claim_variants(claim_text)}
+
+    def _alias_conflict(candidate: str, visible_claims: list[str], claim_being_replaced: str) -> bool:
+        candidate_variants = _claim_variants_set(candidate)
+        if not candidate_variants:
+            return False
+        for visible in visible_claims:
+            if _normalize_skill_claim_key(visible) == _normalize_skill_claim_key(claim_being_replaced):
+                continue
+            if candidate_variants & _claim_variants_set(visible):
+                return True
+        return False
+
+    def _build_disposition(
+        *,
+        claim: str,
+        coverage_status: str,
+        final_action: str,
+        reason: str,
+        replacement: str | None = None,
+        distinctive_tokens_required: list[str] | None = None,
+        distinctive_tokens_matched: list[str] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "claim": claim,
+            "coverage_status": coverage_status,
+            "final_action": final_action,
+            "reason": reason,
+        }
+        payload["distinctive_tokens_required"] = list(distinctive_tokens_required or [])
+        payload["distinctive_tokens_matched"] = list(distinctive_tokens_matched or [])
+        if replacement:
+            payload["replacement"] = replacement
+        if final_action == "kept":
+            payload["user_action"] = (
+                f"Add a truthful experience bullet or project summary showing {claim} work if this skill should remain visible."
+            )
+        return payload
+
+    adjustments: list[dict[str, Any]] = []
+    dispositions: list[dict[str, Any]] = []
+    candidates_considered: list[dict[str, Any]] = []
+    score_map = _skill_score_map_from_selection(skills_selection)
+    current_model = model
+    current_html = html
+    current_prepared = prepared
+    current_planning = planning
+    preserved_attempts = list(planning.get("evidence_preservation_attempts", [])) if isinstance(
+        planning.get("evidence_preservation_attempts"), list
+    ) else []
+    preserved_decisions = list(planning.get("evidence_preservation_decisions", [])) if isinstance(
+        planning.get("evidence_preservation_decisions"), list
+    ) else []
+    unsupported_before = list(planning.get("unsupported_visible_claims_before_preservation", []))
+    weak_before = list(planning.get("weak_visible_claims_before_preservation", []))
+    used_candidates: set[str] = set()
+    replaced_claim_keys: set[str] = set()
+    replacement_priority = ["unsupported", "weak_summary_only", "weak"]
+
+    for target_status in replacement_priority:
+        claim_coverage_items = [
+            item for item in current_planning.get("claim_coverage", []) if isinstance(item, dict)
+        ]
+        claim_coverage_lookup = {
+            _normalize_skill_claim_key(str(item.get("claim", ""))): item for item in claim_coverage_items
+        }
+        target_claims = [
+            str(item.get("claim", ""))
+            for item in claim_coverage_items
+            if str(item.get("coverage_status", "")) == target_status and str(item.get("claim", "")).strip()
+        ]
+        target_claims = list(dict.fromkeys(target_claims))
+        for claim in target_claims:
+            claim_key = _normalize_skill_claim_key(claim)
+            if claim_key in replaced_claim_keys:
+                continue
+
+            all_claims = extract_all_skill_claims(current_model)
+            visible_claims = [str(item.get("claim", "")) for item in claim_coverage_items if isinstance(item, dict)]
+            visible_set = {_normalize_skill_claim_key(value) for value in visible_claims if value.strip()}
+            hidden_claims = [token for token in all_claims if _normalize_skill_claim_key(token) not in visible_set]
+            if not hidden_claims:
+                dispositions.append(
+                    _build_disposition(
+                        claim=claim,
+                        coverage_status=target_status,
+                        final_action="kept",
+                        reason="no_supported_retained_replacement_available",
+                        distinctive_tokens_required=list(claim_coverage_lookup.get(claim_key, {}).get("distinctive_tokens_required", [])),
+                        distinctive_tokens_matched=list(claim_coverage_lookup.get(claim_key, {}).get("distinctive_tokens_matched", [])),
+                    )
+                )
+                continue
+
+            hidden_coverage = build_claim_coverage_for_claims(
+                claims=hidden_claims,
+                model=current_model,
+                prepared=current_prepared,
+            )
+            hidden_lookup = {_normalize_skill_claim_key(item.claim): item for item in hidden_coverage}
+            source_score = score_map.get(claim_key)
+            ranked_hidden = sorted(
+                hidden_claims,
+                key=lambda token: (
+                    score_map.get(_normalize_skill_claim_key(token), float("-inf")),
+                    -all_claims.index(token),
+                ),
+                reverse=True,
+            )
+            replacement: str | None = None
+            replacement_reject_reason = "no_supported_retained_replacement_available"
+            for token in ranked_hidden:
+                token_key = _normalize_skill_claim_key(token)
+                coverage = hidden_lookup.get(token_key)
+                candidate_score = score_map.get(token_key)
+                decision = {
+                    "claim": claim,
+                    "claim_status": target_status,
+                    "candidate": token,
+                    "candidate_score": candidate_score,
+                    "candidate_coverage_status": coverage.coverage_status if coverage else "missing",
+                    "decision": "considered",
+                }
+                if token_key in used_candidates:
+                    decision["decision"] = "rejected_already_used"
+                    candidates_considered.append(decision)
+                    continue
+                if coverage is None or coverage.coverage_status != "supported":
+                    decision["decision"] = "rejected_not_supported"
+                    candidates_considered.append(decision)
+                    continue
+                if _alias_conflict(token, visible_claims, claim):
+                    decision["decision"] = "rejected_alias_conflict"
+                    replacement_reject_reason = "replacement_duplicate_or_alias_conflict"
+                    candidates_considered.append(decision)
+                    continue
+                if target_status == "weak" and source_score is not None and candidate_score is not None:
+                    if candidate_score + 6.0 < source_score:
+                        decision["decision"] = "rejected_material_relevance_drop"
+                        candidates_considered.append(decision)
+                        continue
+                decision["decision"] = "selected"
+                candidates_considered.append(decision)
+                replacement = token
+                break
+
+            if not replacement:
+                dispositions.append(
+                    _build_disposition(
+                        claim=claim,
+                        coverage_status=target_status,
+                        final_action="kept",
+                        reason=replacement_reject_reason,
+                        distinctive_tokens_required=list(claim_coverage_lookup.get(claim_key, {}).get("distinctive_tokens_required", [])),
+                        distinctive_tokens_matched=list(claim_coverage_lookup.get(claim_key, {}).get("distinctive_tokens_matched", [])),
+                    )
+                )
+                continue
+
+            swapped_model = _clone_model_with_swapped_skills(current_model, claim, replacement)
+            if swapped_model is None:
+                dispositions.append(
+                    _build_disposition(
+                        claim=claim,
+                        coverage_status=target_status,
+                        final_action="kept",
+                        reason="replacement_duplicate_or_alias_conflict",
+                        distinctive_tokens_required=list(claim_coverage_lookup.get(claim_key, {}).get("distinctive_tokens_required", [])),
+                        distinctive_tokens_matched=list(claim_coverage_lookup.get(claim_key, {}).get("distinctive_tokens_matched", [])),
+                    )
+                )
+                continue
+            swapped_html, swapped_prepared = _build_html_and_prepared_for_resume(swapped_model, template_name=template_name)
+            swapped_planning = _build_planning_with_evidence(
+                model=swapped_model,
+                prepared=swapped_prepared,
+                template_name=template_name,
+                job_description=job_description,
+            )
+            measured_pages, fit = _measured_fit(swapped_planning)
+            op = {
+                "step": "evidence_aware_skill_replacement",
+                "from": claim,
+                "to": replacement,
+                "reason": "weak_or_unsupported_claim_replaced_by_supported_retained_skill",
+                "measured_pages": measured_pages,
+                "fit": fit,
+                "kept": bool(fit),
+            }
+            adjustments.append(op)
+            if fit:
+                current_model = swapped_model
+                current_html = swapped_html
+                current_prepared = swapped_prepared
+                current_planning = swapped_planning
+                used_candidates.add(_normalize_skill_claim_key(replacement))
+                replaced_claim_keys.add(claim_key)
+                dispositions.append(
+                    _build_disposition(
+                        claim=claim,
+                        coverage_status=target_status,
+                        final_action="replaced",
+                        reason="replaced_by_supported_retained_skill",
+                        replacement=replacement,
+                        distinctive_tokens_required=list(claim_coverage_lookup.get(claim_key, {}).get("distinctive_tokens_required", [])),
+                        distinctive_tokens_matched=list(claim_coverage_lookup.get(claim_key, {}).get("distinctive_tokens_matched", [])),
+                    )
+                )
+            else:
+                dispositions.append(
+                    _build_disposition(
+                        claim=claim,
+                        coverage_status=target_status,
+                        final_action="kept",
+                        reason="replacement_would_overflow_page_target",
+                        distinctive_tokens_required=list(claim_coverage_lookup.get(claim_key, {}).get("distinctive_tokens_required", [])),
+                        distinctive_tokens_matched=list(claim_coverage_lookup.get(claim_key, {}).get("distinctive_tokens_matched", [])),
+                    )
+                )
+
+    existing_ops = current_planning.get("planning_operations")
+    if not isinstance(existing_ops, list):
+        existing_ops = []
+    if adjustments:
+        current_planning["planning_operations"] = [*existing_ops, *adjustments]
+
+    final_claim_coverage = [item for item in current_planning.get("claim_coverage", []) if isinstance(item, dict)]
+    final_lookup = {
+        _normalize_skill_claim_key(str(item.get("claim", ""))): item for item in final_claim_coverage
+    }
+    for claim in current_planning.get("unsupported_visible_claims", []):
+        key = _normalize_skill_claim_key(str(claim))
+        if key in replaced_claim_keys:
+            continue
+        if any(_normalize_skill_claim_key(str(item.get("claim", ""))) == key for item in dispositions):
+            continue
+        status = str(final_lookup.get(key, {}).get("coverage_status", "unsupported"))
+        dispositions.append(
+            _build_disposition(
+                claim=str(claim),
+                coverage_status=status,
+                final_action="kept",
+                reason="no_supported_retained_replacement_available",
+                distinctive_tokens_required=list(final_lookup.get(key, {}).get("distinctive_tokens_required", [])),
+                distinctive_tokens_matched=list(final_lookup.get(key, {}).get("distinctive_tokens_matched", [])),
+            )
+        )
+    for claim in current_planning.get("weak_visible_claims", []):
+        key = _normalize_skill_claim_key(str(claim))
+        if key in replaced_claim_keys:
+            continue
+        if any(_normalize_skill_claim_key(str(item.get("claim", ""))) == key for item in dispositions):
+            continue
+        status = str(final_lookup.get(key, {}).get("coverage_status", "weak"))
+        dispositions.append(
+            _build_disposition(
+                claim=str(claim),
+                coverage_status=status,
+                final_action="kept",
+                reason="no_supported_retained_replacement_available",
+                distinctive_tokens_required=list(final_lookup.get(key, {}).get("distinctive_tokens_required", [])),
+                distinctive_tokens_matched=list(final_lookup.get(key, {}).get("distinctive_tokens_matched", [])),
+            )
+        )
+
+    current_planning["evidence_preservation_attempts"] = preserved_attempts
+    current_planning["evidence_preservation_decisions"] = preserved_decisions
+    current_planning["unsupported_visible_claims_before_preservation"] = unsupported_before
+    current_planning["weak_visible_claims_before_preservation"] = weak_before
+    current_planning["evidence_aware_skill_adjustments"] = adjustments
+    current_planning["supported_replacement_candidates_considered"] = candidates_considered
+    current_planning["final_weak_or_unsupported_claim_dispositions"] = dispositions
+    current_planning["unsupported_visible_claims_final"] = list(current_planning.get("unsupported_visible_claims", []))
+    current_planning["weak_visible_claims_final"] = list(current_planning.get("weak_visible_claims", []))
+    current_planning["unsupported_visible_claims_without_source_evidence"] = [
+        {"claim": item.get("claim"), "reason": "no_primary_source_evidence_found"}
+        for item in current_planning.get("claim_coverage", [])
+        if isinstance(item, dict)
+        and str(item.get("coverage_status")) == "unsupported"
+        and int(item.get("primary_supporting_evidence_count", 0) or 0) == 0
+    ]
+    return current_model, current_html, current_prepared, current_planning
+
+
 def resolve_pdf_template_name(profile: dict, explicit_template: str | None = None) -> str:
     """Resolve PDF template name from explicit value or profile config."""
 
@@ -375,12 +1224,38 @@ def render_model_to_pdf_with_planning(
     output_path: Path,
     template_name: str = DEFAULT_PDF_TEMPLATE,
     html_only: bool = False,
+    job_description: str = "",
+    skills_selection: dict[str, Any] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     """Render a resume model and return template planning telemetry."""
 
     out = Path(output_path)
     html, prepared = _build_html_and_prepared_for_resume(model, template_name=template_name)
-    planning = extract_render_planning_report(model, prepared, template_name)
+    planning = _build_planning_with_evidence(
+        model=model,
+        prepared=prepared,
+        template_name=template_name,
+        job_description=job_description,
+    )
+    planning["unsupported_visible_claims_before_preservation"] = list(planning.get("unsupported_visible_claims", []))
+    planning["weak_visible_claims_before_preservation"] = list(planning.get("weak_visible_claims", []))
+    model, html, prepared, planning = _apply_evidence_preservation(
+        model=model,
+        html=html,
+        prepared=prepared,
+        planning=planning,
+        template_name=template_name,
+        job_description=job_description,
+    )
+    model, html, prepared, planning = _apply_evidence_aware_skill_replacements(
+        model=model,
+        html=html,
+        prepared=prepared,
+        planning=planning,
+        template_name=template_name,
+        job_description=job_description,
+        skills_selection=skills_selection,
+    )
 
     if html_only:
         out.write_text(html, encoding="utf-8")
