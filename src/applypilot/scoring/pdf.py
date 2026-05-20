@@ -25,6 +25,7 @@ from applypilot.scoring.evidence_aware_pdf_planner import (
     EvidenceAwarePdfPlanner,
     PdfPlanningContext,
 )
+from applypilot.scoring.skill_repair_planner import SkillRepairPlanner
 from applypilot.scoring.pdf_render_model import (
     ResumeEntry,
     ResumeRenderModel,
@@ -1772,7 +1773,9 @@ def render_model_to_pdf_with_planning(
     planning["weak_visible_claims_before_preservation"] = list(planning.get("weak_visible_claims", []))
     planner = EvidenceAwarePdfPlanner(
         apply_evidence_preservation=_apply_evidence_preservation,
-        apply_evidence_aware_skill_replacements=_apply_evidence_aware_skill_replacements,
+        skill_repair_planner=SkillRepairPlanner(
+            apply_skill_repair=_apply_evidence_aware_skill_replacements,
+        ),
     )
     planning_result = planner.plan(
         model=model,

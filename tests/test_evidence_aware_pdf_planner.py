@@ -10,6 +10,7 @@ from applypilot.scoring.evidence_aware_pdf_planner import (
     PdfPlanningResult,
 )
 from applypilot.scoring.pdf_render_model import ResumeEntry, ResumeRenderModel
+from applypilot.scoring.skill_repair_planner import SkillRepairPlanner
 
 
 def test_evidence_aware_pdf_planner_plan_returns_result() -> None:
@@ -29,7 +30,7 @@ def test_evidence_aware_pdf_planner_plan_returns_result() -> None:
 
     planner = EvidenceAwarePdfPlanner(
         apply_evidence_preservation=_preserve,
-        apply_evidence_aware_skill_replacements=_replace,
+        skill_repair_planner=SkillRepairPlanner(apply_skill_repair=_replace),
     )
     model = ResumeRenderModel(name="Alex")
     result = planner.plan(
@@ -96,3 +97,41 @@ def test_render_model_to_pdf_with_planning_uses_orchestrator(monkeypatch, tmp_pa
     assert _StubPlanner.called is True
     assert html_path.read_text(encoding="utf-8") == "<html>planned</html>"
     assert planning["orchestrator_used"] is True
+
+
+def test_evidence_aware_pdf_planner_delegates_repair_to_skill_repair_planner() -> None:
+    calls: list[str] = []
+
+    def _preserve(**kwargs):
+        calls.append("preserve")
+        planning = dict(kwargs["planning"])
+        return kwargs["model"], kwargs["html"], kwargs["prepared"], planning
+
+    class _StubSkillRepairPlanner:
+        def repair(self, **kwargs):
+            calls.append("repair")
+            planning = dict(kwargs["planning"])
+            planning["repaired"] = True
+            return SimpleNamespace(
+                model=kwargs["model"],
+                html=kwargs["html"] + "r",
+                prepared=kwargs["prepared"],
+                planning=planning,
+            )
+
+    planner = EvidenceAwarePdfPlanner(
+        apply_evidence_preservation=_preserve,
+        skill_repair_planner=_StubSkillRepairPlanner(),
+    )
+
+    result = planner.plan(
+        model=ResumeRenderModel(name="Alex"),
+        html="<html>",
+        prepared=SimpleNamespace(),
+        planning={"a": 1},
+        context=PdfPlanningContext(template_name="professional_compact"),
+    )
+
+    assert calls == ["preserve", "repair"]
+    assert result.html == "<html>r"
+    assert result.planning["repaired"] is True

@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from applypilot.scoring.pdf_render_model import ResumeRenderModel
+from applypilot.scoring.skill_repair_planner import (
+    SkillRepairContext,
+    SkillRepairPlanner,
+)
 
 
 @dataclass
@@ -25,12 +29,6 @@ PreservationFn = Callable[
     ...,
     tuple[ResumeRenderModel, str, Any, dict[str, Any]],
 ]
-ReplacementFn = Callable[
-    ...,
-    tuple[ResumeRenderModel, str, Any, dict[str, Any]],
-]
-
-
 class EvidenceAwarePdfPlanner:
     """Thin orchestrator for evidence-aware PDF planning phases."""
 
@@ -38,10 +36,10 @@ class EvidenceAwarePdfPlanner:
         self,
         *,
         apply_evidence_preservation: PreservationFn,
-        apply_evidence_aware_skill_replacements: ReplacementFn,
+        skill_repair_planner: SkillRepairPlanner,
     ) -> None:
         self._apply_evidence_preservation = apply_evidence_preservation
-        self._apply_evidence_aware_skill_replacements = apply_evidence_aware_skill_replacements
+        self._skill_repair_planner = skill_repair_planner
 
     def plan(
         self,
@@ -60,18 +58,20 @@ class EvidenceAwarePdfPlanner:
             template_name=context.template_name,
             job_description=context.job_description,
         )
-        model, html, prepared, planning = self._apply_evidence_aware_skill_replacements(
+        repair_result = self._skill_repair_planner.repair(
             model=model,
             html=html,
             prepared=prepared,
             planning=planning,
-            template_name=context.template_name,
-            job_description=context.job_description,
-            skills_selection=context.skills_selection,
+            context=SkillRepairContext(
+                template_name=context.template_name,
+                job_description=context.job_description,
+                skills_selection=context.skills_selection,
+            ),
         )
         return PdfPlanningResult(
-            model=model,
-            html=html,
-            prepared=prepared,
-            planning=planning,
+            model=repair_result.model,
+            html=repair_result.html,
+            prepared=repair_result.prepared,
+            planning=repair_result.planning,
         )
