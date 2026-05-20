@@ -985,9 +985,9 @@ def _apply_evidence_aware_skill_replacements(
             payload["remaining_supported_retained_skills_not_visible"] = list(remaining_supported_retained_skills_not_visible)
         if replacement:
             payload["replacement"] = replacement
-        if final_action == "kept":
+        if final_action in {"kept", "removed"}:
             payload["user_action"] = (
-                f"Add a truthful experience bullet or project summary showing {claim} work if this skill should remain visible."
+                f"Add a truthful experience bullet, compact summary, or project summary showing {claim} work if this skill should remain visible."
             )
         return payload
 
@@ -1494,8 +1494,23 @@ def _apply_evidence_aware_skill_replacements(
                 removed_claim_keys.add(claim_key)
                 disp = dispositions_by_key.get(claim_key)
                 if isinstance(disp, dict):
+                    history = disp.get("action_history")
+                    if not isinstance(history, list):
+                        history = []
+                    previous_action = str(disp.get("final_action", "")).strip()
+                    previous_replacement = disp.pop("replacement", None)
+                    if previous_action:
+                        previous_item: dict[str, Any] = {"action": previous_action}
+                        if previous_replacement:
+                            previous_item["replacement"] = previous_replacement
+                        history.append(previous_item)
                     disp["final_action"] = "removed"
                     disp["reason"] = "unsupported_no_replacement_no_source_evidence"
+                    history.append({"action": "removed"})
+                    disp["action_history"] = history
+                    disp["user_action"] = (
+                        f"Add a truthful experience bullet, compact summary, or project summary showing {claim} work if this skill should remain visible."
+                    )
                     disp["replacement_candidates_available"] = max(
                         int(disp.get("replacement_candidates_available", 0) or 0),
                         len(supported_candidates_raw),
@@ -1518,6 +1533,7 @@ def _apply_evidence_aware_skill_replacements(
                         rejection_summary=["no_supported_retained_replacement_available"],
                         remaining_supported_retained_skills_not_visible=list(usable_candidates),
                     )
+                    new_disp["action_history"] = [{"action": "removed"}]
                     dispositions.append(new_disp)
                     dispositions_by_key[claim_key] = new_disp
                 unsupported_skill_removals.append(removal_record)

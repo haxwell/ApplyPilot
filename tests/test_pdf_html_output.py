@@ -1036,10 +1036,17 @@ def test_second_unsupported_skill_removed_when_only_supported_candidate_was_alre
     assert any(item.get("claim") == "Jenkins CI" for item in kept_removals)
     assert any(item.get("claim") == "PostgreSQL" for item in kept_removals)
     assert all(item.get("claim") not in {"Kubernetes", "Jenkins CI", "PostgreSQL"} for item in updated.get("claim_coverage", []))
-    assert not any(
-        item.get("claim") == "PostgreSQL" and item.get("final_action") == "replaced"
-        for item in updated["final_weak_or_unsupported_claim_dispositions"]
+    postgres_disp = next(
+        item for item in updated["final_weak_or_unsupported_claim_dispositions"] if item.get("claim") == "PostgreSQL"
     )
+    assert postgres_disp.get("final_action") == "removed"
+    assert postgres_disp.get("reason") == "unsupported_no_replacement_no_source_evidence"
+    assert "replacement" not in postgres_disp
+    assert postgres_disp.get("action_history") == [
+        {"action": "replaced", "replacement": "TDD"},
+        {"action": "removed"},
+    ]
+    assert "user_action" in postgres_disp
 
 
 def test_evidence_preservation_restore_trimmed_bullet_kept_when_fit(monkeypatch) -> None:
