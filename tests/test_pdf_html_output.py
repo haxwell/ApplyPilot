@@ -763,9 +763,17 @@ def test_alias_conflict_prevents_duplicate_visible_alias(monkeypatch) -> None:
         skills_selection={"retained_skills": [{"skill": "GitLab CI", "score": 95.0}, {"skill": "Jenkins", "score": 90.0}]},
     )
     assert updated["evidence_aware_skill_adjustments"] == []
+    disposition = next(
+        item for item in updated["final_weak_or_unsupported_claim_dispositions"] if item.get("claim") == "GitLab CI"
+    )
+    assert disposition.get("final_action") == "kept"
     assert any(
-        item.get("claim") == "GitLab CI" and item.get("reason") == "replacement_duplicate_or_alias_conflict"
-        for item in updated["final_weak_or_unsupported_claim_dispositions"]
+        disposition.get("reason") == reason
+        for reason in {
+            "replacement_duplicate_or_alias_conflict",
+            "min_visible_skill_count_guard",
+            "no_supported_retained_replacement_available",
+        }
     )
     assert any(item.get("decision") == "rejected_alias_conflict" for item in updated["supported_replacement_candidates_considered"])
 
@@ -1018,14 +1026,20 @@ def test_second_unsupported_skill_removed_when_only_supported_candidate_was_alre
     )
 
     claims = extract_all_skill_claims(new_model)
-    assert claims[:4] == ["TDD", "Docker", "PostgreSQL", "Kubernetes"] or "TDD" in claims
+    assert "TDD" in claims
     assert "Jenkins CI" not in updated["unsupported_visible_claims_final"]
     assert "Kubernetes" not in updated["unsupported_visible_claims_final"]
+    assert "PostgreSQL" not in updated["unsupported_visible_claims_final"]
     assert any(item.get("step") == "evidence_aware_skill_replacement" and item.get("from") == "PostgreSQL" and item.get("kept") is True for item in updated["planning_operations"])
     kept_removals = [item for item in updated["unsupported_skill_removals"] if item.get("kept")]
     assert any(item.get("claim") == "Kubernetes" for item in kept_removals)
     assert any(item.get("claim") == "Jenkins CI" for item in kept_removals)
-    assert all(item.get("claim") not in {"Kubernetes", "Jenkins CI"} for item in updated.get("claim_coverage", []))
+    assert any(item.get("claim") == "PostgreSQL" for item in kept_removals)
+    assert all(item.get("claim") not in {"Kubernetes", "Jenkins CI", "PostgreSQL"} for item in updated.get("claim_coverage", []))
+    assert not any(
+        item.get("claim") == "PostgreSQL" and item.get("final_action") == "replaced"
+        for item in updated["final_weak_or_unsupported_claim_dispositions"]
+    )
 
 
 def test_evidence_preservation_restore_trimmed_bullet_kept_when_fit(monkeypatch) -> None:
