@@ -823,6 +823,19 @@ def _render_compact_entry(entry: ResumeEntry, *, one_line: bool = False) -> str:
     )
 
 
+def _normalize_grouped_fragment(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", str(text or "").strip())
+    cleaned = cleaned.rstrip(" .;:")
+    return cleaned.strip()
+
+
+def _ensure_terminal_period(text: str) -> str:
+    cleaned = _normalize_grouped_fragment(text)
+    if not cleaned:
+        return ""
+    return f"{cleaned}."
+
+
 def _render_experience(view: ProfessionalCompactTemplateView, mode: ExperienceMode) -> tuple[str, str]:
     detailed_entries = list(view.detailed_experience)
     compact_entries = list(view.compact_experience)
@@ -869,16 +882,16 @@ def _render_experience(view: ProfessionalCompactTemplateView, mode: ExperienceMo
             for idx in range(0, len(compact_entries), 2):
                 group = compact_entries[idx:idx + 2]
                 companies = " / ".join(
-                    label for label in (_compact_entry_company_label(entry) for entry in group) if label
+                    label for label in (_normalize_grouped_fragment(_compact_entry_company_label(entry)) for entry in group) if label
                 )
-                summaries = [_compact_entry_signal_summary(entry) for entry in group]
+                summaries = [_normalize_grouped_fragment(_compact_entry_signal_summary(entry)) for entry in group]
                 summaries = [summary for summary in summaries if summary]
                 if companies and summaries:
-                    grouped_lines.append(f"{companies} - {'; '.join(summaries)}")
+                    grouped_lines.append(_ensure_terminal_period(f"{companies} - {'; '.join(summaries)}"))
                 elif companies:
-                    grouped_lines.append(companies)
+                    grouped_lines.append(_ensure_terminal_period(companies))
                 elif summaries:
-                    grouped_lines.append("; ".join(summaries))
+                    grouped_lines.append(_ensure_terminal_period("; ".join(summaries)))
             items = "".join(f'<p class="compact-summary">{line}</p>' for line in grouped_lines)
         else:
             one_line = view.earlier_experience_mode == "earlier_one_line"

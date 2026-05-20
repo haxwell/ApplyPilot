@@ -175,6 +175,74 @@ def test_run_tailoring_prefers_structured_pdf_render_when_tailored_json_availabl
     assert isinstance(report_data["skills_selection"]["dropped_skills"], list)
 
 
+def test_run_tailoring_reports_skills_count_diagnostics_with_validator_scope(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    conn = _FakeConnection()
+    job = _make_job()
+    report = _approved_report()
+    report["validator"]["skills_item_count"] = 28
+    report["validator"]["warnings"] = [
+        "Skills section may be too broad: 28 skills; prefer 12-20 and max 24 unless the job requires a broad stack."
+    ]
+    report["tailored_json"] = {
+        "title": "Staff Software Engineer - AI II",
+        "summary": "Summary",
+        "skills": {"Core": "A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y, Z, AA, AB"},
+        "experience": [{"header": "Engineer", "subtitle": "Example | 2020-2024", "bullets": ["Built APIs"]}],
+        "projects": [],
+        "education": "BS",
+    }
+
+    monkeypatch.setattr(tailor, "TAILORED_DIR", tmp_path)
+    monkeypatch.setattr(tailor, "load_profile", lambda: {"personal": {"full_name": "Alex Example"}})
+    monkeypatch.setattr(tailor, "load_resume_text", lambda: "base resume")
+    monkeypatch.setattr(tailor, "get_connection", lambda: conn)
+    monkeypatch.setattr(tailor, "get_jobs_by_stage", lambda **_: [job])
+    monkeypatch.setattr(tailor, "tailor_resume", lambda *args, **kwargs: ("tailored resume", report))
+
+    def _fake_render_model_to_pdf_with_planning(
+        model,
+        output_path: Path,
+        template_name: str = "professional_compact",
+        html_only: bool = False,
+        **_kwargs,
+    ) -> tuple[Path, dict]:
+        del model, template_name, html_only
+        out = Path(output_path)
+        out.write_bytes(b"%PDF-1.4 fake\n")
+        return out, {
+            "template_used": "professional_compact",
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [
+                {"claim": "Java"},
+                {"claim": "Spring Boot"},
+                {"claim": "Kafka"},
+            ],
+        }
+
+    monkeypatch.setattr(
+        "applypilot.scoring.pdf.render_model_to_pdf_with_planning",
+        _fake_render_model_to_pdf_with_planning,
+    )
+
+    result = tailor.run_tailoring(min_score=7, limit=1, validation_mode="normal")
+    assert result["approved"] == 1
+
+    report_paths = list(tmp_path.glob("*_REPORT.json"))
+    assert len(report_paths) == 1
+    report_data = json.loads(report_paths[0].read_text(encoding="utf-8"))
+    diagnostics = report_data["skills_count_diagnostics"]
+    assert diagnostics["tailored_json_skill_count"] == 28
+    assert diagnostics["rendered_visible_skill_count"] == 3
+    assert diagnostics["validator_skills_item_count"] == 28
+    assert diagnostics["validator_count_scope"] == "tailored_json_skills"
+    assert diagnostics["rendered_visible_skill_names"] == ["Java", "Spring Boot", "Kafka"]
+    assert "skills_warning_context" in report_data
+
+
 def test_run_tailoring_falls_back_to_text_pdf_when_structured_render_fails(monkeypatch, tmp_path: Path) -> None:
     conn = _FakeConnection()
     job = _make_job()

@@ -394,6 +394,7 @@ def test_evidence_aware_skill_replacement_kept_when_pdf_still_fits(monkeypatch) 
     assert extract_all_skill_claims(new_model)[0] == "Kafka"
     assert updated["unsupported_visible_claims_final"] == []
     assert updated["evidence_aware_skill_adjustments"][0]["kept"] is True
+    assert updated.get("unsupported_skill_removals", []) == []
     assert any(
         item.get("claim") == "PostgreSQL" and item.get("final_action") == "replaced"
         for item in updated["final_weak_or_unsupported_claim_dispositions"]
@@ -611,6 +612,18 @@ def test_evidence_aware_skill_adjustment_does_not_aggressively_remove_weak_claim
         item.get("claim") == "Docker" and item.get("reason") == "no_supported_retained_replacement_available"
         for item in updated["final_weak_or_unsupported_claim_dispositions"]
     )
+    disposition = next(
+        item for item in updated["final_weak_or_unsupported_claim_dispositions"] if item.get("claim") == "Docker"
+    )
+    assert disposition["replacement_search_performed"] is True
+    assert disposition["replacement_candidates_available"] == 2
+    assert disposition["supported_replacement_candidates_available"] == 0
+    assert "rejection_summary" in disposition
+    search = next(
+        item for item in updated["supported_replacement_candidate_searches"] if item.get("claim") == "Docker"
+    )
+    assert search["result"] == "no_supported_retained_replacement_available"
+    assert search["non_visible_retained_candidates_count"] == 2
 
 
 def test_unsupported_claim_without_source_evidence_is_reported() -> None:
@@ -752,6 +765,148 @@ def test_alias_conflict_prevents_duplicate_visible_alias(monkeypatch) -> None:
         item.get("claim") == "GitLab CI" and item.get("reason") == "replacement_duplicate_or_alias_conflict"
         for item in updated["final_weak_or_unsupported_claim_dispositions"]
     )
+    assert any(item.get("decision") == "rejected_alias_conflict" for item in updated["supported_replacement_candidates_considered"])
+
+
+def test_replacement_candidate_diagnostics_include_visible_rejection_reason(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="PostgreSQL, Java, Kafka")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built Kafka event pipelines."])],
+    )
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [
+            {"claim": "PostgreSQL", "coverage_status": "unsupported"},
+            {"claim": "Java", "coverage_status": "supported"},
+        ],
+        "unsupported_visible_claims": ["PostgreSQL"],
+        "weak_visible_claims": [],
+    }
+    monkeypatch.setattr(pdf_module, "build_claim_coverage_for_claims", lambda **_kwargs: [])
+    _model, _html, _prepared, updated = _apply_evidence_aware_skill_replacements(
+        model=model,
+        html="<html/>",
+        prepared=SimpleNamespace(),
+        planning=planning,
+        template_name="professional_compact",
+        job_description="Backend systems.",
+        skills_selection={"retained_skills": [{"skill": "PostgreSQL", "score": 99.0}, {"skill": "Java", "score": 98.0}]},
+    )
+    assert any(item.get("decision") == "rejected_already_visible" for item in updated["supported_replacement_candidates_considered"])
+
+
+def test_unsupported_skill_removed_when_no_supported_replacement_exists_and_above_minimum(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="Jenkins CI, Java")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built Java services."])],
+    )
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [
+            {"claim": "Jenkins CI", "coverage_status": "unsupported", "primary_supporting_evidence_count": 0},
+            {"claim": "Java", "coverage_status": "supported", "primary_supporting_evidence_count": 1},
+        ],
+        "unsupported_visible_claims": ["Jenkins CI"],
+        "weak_visible_claims": [],
+    }
+    monkeypatch.setattr(pdf_module, "_build_html_and_prepared_for_resume", lambda *_args, **_kwargs: ("<html/>", SimpleNamespace()))
+    monkeypatch.setattr(
+        pdf_module,
+        "_build_planning_with_evidence",
+        lambda **_kwargs: {
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [{"claim": "Java", "coverage_status": "supported", "primary_supporting_evidence_count": 1}],
+            "unsupported_visible_claims": [],
+            "weak_visible_claims": [],
+        },
+    )
+
+    new_model, _html, _prepared, updated = _apply_evidence_aware_skill_replacements(
+        model=model,
+        html="<html/>",
+        prepared=SimpleNamespace(),
+        planning=planning,
+        template_name="professional_compact",
+        job_description="Build backend systems.",
+        skills_selection={"retained_skills": [{"skill": "Jenkins CI", "score": 95.0}, {"skill": "Java", "score": 94.0}], "min_count": 1},
+    )
+
+    assert "Jenkins CI" not in extract_all_skill_claims(new_model)
+    assert updated["unsupported_visible_claims_final"] == []
+    assert all(item.get("claim") != "Jenkins CI" for item in updated.get("claim_coverage", []))
+    assert updated["unsupported_skill_removals"][0]["kept"] is True
+    assert any(op.get("step") == "unsupported_skill_removal" and op.get("kept") is True for op in updated["planning_operations"])
+    assert any(
+        item.get("claim") == "Jenkins CI" and item.get("final_action") == "removed"
+        for item in updated["final_weak_or_unsupported_claim_dispositions"]
+    )
+
+
+def test_unsupported_skill_not_removed_when_minimum_visible_skill_guard_hits(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="Jenkins CI, Java")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built Java services."])],
+    )
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [
+            {"claim": "Jenkins CI", "coverage_status": "unsupported", "primary_supporting_evidence_count": 0},
+            {"claim": "Java", "coverage_status": "supported", "primary_supporting_evidence_count": 1},
+        ],
+        "unsupported_visible_claims": ["Jenkins CI"],
+        "weak_visible_claims": [],
+    }
+    new_model, _html, _prepared, updated = _apply_evidence_aware_skill_replacements(
+        model=model,
+        html="<html/>",
+        prepared=SimpleNamespace(),
+        planning=planning,
+        template_name="professional_compact",
+        job_description="Build backend systems.",
+        skills_selection={"retained_skills": [{"skill": "Jenkins CI", "score": 95.0}, {"skill": "Java", "score": 94.0}], "min_count": 2},
+    )
+    assert "Jenkins CI" in extract_all_skill_claims(new_model)
+    assert updated["unsupported_skill_removals"][0]["kept"] is False
+    assert updated["unsupported_skill_removals"][0]["revert_reason"] == "visible_skill_count_below_minimum"
+    assert any(
+        item.get("claim") == "Jenkins CI" and item.get("reason") == "min_visible_skill_count_guard"
+        for item in updated["final_weak_or_unsupported_claim_dispositions"]
+    )
+
+
+def test_unsupported_skill_removal_does_not_remove_weak_or_summary_only_claims() -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="Docker, Messaging, Java")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built Java services."])],
+    )
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [
+            {"claim": "Docker", "coverage_status": "weak_summary_only", "primary_supporting_evidence_count": 0},
+            {"claim": "Messaging", "coverage_status": "weak", "primary_supporting_evidence_count": 1},
+            {"claim": "Java", "coverage_status": "supported", "primary_supporting_evidence_count": 1},
+        ],
+        "unsupported_visible_claims": [],
+        "weak_visible_claims": ["Docker", "Messaging"],
+    }
+    new_model, _html, _prepared, updated = _apply_evidence_aware_skill_replacements(
+        model=model,
+        html="<html/>",
+        prepared=SimpleNamespace(),
+        planning=planning,
+        template_name="professional_compact",
+        job_description="Build backend systems.",
+        skills_selection={"retained_skills": [{"skill": "Docker", "score": 92.0}, {"skill": "Messaging", "score": 90.0}, {"skill": "Java", "score": 89.0}]},
+    )
+    claims = extract_all_skill_claims(new_model)
+    assert "Docker" in claims
+    assert "Messaging" in claims
+    assert updated.get("unsupported_skill_removals", []) == []
 
 
 def test_evidence_preservation_restore_trimmed_bullet_kept_when_fit(monkeypatch) -> None:
