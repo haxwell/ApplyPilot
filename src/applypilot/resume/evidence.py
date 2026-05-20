@@ -99,6 +99,36 @@ _GENERIC_CONTEXT_TERMS = {
     "integration",
 }
 
+_DISTINCTIVE_GENERIC_TOKENS = {
+    "aws",
+    "azure",
+    "gcp",
+    "actions",
+    "ci",
+    "cd",
+    "api",
+    "apis",
+    "cloud",
+    "platform",
+    "system",
+    "systems",
+    "service",
+    "services",
+    "architecture",
+    "development",
+    "testing",
+    "workflow",
+    "workflows",
+    "management",
+    "tools",
+    "tooling",
+    "delivery",
+    "automation",
+    "integration",
+    "process",
+    "practices",
+}
+
 _OUTCOME_TERMS = {
     "reduced",
     "improved",
@@ -196,6 +226,8 @@ class ClaimCoverage:
     coverage_status: str
     top_supporting_evidence: list[str]
     normalized_variants: list[str] = field(default_factory=list)
+    distinctive_tokens_required: list[str] = field(default_factory=list)
+    distinctive_tokens_matched: list[str] = field(default_factory=list)
 
 
 class SimilarityProvider(Protocol):
@@ -262,8 +294,6 @@ def _normalize_tokens(text: str) -> list[str]:
             return token[:-2]
         if len(token) > 4 and token.endswith("es"):
             return token[:-2]
-        if len(token) > 3 and token.endswith("s"):
-            return token[:-1]
         return token
 
     return [_stem(tok) for tok in tokens if tok not in _GENERIC_STOPWORDS]
@@ -490,6 +520,47 @@ def _normalize_claim_fragment(text: str) -> str:
     )
     normalized = re.sub(r"\s*[-/]\s*$", "", normalized)
     return normalized.strip(" ,;:.")
+
+
+def _phrase_tokens(text: str) -> list[str]:
+    return [token for token in re.findall(r"[a-z0-9\+\#]{2,}", text.lower()) if token not in _GENERIC_STOPWORDS]
+
+
+def claim_distinctive_tokens(claim: str) -> list[str]:
+    normalized = normalize_phrase_for_matching(_normalize_claim_fragment(claim))
+    if not normalized:
+        return []
+    tokens = [token for token in _phrase_tokens(normalized) if token]
+    if not tokens:
+        return []
+    if len(tokens) == 1:
+        # Distinctive-token gating is mainly for compound claims.
+        return []
+    distinctive = [token for token in tokens if token not in _DISTINCTIVE_GENERIC_TOKENS]
+    return sorted(dict.fromkeys(distinctive))
+
+
+def _distinctive_tokens_matched(claim: str, evidence_text: str) -> list[str]:
+    required = claim_distinctive_tokens(claim)
+    if not required:
+        return []
+    evidence_tokens = set(_phrase_tokens(normalize_phrase_for_matching(evidence_text)))
+    matched = [token for token in required if token in evidence_tokens]
+    return sorted(dict.fromkeys(matched))
+
+
+def _claim_has_required_distinctive_match(claim: str, evidence_text: str) -> bool:
+    required = claim_distinctive_tokens(claim)
+    if not required:
+        # Claims like CI/CD are inherently generic and can be supported by generic CI/CD evidence.
+        return True
+    return bool(_distinctive_tokens_matched(claim, evidence_text))
+
+
+def claim_supports_distinctive_tokens(claim: str, evidence_text: str) -> bool:
+    """Public helper to determine if evidence text satisfies claim distinctiveness requirements."""
+
+    return _claim_has_required_distinctive_match(claim, evidence_text)
 
 
 def claim_variants(claim: str, *, alias_provider: SkillAliasProvider | None = None) -> list[str]:
@@ -846,6 +917,8 @@ def _build_claim_coverage(
     for claim in claims:
         matched: list[EvidenceItem] = []
         variants = claim_variants(claim, alias_provider=alias_provider)
+        required_distinctive = claim_distinctive_tokens(claim)
+        matched_distinctive: set[str] = set()
         for evidence in evidence_items:
             evidence_variants = _evidence_text_variants(evidence.text)
             score = max(
@@ -862,9 +935,15 @@ def _build_claim_coverage(
                 for evidence_variant in evidence_variants
                 if variant
             )
-            if score >= 0.18 or direct:
+            distinctive_ok = any(
+                _claim_has_required_distinctive_match(claim, evidence_variant)
+                for evidence_variant in evidence_variants
+            )
+            if (score >= 0.18 or direct) and distinctive_ok:
                 matched.append(evidence)
                 evidence.matched_visible_claims.append(claim)
+                for evidence_variant in evidence_variants:
+                    matched_distinctive.update(_distinctive_tokens_matched(claim, evidence_variant))
         primary = [item for item in matched if _is_primary_evidence(item)]
         retained_primary = [item for item in primary if item.is_retained_in_rendered_resume]
         secondary = [item for item in matched if not _is_primary_evidence(item)]
@@ -892,6 +971,8 @@ def _build_claim_coverage(
                 coverage_status=status,
                 top_supporting_evidence=top,
                 normalized_variants=variants,
+                distinctive_tokens_required=required_distinctive,
+                distinctive_tokens_matched=sorted(matched_distinctive),
             )
         )
     return coverage

@@ -823,6 +823,19 @@ def _render_compact_entry(entry: ResumeEntry, *, one_line: bool = False) -> str:
     )
 
 
+def _normalize_grouped_fragment(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", str(text or "").strip())
+    cleaned = cleaned.rstrip(" .;:")
+    return cleaned.strip()
+
+
+def _ensure_terminal_period(text: str) -> str:
+    cleaned = _normalize_grouped_fragment(text)
+    if not cleaned:
+        return ""
+    return f"{cleaned}."
+
+
 def _render_experience(view: ProfessionalCompactTemplateView, mode: ExperienceMode) -> tuple[str, str]:
     detailed_entries = list(view.detailed_experience)
     compact_entries = list(view.compact_experience)
@@ -869,16 +882,16 @@ def _render_experience(view: ProfessionalCompactTemplateView, mode: ExperienceMo
             for idx in range(0, len(compact_entries), 2):
                 group = compact_entries[idx:idx + 2]
                 companies = " / ".join(
-                    label for label in (_compact_entry_company_label(entry) for entry in group) if label
+                    label for label in (_normalize_grouped_fragment(_compact_entry_company_label(entry)) for entry in group) if label
                 )
-                summaries = [_compact_entry_signal_summary(entry) for entry in group]
-                summaries = [summary.rstrip(" .;") for summary in summaries if summary and summary.rstrip(" .;")]
+                summaries = [_normalize_grouped_fragment(_compact_entry_signal_summary(entry)) for entry in group]
+                summaries = [summary for summary in summaries if summary]
                 if companies and summaries:
-                    grouped_lines.append(f"{companies} - {'; '.join(summaries)}.")
+                    grouped_lines.append(_ensure_terminal_period(f"{companies} - {'; '.join(summaries)}"))
                 elif companies:
-                    grouped_lines.append(f"{companies}.")
+                    grouped_lines.append(_ensure_terminal_period(companies))
                 elif summaries:
-                    grouped_lines.append(f"{'; '.join(summaries)}.")
+                    grouped_lines.append(_ensure_terminal_period("; ".join(summaries)))
             items = "".join(f'<p class="compact-summary">{line}</p>' for line in grouped_lines)
         else:
             one_line = view.earlier_experience_mode == "earlier_one_line"
@@ -891,35 +904,8 @@ def _render_experience(view: ProfessionalCompactTemplateView, mode: ExperienceMo
 
 
 def _render_projects(view: ProfessionalCompactTemplateView, mode: ProjectsMode) -> str:
-    forced_indices_raw = view.model.render_options.get("preserve_selected_project_indices")
-    forced_indices: list[int] = []
-    if isinstance(forced_indices_raw, list):
-        for raw in forced_indices_raw:
-            try:
-                parsed = int(raw)
-            except (TypeError, ValueError):
-                continue
-            if parsed >= 0:
-                forced_indices.append(parsed)
     if mode == "hidden":
-        if not forced_indices:
-            return ""
-        entries = [view.model.projects[idx] for idx in forced_indices if 0 <= idx < len(view.model.projects)]
-        if not entries:
-            return ""
-        items = ""
-        for entry in entries[:1]:
-            context_line, date_line = _project_context_and_dates(entry)
-            title_row = (
-                '<div class="project-title-row">'
-                f'<h3 class="entry-title">{entry.title}</h3>'
-                f'<span class="project-dates">{date_line}</span>'
-                "</div>"
-            )
-            summary = entry.compact_summary.strip() or context_line
-            summary_html = f'<p class="project-summary">{summary}</p>' if summary else ""
-            items += f'<article class="entry">{title_row}{summary_html}</article>'
-        return f'<section class="section"><h2 class="section-title">Projects</h2>{items}</section>'
+        return ""
     entries = list(view.projects_to_render)
     if mode == "selected":
         entries = entries[:2]

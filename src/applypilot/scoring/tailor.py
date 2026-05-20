@@ -878,6 +878,90 @@ def _build_tailored_prefix(job: dict) -> str:
     return build_artifact_prefix(job)
 
 
+def _count_skill_items_for_report(skills: object) -> int:
+    if isinstance(skills, dict):
+        total = 0
+        for value in skills.values():
+            if isinstance(value, list):
+                total += sum(1 for item in value if str(item).strip())
+                continue
+            text = str(value or "")
+            tokens = [token.strip() for token in re.split(r"[,\u2022;|]", text) if token.strip()]
+            total += len(tokens)
+        return total
+    if isinstance(skills, list):
+        total = 0
+        for item in skills:
+            if isinstance(item, dict):
+                text = str(item.get("value", "") or item.get("skill", ""))
+            else:
+                text = str(item or "")
+            tokens = [token.strip() for token in re.split(r"[,\u2022;|]", text) if token.strip()]
+            total += len(tokens) if tokens else (1 if text.strip() else 0)
+        return total
+    if isinstance(skills, str):
+        return len([token for token in re.split(r"[,\u2022;|]", skills) if token.strip()])
+    return 0
+
+
+def _attach_skills_count_diagnostics(report: dict) -> None:
+    if not isinstance(report, dict):
+        return
+
+    tailored_json = report.get("tailored_json", {})
+    if not isinstance(tailored_json, dict):
+        tailored_json = {}
+    validator = report.get("validator", {})
+    if not isinstance(validator, dict):
+        validator = {}
+    skills_selection = report.get("skills_selection", {})
+    if not isinstance(skills_selection, dict):
+        skills_selection = {}
+    planning = report.get("pdf_render_planning", {})
+    if not isinstance(planning, dict):
+        planning = {}
+    claim_coverage = planning.get("claim_coverage", [])
+    if not isinstance(claim_coverage, list):
+        claim_coverage = []
+
+    rendered_visible_skill_names: list[str] = []
+    seen: set[str] = set()
+    for item in claim_coverage:
+        if not isinstance(item, dict):
+            continue
+        claim = str(item.get("claim", "")).strip()
+        if not claim:
+            continue
+        key = claim.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        rendered_visible_skill_names.append(claim)
+
+    validator_skills_item_count_raw = validator.get("skills_item_count")
+    try:
+        validator_skills_item_count = int(validator_skills_item_count_raw)
+    except (TypeError, ValueError):
+        validator_skills_item_count = _count_skill_items_for_report(tailored_json.get("skills"))
+
+    diagnostics = {
+        "tailored_json_skill_count": _count_skill_items_for_report(tailored_json.get("skills")),
+        "skills_selection_before_count": int(skills_selection.get("before_count", 0) or 0),
+        "skills_selection_retained_count": int(skills_selection.get("after_count", 0) or 0),
+        "rendered_visible_skill_count": len(rendered_visible_skill_names),
+        "validator_skills_item_count": validator_skills_item_count,
+        "validator_count_scope": "tailored_json_skills",
+        "rendered_visible_skill_names": rendered_visible_skill_names,
+    }
+    report["skills_count_diagnostics"] = diagnostics
+
+    if validator_skills_item_count > 24 and diagnostics["rendered_visible_skill_count"] <= 24:
+        report["skills_warning_context"] = (
+            "Validator skill-count warning is based on tailored JSON skills, while the rendered "
+            "professional_compact output uses selected visible skills."
+        )
+
+
 # ── Resume Assembly (profile-driven header) ──────────────────────────────
 
 def _normalize_company_text(value: str) -> str:
@@ -1938,6 +2022,7 @@ def run_tailoring(
                     status = "error"
 
             report["status"] = status
+            _attach_skills_count_diagnostics(report)
             report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
             result = {

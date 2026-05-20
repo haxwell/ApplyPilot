@@ -567,7 +567,27 @@ def test_professional_compact_grouped_earlier_experience_uses_compact_summaries(
     assert "Alpha Corp / Beta Labs - Built event-driven APIs; Reduced production incidents." in html
     assert "Gamma Co - Improved deployment reliability." in html
     assert ".;" not in html
+    assert ";." not in html
     assert "202" not in html
+
+
+def test_professional_compact_grouped_earlier_experience_normalizes_trailing_punctuation() -> None:
+    model = ResumeRenderModel(name="Alex Example")
+    view = professional_compact.ProfessionalCompactTemplateView(
+        model=model,
+        detailed_experience=[],
+        compact_experience=[
+            ResumeEntry(company="Alpha Corp", title="Engineer", compact_summary="Improved reliability and performance.;"),
+            ResumeEntry(company="Beta Labs", title="Engineer", compact_summary="Modernized deployment automation:"),
+        ],
+        projects_to_render=[],
+        earlier_experience_mode="grouped",
+    )
+
+    html = professional_compact.build_html(view)
+    assert "Alpha Corp / Beta Labs - Improved reliability and performance; Modernized deployment automation." in html
+    assert ".;" not in html
+    assert ";." not in html
 
 
 def test_professional_compact_supports_projects_modes() -> None:

@@ -381,6 +381,137 @@ def test_alias_provider_supports_tdd_and_e2e_pairs() -> None:
     assert "e2e" in aliases.expand("end to end")
 
 
+def test_distinctive_token_vendor_claim_requires_vendor_not_generic_ci() -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="Jenkins CI")],
+        experience=[ResumeEntry(company="Acme", title="Engineer", bullets=["Established CI/test gates and peer review cadences."])],
+        projects=[],
+    )
+    prepared = SimpleNamespace(
+        detailed_experience=model.experience,
+        compact_experience=[],
+        projects_to_render=[],
+        projects_mode="hidden",
+        experience_mode="detailed",
+        earlier_experience_mode="compact",
+        summary_mode="hidden",
+        skills_mode="selected",
+        selected_skills_max_lines=1,
+    )
+    report = build_evidence_mapping_report(job_description="Own Jenkins CI pipelines.", model=model, prepared=prepared)
+    claim = report["claim_coverage"][0]
+    assert claim["coverage_status"] in {"weak", "unsupported"}
+    assert "jenkins" in claim["distinctive_tokens_required"]
+    assert "jenkins" not in claim["distinctive_tokens_matched"]
+
+
+def test_distinctive_token_vendor_claim_supported_when_vendor_is_present() -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="Jenkins CI")],
+        experience=[ResumeEntry(company="Acme", title="Engineer", bullets=["Built Jenkins pipeline jobs and release gates."])],
+        projects=[],
+    )
+    prepared = SimpleNamespace(
+        detailed_experience=model.experience,
+        compact_experience=[],
+        projects_to_render=[],
+        projects_mode="hidden",
+        experience_mode="detailed",
+        earlier_experience_mode="compact",
+        summary_mode="hidden",
+        skills_mode="selected",
+        selected_skills_max_lines=1,
+    )
+    report = build_evidence_mapping_report(job_description="Own Jenkins CI pipelines.", model=model, prepared=prepared)
+    claim = report["claim_coverage"][0]
+    assert claim["coverage_status"] == "supported"
+    assert "jenkins" in claim["distinctive_tokens_matched"]
+
+
+def test_gitlab_ci_requires_gitlab_not_generic_ci_only() -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="GitLab CI")],
+        experience=[ResumeEntry(company="Acme", title="Engineer", bullets=["Improved CI/CD quality gates and test reliability."])],
+        projects=[],
+    )
+    prepared = SimpleNamespace(
+        detailed_experience=model.experience,
+        compact_experience=[],
+        projects_to_render=[],
+        projects_mode="hidden",
+        experience_mode="detailed",
+        earlier_experience_mode="compact",
+        summary_mode="hidden",
+        skills_mode="selected",
+        selected_skills_max_lines=1,
+    )
+    report = build_evidence_mapping_report(job_description="Own GitLab CI pipelines.", model=model, prepared=prepared)
+    assert report["claim_coverage"][0]["coverage_status"] in {"weak", "unsupported"}
+
+
+def test_aws_s3_requires_s3_not_generic_aws_only() -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="AWS S3")],
+        experience=[ResumeEntry(company="Acme", title="Engineer", bullets=["Automated AWS deployment workflows."])],
+        projects=[],
+    )
+    prepared = SimpleNamespace(
+        detailed_experience=model.experience,
+        compact_experience=[],
+        projects_to_render=[],
+        projects_mode="hidden",
+        experience_mode="detailed",
+        earlier_experience_mode="compact",
+        summary_mode="hidden",
+        skills_mode="selected",
+        selected_skills_max_lines=1,
+    )
+    report = build_evidence_mapping_report(job_description="Manage S3 storage and lifecycle.", model=model, prepared=prepared)
+    assert report["claim_coverage"][0]["coverage_status"] in {"weak", "unsupported"}
+
+
+def test_postgresql_requires_postgresql_not_generic_sql() -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="PostgreSQL")],
+        experience=[ResumeEntry(company="Acme", title="Engineer", bullets=["Designed SQL schemas and tuned query plans."])],
+        projects=[],
+    )
+    prepared = SimpleNamespace(
+        detailed_experience=model.experience,
+        compact_experience=[],
+        projects_to_render=[],
+        projects_mode="hidden",
+        experience_mode="detailed",
+        earlier_experience_mode="compact",
+        summary_mode="hidden",
+        skills_mode="selected",
+        selected_skills_max_lines=1,
+    )
+    report = build_evidence_mapping_report(job_description="Own PostgreSQL reliability and migrations.", model=model, prepared=prepared)
+    assert report["claim_coverage"][0]["coverage_status"] in {"weak", "unsupported"}
+
+
+def test_postgresql_supported_when_postgresql_is_present() -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="PostgreSQL")],
+        experience=[ResumeEntry(company="Acme", title="Engineer", bullets=["Owned PostgreSQL schema migrations and performance tuning."])],
+        projects=[],
+    )
+    prepared = SimpleNamespace(
+        detailed_experience=model.experience,
+        compact_experience=[],
+        projects_to_render=[],
+        projects_mode="hidden",
+        experience_mode="detailed",
+        earlier_experience_mode="compact",
+        summary_mode="hidden",
+        skills_mode="selected",
+        selected_skills_max_lines=1,
+    )
+    report = build_evidence_mapping_report(job_description="Own PostgreSQL reliability and migrations.", model=model, prepared=prepared)
+    assert report["claim_coverage"][0]["coverage_status"] == "supported"
+
+
 def test_signal_detection_covers_metric_scale_and_outcome() -> None:
     text = "Improved turnaround by 17%, saved $25,000, and reduced time by 12 hours/week across multi-site enterprise operations."
     assert detect_metric_signals(text)
