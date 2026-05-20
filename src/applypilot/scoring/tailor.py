@@ -48,6 +48,15 @@ _JOB_KEYWORD_STOPWORDS = {
     "will", "have", "has", "had", "our", "you", "for", "and", "the", "are", "but",
     "not", "all", "any", "can", "was", "were", "job", "role", "team", "work", "using",
 }
+_BANNED_PHRASE_CLEANUP_RULES: tuple[tuple[str, re.Pattern[str], str], ...] = (
+    ("extensive experience", re.compile(r"\bextensive experience\b", flags=re.IGNORECASE), "deep experience"),
+    ("demonstrated ability to", re.compile(r"\bdemonstrated ability to\s+", flags=re.IGNORECASE), ""),
+    ("adept at", re.compile(r"\badept at\b", flags=re.IGNORECASE), "experienced in"),
+    ("proven track record", re.compile(r"\bproven track record of\b", flags=re.IGNORECASE), "built"),
+    ("proven track record", re.compile(r"\bproven track record\b", flags=re.IGNORECASE), "track record"),
+    ("proven record", re.compile(r"\bproven record of\b", flags=re.IGNORECASE), "built"),
+    ("proven record", re.compile(r"\bproven record\b", flags=re.IGNORECASE), "record"),
+)
 
 
 # ── Prompt Builders (profile-driven) ──────────────────────────────────────
@@ -763,6 +772,77 @@ def _strip_disallowed_watchlist_skills(data: dict, profile: dict) -> list[str]:
         skills[key] = ", ".join(kept)
 
     return removed
+
+
+def _has_banned_phrase_findings(validation: dict) -> bool:
+    messages = []
+    messages.extend(str(item) for item in validation.get("errors", []))
+    messages.extend(str(item) for item in validation.get("warnings", []))
+    for msg in messages:
+        low = msg.lower()
+        if "banned words" in low or "role-specific banned phrases" in low:
+            return True
+    return False
+
+
+def _cleanup_banned_phrases_text(text: str) -> tuple[str, list[str]]:
+    cleaned = text
+    applied: list[str] = []
+    for label, pattern, replacement in _BANNED_PHRASE_CLEANUP_RULES:
+        next_cleaned = pattern.sub(replacement, cleaned)
+        if next_cleaned != cleaned:
+            applied.append(label)
+            cleaned = next_cleaned
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+    return cleaned, applied
+
+
+def _apply_banned_phrase_cleanup_to_tailored_json(data: dict) -> list[dict[str, str]]:
+    """Apply deterministic banned-phrase cleanup in-place and return replacement telemetry."""
+
+    replacements: list[dict[str, str]] = []
+
+    def _apply(path: str, text: str) -> str:
+        cleaned, applied = _cleanup_banned_phrases_text(text)
+        if cleaned != text:
+            for phrase in applied:
+                replacements.append(
+                    {
+                        "field_path": path,
+                        "phrase": phrase,
+                        "from": text[:200],
+                        "to": cleaned[:200],
+                    }
+                )
+        return cleaned
+
+    summary = data.get("summary")
+    if isinstance(summary, str):
+        data["summary"] = _apply("summary", summary)
+
+    def _cleanup_entries(entries: Any, base_path: str) -> None:
+        if not isinstance(entries, list):
+            return
+        for idx, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                continue
+            for key in ("compact_summary", "summary", "short_summary", "description"):
+                value = entry.get(key)
+                if isinstance(value, str):
+                    entry[key] = _apply(f"{base_path}[{idx}].{key}", value)
+            bullets = entry.get("bullets")
+            if isinstance(bullets, list):
+                cleaned_bullets: list[Any] = []
+                for bidx, bullet in enumerate(bullets):
+                    if isinstance(bullet, str):
+                        cleaned_bullets.append(_apply(f"{base_path}[{idx}].bullets[{bidx}]", bullet))
+                    else:
+                        cleaned_bullets.append(bullet)
+                entry["bullets"] = cleaned_bullets
+
+    _cleanup_entries(data.get("experience"), "experience")
+    _cleanup_entries(data.get("projects"), "projects")
+    return replacements
 
 
 def _collect_renderable_project_entries(data: dict) -> list[dict]:
@@ -1485,6 +1565,7 @@ def tailor_resume(
         "attempts": 0, "validator": None, "judge": None,
         "status": "pending", "validation_mode": validation_mode,
         "content_preparation_context": dict(content_preparation_context or {}),
+        "validation_attempts": [],
     }
     avoid_notes: list[str] = []
     tailored = ""
@@ -1532,8 +1613,53 @@ def tailor_resume(
             log.info("Attempt %d applied profile work authority overrides: %s", attempt + 1, "; ".join(work_overrides))
             report["profile_work_authority_overrides"] = work_overrides
 
-        # Layer 1: Validate JSON fields
-        validation = validate_json_fields(data, profile, mode=validation_mode)
+        # Layer 1: Validate JSON fields, with one deterministic cleanup pass
+        # for banned/generic phrase warnings before proceeding.
+        validation_before_cleanup = validate_json_fields(data, profile, mode=validation_mode)
+        validator_passed_before_cleanup = bool(validation_before_cleanup.get("passed"))
+        validator_warnings_before_cleanup = [str(w) for w in validation_before_cleanup.get("warnings", [])]
+        cleanup_attempted = _has_banned_phrase_findings(validation_before_cleanup)
+        banned_phrase_replacements: list[dict[str, str]] = []
+        validation = validation_before_cleanup
+        validator_passed_after_cleanup: bool | None = None
+        validator_warnings_after_cleanup: list[str] | None = None
+        if cleanup_attempted:
+            banned_phrase_replacements = _apply_banned_phrase_cleanup_to_tailored_json(data)
+            validation = validate_json_fields(data, profile, mode=validation_mode)
+            validator_passed_after_cleanup = bool(validation.get("passed"))
+            validator_warnings_after_cleanup = [str(w) for w in validation.get("warnings", [])]
+
+        attempt_record: dict[str, Any] = {
+            "attempt": attempt + 1,
+            "validator_passed_before_cleanup": validator_passed_before_cleanup,
+            "validator_warnings_before_cleanup": validator_warnings_before_cleanup,
+            "banned_phrase_cleanup_attempted": cleanup_attempted,
+            "banned_phrase_cleanup_applied": bool(banned_phrase_replacements),
+            "banned_phrase_replacements": banned_phrase_replacements,
+        }
+        if cleanup_attempted:
+            attempt_record["validator_passed_after_cleanup"] = validator_passed_after_cleanup
+            attempt_record["validator_warnings_after_cleanup"] = validator_warnings_after_cleanup
+        else:
+            attempt_record["validator_passed_after_cleanup"] = None
+            attempt_record["validator_warnings_after_cleanup"] = None
+        report["validation_attempts"].append(attempt_record)
+
+        # Keep top-level telemetry aligned to the current/final attempt for compatibility.
+        report["banned_phrase_cleanup_applied"] = bool(banned_phrase_replacements)
+        report["banned_phrase_replacements"] = banned_phrase_replacements
+        report["validator_warnings_before_cleanup"] = validator_warnings_before_cleanup
+        report["validator_warnings_after_cleanup"] = validator_warnings_after_cleanup
+
+        if bool(banned_phrase_replacements):
+            resolution_source_for_attempt = "deterministic_cleanup"
+        elif attempt > 0:
+            resolution_source_for_attempt = "later_generation_attempt"
+        elif cleanup_attempted and bool(validation.get("warnings")):
+            resolution_source_for_attempt = "approved_with_warnings"
+        else:
+            resolution_source_for_attempt = "initial_pass"
+
         missing_companies = _missing_profile_companies_in_generated_experience(data, profile)
         if missing_companies:
             missing_msg = "ERROR: LLM omitted required experience companies: " + ", ".join(missing_companies)
@@ -1560,6 +1686,7 @@ def tailor_resume(
             tailored = assemble_resume_text(data, profile, job=job)
             report["tailored_json"] = data
             report["status"] = "failed_validation"
+            report["validation_resolution_source"] = resolution_source_for_attempt
             return tailored, report
 
         # Assemble text (header injected by code, em dashes auto-fixed)
@@ -1570,6 +1697,7 @@ def tailor_resume(
             report["judge"] = {"verdict": "SKIPPED", "passed": True, "issues": "none"}
             report["tailored_json"] = data
             report["status"] = "approved"
+            report["validation_resolution_source"] = resolution_source_for_attempt
             return tailored, report
 
         judge = judge_tailored_resume(resume_text, tailored, job.get("title", ""), profile)
@@ -1584,11 +1712,13 @@ def tailor_resume(
             # Accept best attempt on last retry (all modes) or if lenient
             report["tailored_json"] = data
             report["status"] = "approved_with_judge_warning"
+            report["validation_resolution_source"] = resolution_source_for_attempt
             return tailored, report
 
         # Both passed
         report["tailored_json"] = data
         report["status"] = "approved"
+        report["validation_resolution_source"] = resolution_source_for_attempt
         return tailored, report
 
     report["status"] = "exhausted_retries"
@@ -1769,6 +1899,7 @@ def run_tailoring(
                                 generated_pdf,
                                 template_name=pdf_template_name,
                                 job_description=str(job.get("full_description", "")),
+                                skills_selection=report.get("skills_selection"),
                             )
                             report["pdf_render_planning"] = planning
                         except Exception as structured_exc:

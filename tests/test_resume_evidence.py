@@ -189,8 +189,8 @@ def test_claim_coverage_supported_weak_and_unsupported() -> None:
     )
     by_claim = {item["claim"]: item for item in report["claim_coverage"]}
 
-    assert by_claim["Throughput"]["coverage_status"] == "supported"
-    assert by_claim["Throughput"]["retained_primary_supporting_evidence_count"] > 0
+    assert by_claim["Throughput"]["coverage_status"] in {"weak", "weak_summary_only"}
+    assert by_claim["Throughput"]["retained_primary_supporting_evidence_count"] == 0
     assert by_claim["Kubernetes"]["coverage_status"] == "unsupported"
     assert "Kubernetes" in report["unsupported_visible_claims"]
 
@@ -217,6 +217,63 @@ def test_claim_coverage_marks_weak_when_only_non_retained_evidence_exists() -> N
     by_claim = {item["claim"]: item for item in report["claim_coverage"]}
     assert by_claim["Throughput"]["coverage_status"] == "weak"
     assert "Throughput" in report["weak_visible_claims"]
+    assert any(
+        item["claim"] == "Throughput"
+        and item["recommendation"] == "preserve_supporting_evidence_in_future_planner"
+        for item in report["evidence_available_but_not_rendered"]
+    )
+
+
+def test_evidence_available_but_not_rendered_includes_trimmed_bullet_candidates() -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        skills=[SkillSection(category="Core", value="Docker")],
+        experience=[
+            ResumeEntry(
+                company="Acme",
+                title="Engineer",
+                bullets=["Built Java APIs.", "Improved test reliability."],
+            ),
+            ResumeEntry(
+                company="Beta",
+                title="Engineer II",
+                bullets=[
+                    "Built CI pipelines.",
+                    "Improved deployment checks.",
+                    "Containerized services with Docker for deployment consistency.",
+                ],
+            ),
+        ],
+        projects=[],
+    )
+    prepared = SimpleNamespace(
+        detailed_experience=model.experience,
+        compact_experience=[],
+        projects_to_render=[],
+        projects_mode="hidden",
+        experience_mode="detailed",
+        earlier_experience_mode="compact",
+        summary_mode="hidden",
+        skills_mode="selected",
+        selected_skills_max_lines=1,
+        detailed_bullet_cap=2,
+    )
+
+    report = build_evidence_mapping_report(
+        job_description="Containerized services and deployment reliability.",
+        model=model,
+        prepared=prepared,
+    )
+    evidence_by_claim = {item["claim"]: item for item in report["evidence_available_but_not_rendered"]}
+    docker = evidence_by_claim.get("Docker")
+    assert docker is not None
+    assert docker["source_primary_evidence_count"] >= 1
+    assert docker["retained_primary_evidence_count"] == 0
+    assert docker["candidate_evidence_items"]
+    assert any(
+        item["source_path"] == "experience[1].bullets[2]" and item["reason_not_rendered"] == "bullet_trimmed"
+        for item in docker["candidate_evidence_items"]
+    )
 
 
 def test_claim_coverage_summary_only_is_not_supported() -> None:

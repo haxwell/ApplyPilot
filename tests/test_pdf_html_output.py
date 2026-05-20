@@ -1,8 +1,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
-from applypilot.scoring.pdf import build_html_for_resume, convert_to_pdf, render_model_to_pdf, render_model_to_pdf_with_planning
+from applypilot.resume.evidence import ClaimCoverage, extract_all_skill_claims
+from applypilot.scoring import pdf as pdf_module
+from applypilot.scoring.pdf import (
+    _apply_evidence_preservation,
+    _apply_evidence_aware_skill_replacements,
+    build_html_for_resume,
+    convert_to_pdf,
+    render_model_to_pdf,
+    render_model_to_pdf_with_planning,
+)
 from applypilot.scoring.pdf_render_model import (
     ResumeEntry,
     ResumeRenderModel,
@@ -314,7 +324,585 @@ def test_render_model_to_pdf_with_planning_returns_planning_report(monkeypatch, 
     assert "theme_evidence_matches" in planning
     assert "unsupported_visible_claims" in planning
     assert "weak_visible_claims" in planning
+    assert "unsupported_visible_claims_final" in planning
+    assert "weak_visible_claims_final" in planning
+    assert "evidence_aware_skill_adjustments" in planning
+    assert "evidence_available_but_not_rendered" in planning
     assert "strong_unused_evidence" in planning
+
+
+def test_evidence_aware_skill_replacement_kept_when_pdf_still_fits(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="PostgreSQL, Java, Spring Boot, Docker, Kubernetes, Messaging, Kafka")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built Kafka event pipelines."])],
+    )
+    prepared = SimpleNamespace()
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [{"claim": "PostgreSQL", "coverage_status": "unsupported"}],
+        "unsupported_visible_claims": ["PostgreSQL"],
+        "weak_visible_claims": [],
+    }
+
+    monkeypatch.setattr(
+        pdf_module,
+        "build_claim_coverage_for_claims",
+        lambda **_kwargs: [
+            ClaimCoverage(
+                claim="Kafka",
+                claim_type="skill",
+                is_visible=False,
+                supporting_evidence_count=1,
+                retained_supporting_evidence_count=1,
+                primary_supporting_evidence_count=1,
+                retained_primary_supporting_evidence_count=1,
+                secondary_supporting_evidence_count=0,
+                coverage_status="supported",
+                top_supporting_evidence=["Acme: Built Kafka event pipelines."],
+            )
+        ],
+    )
+    monkeypatch.setattr(pdf_module, "_build_html_and_prepared_for_resume", lambda *_args, **_kwargs: ("<html/>", SimpleNamespace()))
+    monkeypatch.setattr(
+        pdf_module,
+        "_build_planning_with_evidence",
+        lambda **_kwargs: {
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [{"claim": "Kafka", "coverage_status": "supported"}],
+            "unsupported_visible_claims": [],
+            "weak_visible_claims": [],
+        },
+    )
+
+    new_model, _html, _prepared, updated = _apply_evidence_aware_skill_replacements(
+        model=model,
+        html="<html/>",
+        prepared=prepared,
+        planning=planning,
+        template_name="professional_compact",
+        job_description="Build event-driven systems.",
+        skills_selection={
+            "retained_skills": [
+                {"skill": "PostgreSQL", "score": 90.0},
+                {"skill": "Kafka", "score": 88.0},
+            ]
+        },
+    )
+
+    assert extract_all_skill_claims(new_model)[0] == "Kafka"
+    assert updated["unsupported_visible_claims_final"] == []
+    assert updated["evidence_aware_skill_adjustments"][0]["kept"] is True
+
+
+def test_evidence_aware_skill_replacement_reverted_when_pdf_exceeds_limit(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="PostgreSQL, Java, Kafka")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built Kafka event pipelines."])],
+    )
+    prepared = SimpleNamespace()
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [{"claim": "PostgreSQL", "coverage_status": "unsupported"}],
+        "unsupported_visible_claims": ["PostgreSQL"],
+        "weak_visible_claims": [],
+    }
+
+    monkeypatch.setattr(
+        pdf_module,
+        "build_claim_coverage_for_claims",
+        lambda **_kwargs: [
+            ClaimCoverage(
+                claim="Kafka",
+                claim_type="skill",
+                is_visible=False,
+                supporting_evidence_count=1,
+                retained_supporting_evidence_count=1,
+                primary_supporting_evidence_count=1,
+                retained_primary_supporting_evidence_count=1,
+                secondary_supporting_evidence_count=0,
+                coverage_status="supported",
+                top_supporting_evidence=["Acme: Built Kafka event pipelines."],
+            )
+        ],
+    )
+    monkeypatch.setattr(pdf_module, "_build_html_and_prepared_for_resume", lambda *_args, **_kwargs: ("<html/>", SimpleNamespace()))
+    monkeypatch.setattr(
+        pdf_module,
+        "_build_planning_with_evidence",
+        lambda **_kwargs: {
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 3,
+            "claim_coverage": [{"claim": "PostgreSQL", "coverage_status": "unsupported"}],
+            "unsupported_visible_claims": ["PostgreSQL"],
+            "weak_visible_claims": [],
+        },
+    )
+
+    new_model, _html, _prepared, updated = _apply_evidence_aware_skill_replacements(
+        model=model,
+        html="<html/>",
+        prepared=prepared,
+        planning=planning,
+        template_name="professional_compact",
+        job_description="Build event-driven systems.",
+        skills_selection={"retained_skills": [{"skill": "PostgreSQL", "score": 90.0}, {"skill": "Kafka", "score": 88.0}]},
+    )
+
+    assert extract_all_skill_claims(new_model)[0] == "PostgreSQL"
+    assert updated["evidence_aware_skill_adjustments"][0]["kept"] is False
+    assert "PostgreSQL" in updated["unsupported_visible_claims_final"]
+
+
+def test_evidence_aware_skill_adjustment_does_not_aggressively_remove_weak_claims() -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="Docker, Kubernetes, Java")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built Java services."])],
+    )
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [{"claim": "Docker", "coverage_status": "weak_summary_only"}],
+        "unsupported_visible_claims": [],
+        "weak_visible_claims": ["Docker"],
+    }
+
+    new_model, _html, _prepared, updated = _apply_evidence_aware_skill_replacements(
+        model=model,
+        html="<html/>",
+        prepared=SimpleNamespace(),
+        planning=planning,
+        template_name="professional_compact",
+        job_description="Build backend systems.",
+        skills_selection={"retained_skills": [{"skill": "Docker", "score": 92.0}]},
+    )
+
+    assert extract_all_skill_claims(new_model)[0] == "Docker"
+    assert updated["evidence_aware_skill_adjustments"] == []
+    assert updated["weak_visible_claims_final"] == ["Docker"]
+
+
+def test_unsupported_claim_without_source_evidence_is_reported() -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="Kubernetes, Java")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built Java services"])],
+    )
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [
+            {
+                "claim": "Kubernetes",
+                "coverage_status": "unsupported",
+                "primary_supporting_evidence_count": 0,
+                "retained_primary_supporting_evidence_count": 0,
+            }
+        ],
+        "unsupported_visible_claims": ["Kubernetes"],
+        "weak_visible_claims": [],
+    }
+    original = pdf_module.build_claim_coverage_for_claims
+    pdf_module.build_claim_coverage_for_claims = lambda **_kwargs: []
+    try:
+        _model, _html, _prepared, updated = _apply_evidence_aware_skill_replacements(
+            model=model,
+            html="<html/>",
+            prepared=SimpleNamespace(),
+            planning=planning,
+            template_name="professional_compact",
+            job_description="Build backend systems.",
+            skills_selection={"retained_skills": [{"skill": "Kubernetes", "score": 90.0}]},
+        )
+    finally:
+        pdf_module.build_claim_coverage_for_claims = original
+    assert updated["unsupported_visible_claims_without_source_evidence"] == [
+        {"claim": "Kubernetes", "reason": "no_primary_source_evidence_found"}
+    ]
+
+
+def test_evidence_preservation_restore_trimmed_bullet_kept_when_fit(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="Docker, Java, Spring Boot")],
+        experience=[
+            ResumeEntry(
+                title="Engineer",
+                subtitle="Acme",
+                bullets=["Built APIs", "Improved tests", "Containerized services with Docker"],
+            ),
+            ResumeEntry(title="Engineer II", subtitle="Beta", bullets=["Built APIs"]),
+        ],
+    )
+    prepared = SimpleNamespace(detailed_bullet_cap=2, earlier_experience_mode="compact")
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [
+            {
+                "claim": "Docker",
+                "coverage_status": "weak",
+                "primary_supporting_evidence_count": 1,
+                "retained_primary_supporting_evidence_count": 0,
+            }
+        ],
+        "unsupported_visible_claims": [],
+        "weak_visible_claims": ["Docker"],
+        "evidence_available_but_not_rendered": [
+            {
+                "claim": "Docker",
+                "candidate_evidence_items": [
+                    {
+                        "source_type": "experience_bullet",
+                        "source_label": "Acme",
+                        "source_path": "experience[0].bullets[2]",
+                        "text": "Containerized services with Docker",
+                        "evidence_score": 0.9,
+                        "reason_not_rendered": "bullet_trimmed",
+                    }
+                ],
+            }
+        ],
+    }
+    monkeypatch.setattr(pdf_module, "_build_html_and_prepared_for_resume", lambda *_args, **_kwargs: ("<html/>", prepared))
+    monkeypatch.setattr(
+        pdf_module,
+        "_build_planning_with_evidence",
+        lambda **_kwargs: {
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [
+                {
+                    "claim": "Docker",
+                    "coverage_status": "supported",
+                    "primary_supporting_evidence_count": 1,
+                    "retained_primary_supporting_evidence_count": 1,
+                }
+            ],
+            "unsupported_visible_claims": [],
+            "weak_visible_claims": [],
+            "evidence_available_but_not_rendered": [],
+        },
+    )
+
+    updated_model, _html, _prepared, updated = _apply_evidence_preservation(
+        model=model,
+        html="<html/>",
+        prepared=prepared,
+        planning=planning,
+        template_name="professional_compact",
+        job_description="Containerized systems.",
+    )
+
+    assert updated_model.experience[0].bullets[1] == "Containerized services with Docker"
+    assert updated["evidence_preservation_attempts"][0]["operation"] == "restore_trimmed_bullet"
+    assert updated["evidence_preservation_attempts"][0]["kept"] is True
+    assert updated["evidence_preservation_decisions"][0]["decision"] == "attempted"
+
+
+def test_evidence_preservation_reverts_when_overflow(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="Docker, Java")],
+        experience=[
+            ResumeEntry(
+                title="Engineer",
+                subtitle="Acme",
+                bullets=["Built APIs", "Improved tests", "Containerized services with Docker"],
+            ),
+            ResumeEntry(title="Engineer II", subtitle="Beta", bullets=["Built APIs"]),
+        ],
+    )
+    prepared = SimpleNamespace(detailed_bullet_cap=2, earlier_experience_mode="compact")
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [{"claim": "Docker", "coverage_status": "weak", "primary_supporting_evidence_count": 1, "retained_primary_supporting_evidence_count": 0}],
+        "unsupported_visible_claims": [],
+        "weak_visible_claims": ["Docker"],
+        "evidence_available_but_not_rendered": [
+            {
+                "claim": "Docker",
+                "candidate_evidence_items": [
+                    {
+                        "source_type": "experience_bullet",
+                        "source_label": "Acme",
+                        "source_path": "experience[0].bullets[2]",
+                        "text": "Containerized services with Docker",
+                        "evidence_score": 0.9,
+                        "reason_not_rendered": "bullet_trimmed",
+                    }
+                ],
+            }
+        ],
+    }
+    monkeypatch.setattr(pdf_module, "_build_html_and_prepared_for_resume", lambda *_args, **_kwargs: ("<html/>", prepared))
+    monkeypatch.setattr(
+        pdf_module,
+        "_build_planning_with_evidence",
+        lambda **_kwargs: {
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 3,
+            "claim_coverage": [{"claim": "Docker", "coverage_status": "weak", "primary_supporting_evidence_count": 1, "retained_primary_supporting_evidence_count": 0}],
+            "unsupported_visible_claims": [],
+            "weak_visible_claims": ["Docker"],
+            "evidence_available_but_not_rendered": [],
+        },
+    )
+
+    updated_model, _html, _prepared, updated = _apply_evidence_preservation(
+        model=model,
+        html="<html/>",
+        prepared=prepared,
+        planning=planning,
+        template_name="professional_compact",
+        job_description="Containerized systems.",
+    )
+
+    assert updated_model.experience[0].bullets[1] == "Improved tests"
+    assert updated["evidence_preservation_attempts"][0]["kept"] is False
+    assert updated["evidence_preservation_decisions"][0]["decision"] == "skipped_would_exceed_page_target"
+
+
+def test_evidence_preservation_hidden_project_line_attempted_and_kept(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="Jenkins, Java")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built Java services"])],
+        projects=[ResumeEntry(title="CI Automation", subtitle="2024", bullets=["Built Jenkins CI pipelines"], compact_summary="Built Jenkins CI pipelines")],
+    )
+    prepared = SimpleNamespace(detailed_bullet_cap=2, earlier_experience_mode="compact")
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [{"claim": "Jenkins", "coverage_status": "weak", "primary_supporting_evidence_count": 1, "retained_primary_supporting_evidence_count": 0}],
+        "unsupported_visible_claims": [],
+        "weak_visible_claims": ["Jenkins"],
+        "evidence_available_but_not_rendered": [
+            {
+                "claim": "Jenkins",
+                "candidate_evidence_items": [
+                    {
+                        "source_type": "project_bullet",
+                        "source_label": "CI Automation",
+                        "source_path": "projects[0].bullets[0]",
+                        "text": "Built Jenkins CI pipelines",
+                        "evidence_score": 0.8,
+                        "reason_not_rendered": "hidden_project",
+                    }
+                ],
+            }
+        ],
+    }
+    monkeypatch.setattr(pdf_module, "_build_html_and_prepared_for_resume", lambda *_args, **_kwargs: ("<html/>", prepared))
+    monkeypatch.setattr(
+        pdf_module,
+        "_build_planning_with_evidence",
+        lambda **_kwargs: {
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [{"claim": "Jenkins", "coverage_status": "supported", "primary_supporting_evidence_count": 1, "retained_primary_supporting_evidence_count": 1}],
+            "unsupported_visible_claims": [],
+            "weak_visible_claims": [],
+            "evidence_available_but_not_rendered": [],
+        },
+    )
+
+    updated_model, _html, _prepared, updated = _apply_evidence_preservation(
+        model=model,
+        html="<html/>",
+        prepared=prepared,
+        planning=planning,
+        template_name="professional_compact",
+        job_description="CI platform reliability.",
+    )
+    assert updated_model.render_options["preserve_selected_project_indices"] == [0]
+    assert updated["evidence_preservation_attempts"][0]["operation"] == "add_selected_project_line"
+    assert updated["evidence_preservation_attempts"][0]["kept"] is True
+    assert updated["evidence_preservation_decisions"][0]["decision"] == "attempted"
+
+
+def test_evidence_preservation_hidden_project_line_reverted_when_overflow(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="Jenkins, Java")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built Java services"])],
+        projects=[ResumeEntry(title="CI Automation", subtitle="2024", bullets=["Built Jenkins CI pipelines"], compact_summary="Built Jenkins CI pipelines")],
+    )
+    prepared = SimpleNamespace(detailed_bullet_cap=2, earlier_experience_mode="compact")
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [{"claim": "Jenkins", "coverage_status": "weak", "primary_supporting_evidence_count": 1, "retained_primary_supporting_evidence_count": 0}],
+        "unsupported_visible_claims": [],
+        "weak_visible_claims": ["Jenkins"],
+        "evidence_available_but_not_rendered": [
+            {
+                "claim": "Jenkins",
+                "candidate_evidence_items": [
+                    {
+                        "source_type": "project_bullet",
+                        "source_label": "CI Automation",
+                        "source_path": "projects[0].bullets[0]",
+                        "text": "Built Jenkins CI pipelines",
+                        "evidence_score": 0.8,
+                        "reason_not_rendered": "hidden_project",
+                    }
+                ],
+            }
+        ],
+    }
+    monkeypatch.setattr(pdf_module, "_build_html_and_prepared_for_resume", lambda *_args, **_kwargs: ("<html/>", prepared))
+    monkeypatch.setattr(
+        pdf_module,
+        "_build_planning_with_evidence",
+        lambda **_kwargs: {
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 3,
+            "claim_coverage": [{"claim": "Jenkins", "coverage_status": "weak", "primary_supporting_evidence_count": 1, "retained_primary_supporting_evidence_count": 0}],
+            "unsupported_visible_claims": [],
+            "weak_visible_claims": ["Jenkins"],
+            "evidence_available_but_not_rendered": [],
+        },
+    )
+
+    updated_model, _html, _prepared, updated = _apply_evidence_preservation(
+        model=model,
+        html="<html/>",
+        prepared=prepared,
+        planning=planning,
+        template_name="professional_compact",
+        job_description="CI platform reliability.",
+    )
+    assert "preserve_selected_project_indices" not in updated_model.render_options
+    assert updated["evidence_preservation_attempts"][0]["kept"] is False
+    assert updated["evidence_preservation_decisions"][0]["decision"] == "skipped_would_exceed_page_target"
+
+
+def test_evidence_preservation_decision_records_no_supported_operation() -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="Jenkins, Java")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built Java services"])],
+        projects=[],
+    )
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [{"claim": "Jenkins", "coverage_status": "weak", "primary_supporting_evidence_count": 1, "retained_primary_supporting_evidence_count": 0}],
+        "unsupported_visible_claims": [],
+        "weak_visible_claims": ["Jenkins"],
+        "evidence_available_but_not_rendered": [
+            {
+                "claim": "Jenkins",
+                "candidate_evidence_items": [
+                    {
+                        "source_type": "experience_compact_summary",
+                        "source_label": "Acme",
+                        "source_path": "experience[0].compact_summary",
+                        "text": "Worked with Jenkins",
+                        "evidence_score": 0.7,
+                        "reason_not_rendered": "unknown",
+                    }
+                ],
+            }
+        ],
+    }
+    _model, _html, _prepared, updated = _apply_evidence_preservation(
+        model=model,
+        html="<html/>",
+        prepared=SimpleNamespace(detailed_bullet_cap=2, earlier_experience_mode="compact"),
+        planning=planning,
+        template_name="professional_compact",
+        job_description="CI platform reliability.",
+    )
+    assert updated["evidence_preservation_attempts"] == []
+    assert updated["evidence_preservation_decisions"][0]["decision"] == "not_attempted"
+
+
+def test_evidence_preservation_reports_cannot_identify_trimmed_bullet_state() -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="Docker, Java")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built Java services", "Containerized with Docker"])],
+    )
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [{"claim": "Docker", "coverage_status": "weak", "primary_supporting_evidence_count": 1, "retained_primary_supporting_evidence_count": 0}],
+        "unsupported_visible_claims": [],
+        "weak_visible_claims": ["Docker"],
+        "evidence_available_but_not_rendered": [
+            {
+                "claim": "Docker",
+                "candidate_evidence_items": [
+                    {
+                        "source_type": "experience_bullet",
+                        "source_label": "Acme",
+                        "source_path": "experience[0].bullets[1]",
+                        "text": "Containerized with Docker",
+                        "evidence_score": 0.9,
+                        "reason_not_rendered": "bullet_trimmed",
+                    }
+                ],
+            }
+        ],
+    }
+    _model, _html, _prepared, updated = _apply_evidence_preservation(
+        model=model,
+        html="<html/>",
+        prepared=SimpleNamespace(detailed_bullet_cap=None, earlier_experience_mode="compact"),
+        planning=planning,
+        template_name="professional_compact",
+        job_description="Containerized services.",
+    )
+    assert updated["evidence_preservation_decisions"][0]["reason"] == "cannot_identify_trimmed_bullet_retention_state"
+
+
+def test_skill_replacement_runs_after_preservation_and_skips_when_preserved(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="Docker, Integration Testing")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built APIs", "Improved tests", "Containerized with Docker"])],
+    )
+    preserved_planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [{"claim": "Docker", "coverage_status": "supported", "primary_supporting_evidence_count": 1, "retained_primary_supporting_evidence_count": 1}],
+        "unsupported_visible_claims": [],
+        "weak_visible_claims": [],
+        "evidence_available_but_not_rendered": [],
+        "evidence_preservation_attempts": [{"step": "evidence_preservation", "kept": True}],
+    }
+    monkeypatch.setattr(
+        pdf_module,
+        "_build_html_and_prepared_for_resume",
+        lambda *_args, **_kwargs: ("<html/>", SimpleNamespace(detailed_bullet_cap=2, earlier_experience_mode="compact")),
+    )
+    monkeypatch.setattr(pdf_module, "_build_planning_with_evidence", lambda **_kwargs: preserved_planning)
+
+    preserved_model, html, prepared, planning = _apply_evidence_preservation(
+        model=model,
+        html="<html/>",
+        prepared=SimpleNamespace(detailed_bullet_cap=2, earlier_experience_mode="compact"),
+        planning={
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [{"claim": "Docker", "coverage_status": "weak", "primary_supporting_evidence_count": 1, "retained_primary_supporting_evidence_count": 0}],
+            "unsupported_visible_claims": [],
+            "weak_visible_claims": ["Docker"],
+            "evidence_available_but_not_rendered": [
+                {"claim": "Docker", "candidate_evidence_items": [{"source_path": "experience[0].bullets[2]", "reason_not_rendered": "bullet_trimmed", "text": "Containerized with Docker", "source_label": "Acme", "evidence_score": 1.0}]}
+            ],
+        },
+        template_name="professional_compact",
+        job_description="Containerized systems.",
+    )
+    final_model, _html, _prepared, final_planning = _apply_evidence_aware_skill_replacements(
+        model=preserved_model,
+        html=html,
+        prepared=prepared,
+        planning=planning,
+        template_name="professional_compact",
+        job_description="Containerized systems.",
+        skills_selection={"retained_skills": [{"skill": "Docker", "score": 95.0}, {"skill": "Integration Testing", "score": 93.0}]},
+    )
+    assert extract_all_skill_claims(final_model)[0] == "Docker"
+    assert final_planning["evidence_aware_skill_adjustments"] == []
 
 
 def test_compact_template_ignores_compact_summary_and_renders_bullets(tmp_path: Path) -> None:

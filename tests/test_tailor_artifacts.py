@@ -136,6 +136,7 @@ def test_run_tailoring_prefers_structured_pdf_render_when_tailored_json_availabl
         output_path: Path,
         template_name: str = "professional_compact",
         html_only: bool = False,
+        **_kwargs,
     ) -> tuple[Path, dict]:
         del model, template_name, html_only
         structured_called["value"] = True
@@ -260,6 +261,7 @@ def test_run_tailoring_invalid_configured_template_falls_back_to_default(
         output_path: Path,
         template_name: str = "professional_compact",
         html_only: bool = False,
+        **_kwargs,
     ) -> tuple[Path, dict]:
         del model, html_only
         captured_template["value"] = template_name
@@ -318,7 +320,225 @@ def test_tailor_resume_includes_tailored_json_on_success(monkeypatch) -> None:
 
     assert report["status"] == "approved"
     assert isinstance(report.get("tailored_json"), dict)
+
+
+def test_tailor_resume_applies_banned_phrase_cleanup_once(monkeypatch) -> None:
+    class _FakeClient:
+        def chat(self, _messages, max_output_tokens: int = 16000):  # noqa: ARG002
+            return (
+                "{"
+                '"title":"Senior Software Engineer",'
+                '"summary":"Senior backend engineer with extensive experience and demonstrated ability to lead delivery.",'
+                '"skills":{"Languages":"Python, Java"},'
+                '"experience":[{"header":"Engineer","subtitle":"Acme | 2020-2024","bullets":["Built APIs"]}],'
+                '"projects":[],'
+                '"education":"State University | BS Computer Science"'
+                "}"
+            )
+
+    validate_calls = {"count": 0}
+
+    def _fake_validate_json_fields(data, _profile, mode="normal"):  # noqa: ARG001
+        validate_calls["count"] += 1
+        summary = str(data.get("summary", "")).lower()
+        warnings = []
+        if "extensive experience" in summary:
+            warnings.append("Banned words: extensive experience")
+        if "demonstrated ability to" in summary:
+            warnings.append("Banned words: demonstrated ability")
+        return {"passed": True, "errors": [], "warnings": warnings}
+
+    monkeypatch.setattr(tailor, "get_client", lambda: _FakeClient())
+    monkeypatch.setattr(tailor, "validate_json_fields", _fake_validate_json_fields)
+    monkeypatch.setattr(
+        tailor,
+        "judge_tailored_resume",
+        lambda *_args, **_kwargs: {"passed": True, "verdict": "PASS", "issues": "none"},
+    )
+
+    profile = {"personal": {}}
+    job = {
+        "title": "Senior Software Engineer",
+        "site": "Example",
+        "location": "Remote",
+        "full_description": "Build APIs",
+    }
+
+    _, report = tailor.tailor_resume(
+        "Base resume text",
+        job,
+        profile,
+        max_retries=0,
+        validation_mode="normal",
+    )
+
+    assert report["status"] == "approved"
+    assert report["banned_phrase_cleanup_applied"] is True
+    assert report["banned_phrase_replacements"]
+    assert report["validation_resolution_source"] == "deterministic_cleanup"
+    assert isinstance(report["validation_attempts"], list)
+    assert report["validation_attempts"][0]["banned_phrase_cleanup_attempted"] is True
+    assert report["validation_attempts"][0]["banned_phrase_cleanup_applied"] is True
+    assert report["validation_attempts"][0]["validator_warnings_before_cleanup"]
+    assert report["validation_attempts"][0]["validator_warnings_after_cleanup"] == []
+    assert validate_calls["count"] == 2
+    cleaned_summary = str(report["tailored_json"]["summary"]).lower()
+    assert "extensive experience" not in cleaned_summary
+    assert "demonstrated ability to" not in cleaned_summary
+
+
+def test_tailor_resume_skips_cleanup_when_no_banned_phrase_warning(monkeypatch) -> None:
+    class _FakeClient:
+        def chat(self, _messages, max_output_tokens: int = 16000):  # noqa: ARG002
+            return (
+                "{"
+                '"title":"Senior Software Engineer",'
+                '"summary":"Senior backend engineer designing reliable APIs.",'
+                '"skills":{"Languages":"Python, Java"},'
+                '"experience":[{"header":"Engineer","subtitle":"Acme | 2020-2024","bullets":["Built APIs"]}],'
+                '"projects":[],'
+                '"education":"State University | BS Computer Science"'
+                "}"
+            )
+
+    validate_calls = {"count": 0}
+
+    def _fake_validate_json_fields(_data, _profile, mode="normal"):  # noqa: ARG001
+        validate_calls["count"] += 1
+        return {"passed": True, "errors": [], "warnings": []}
+
+    monkeypatch.setattr(tailor, "get_client", lambda: _FakeClient())
+    monkeypatch.setattr(tailor, "validate_json_fields", _fake_validate_json_fields)
+    monkeypatch.setattr(
+        tailor,
+        "judge_tailored_resume",
+        lambda *_args, **_kwargs: {"passed": True, "verdict": "PASS", "issues": "none"},
+    )
+
+    _, report = tailor.tailor_resume(
+        "Base resume text",
+        {"title": "Senior Software Engineer", "site": "Example", "location": "Remote", "full_description": "Build APIs"},
+        {"personal": {}},
+        max_retries=0,
+        validation_mode="normal",
+    )
+
+    assert report["status"] == "approved"
+    assert report["banned_phrase_cleanup_applied"] is False
+    assert report["banned_phrase_replacements"] == []
+    assert report["validation_resolution_source"] == "initial_pass"
+    assert report["validator_warnings_before_cleanup"] == []
+    assert report["validator_warnings_after_cleanup"] is None
+    assert report["validation_attempts"][0]["banned_phrase_cleanup_attempted"] is False
+    assert report["validation_attempts"][0]["validator_warnings_after_cleanup"] is None
+    assert validate_calls["count"] == 1
     assert report["tailored_json"]["title"] == "Senior Software Engineer"
+
+
+def test_tailor_resume_later_generation_attempt_telemetry(monkeypatch) -> None:
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def chat(self, _messages, max_output_tokens: int = 16000):  # noqa: ARG002
+            self.calls += 1
+            if self.calls == 1:
+                return (
+                    "{"
+                    '"title":"Senior Software Engineer",'
+                    '"summary":"Senior backend engineer adept at delivery.",'
+                    '"skills":{"Languages":"Python, Java"},'
+                    '"experience":[{"header":"Engineer","subtitle":"Acme | 2020-2024","bullets":["Built APIs"]}],'
+                    '"projects":[],'
+                    '"education":"State University | BS Computer Science"'
+                    "}"
+                )
+            return (
+                "{"
+                '"title":"Senior Software Engineer",'
+                '"summary":"Senior backend engineer delivering reliable APIs.",'
+                '"skills":{"Languages":"Python, Java"},'
+                '"experience":[{"header":"Engineer","subtitle":"Acme | 2020-2024","bullets":["Built APIs"]}],'
+                '"projects":[],'
+                '"education":"State University | BS Computer Science"'
+                "}"
+            )
+
+    validate_calls = {"count": 0}
+
+    def _fake_validate_json_fields(data, _profile, mode="normal"):  # noqa: ARG001
+        validate_calls["count"] += 1
+        summary = str(data.get("summary", "")).lower()
+        if validate_calls["count"] <= 2:
+            warnings = ["Banned words: adept at"] if "adept at" in summary else ["Banned words: adept at"]
+            return {"passed": False, "errors": ["Banned words: adept at"], "warnings": warnings}
+        return {"passed": True, "errors": [], "warnings": []}
+
+    monkeypatch.setattr(tailor, "get_client", lambda: _FakeClient())
+    monkeypatch.setattr(tailor, "validate_json_fields", _fake_validate_json_fields)
+    monkeypatch.setattr(
+        tailor,
+        "judge_tailored_resume",
+        lambda *_args, **_kwargs: {"passed": True, "verdict": "PASS", "issues": "none"},
+    )
+
+    _, report = tailor.tailor_resume(
+        "Base resume text",
+        {"title": "Senior Software Engineer", "site": "Example", "location": "Remote", "full_description": "Build APIs"},
+        {"personal": {}},
+        max_retries=1,
+        validation_mode="normal",
+    )
+
+    assert report["status"] == "approved"
+    assert report["validation_resolution_source"] == "later_generation_attempt"
+    assert report["attempts"] == 2
+    assert report["banned_phrase_cleanup_applied"] is False
+    assert report["banned_phrase_replacements"] == []
+    assert report["validator_warnings_before_cleanup"] == []
+    assert len(report["validation_attempts"]) == 2
+    assert "Banned words: adept at" in report["validation_attempts"][0]["validator_warnings_before_cleanup"]
+    assert report["validation_attempts"][1]["validator_warnings_before_cleanup"] == []
+
+
+def test_tailor_resume_cleanup_attempted_but_not_applied(monkeypatch) -> None:
+    class _FakeClient:
+        def chat(self, _messages, max_output_tokens: int = 16000):  # noqa: ARG002
+            return (
+                "{"
+                '"title":"Senior Software Engineer",'
+                '"summary":"Senior backend engineer delivering reliable APIs.",'
+                '"skills":{"Languages":"Python, Java"},'
+                '"experience":[{"header":"Engineer","subtitle":"Acme | 2020-2024","bullets":["Built APIs"]}],'
+                '"projects":[],'
+                '"education":"State University | BS Computer Science"'
+                "}"
+            )
+
+    def _fake_validate_json_fields(_data, _profile, mode="normal"):  # noqa: ARG001
+        return {"passed": True, "errors": [], "warnings": ["Banned words: adept at"]}
+
+    monkeypatch.setattr(tailor, "get_client", lambda: _FakeClient())
+    monkeypatch.setattr(tailor, "validate_json_fields", _fake_validate_json_fields)
+    monkeypatch.setattr(
+        tailor,
+        "judge_tailored_resume",
+        lambda *_args, **_kwargs: {"passed": True, "verdict": "PASS", "issues": "none"},
+    )
+
+    _, report = tailor.tailor_resume(
+        "Base resume text",
+        {"title": "Senior Software Engineer", "site": "Example", "location": "Remote", "full_description": "Build APIs"},
+        {"personal": {}},
+        max_retries=0,
+        validation_mode="normal",
+    )
+
+    assert report["status"] == "approved"
+    assert report["validation_attempts"][0]["banned_phrase_cleanup_attempted"] is True
+    assert report["validation_attempts"][0]["banned_phrase_cleanup_applied"] is False
+    assert report["banned_phrase_cleanup_applied"] is False
+    assert report["banned_phrase_replacements"] == []
 
 
 def test_tailor_resume_includes_content_preparation_context(monkeypatch) -> None:

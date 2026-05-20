@@ -172,6 +172,7 @@ class EvidenceItem:
     scale_signals: list[str]
     outcome_signals: list[str]
     evidence_score: float
+    reason_not_rendered: str | None = None
 
 
 @dataclass
@@ -402,36 +403,39 @@ def detect_outcome_signals(text: str) -> list[str]:
     return found
 
 
-def _flatten_skill_tokens(model: ResumeRenderModel, *, skills_mode: str, selected_skills_max_lines: int) -> list[str]:
-    def _split_preserving_parentheses(text: str) -> list[str]:
-        parts: list[str] = []
-        buf: list[str] = []
-        depth = 0
-        for ch in text:
-            if ch == "(":
-                depth += 1
-                buf.append(ch)
-                continue
-            if ch == ")":
-                depth = max(0, depth - 1)
-                buf.append(ch)
-                continue
-            if ch == "," and depth == 0:
-                token = "".join(buf).strip()
-                if token:
-                    parts.append(token)
-                buf = []
-                continue
+def _split_skill_tokens_preserving_parentheses(text: str) -> list[str]:
+    parts: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    for ch in text:
+        if ch == "(":
+            depth += 1
             buf.append(ch)
-        tail = "".join(buf).strip()
-        if tail:
-            parts.append(tail)
-        return parts
+            continue
+        if ch == ")":
+            depth = max(0, depth - 1)
+            buf.append(ch)
+            continue
+        if ch == "," and depth == 0:
+            token = "".join(buf).strip()
+            if token:
+                parts.append(token)
+            buf = []
+            continue
+        buf.append(ch)
+    tail = "".join(buf).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def extract_all_skill_claims(model: ResumeRenderModel) -> list[str]:
+    """Flatten all selected skill claims in deterministic visual order."""
 
     tokens: list[str] = []
     seen: set[str] = set()
     for section in model.skills:
-        parts = _split_preserving_parentheses(str(section.value))
+        parts = _split_skill_tokens_preserving_parentheses(str(section.value))
         for part in parts:
             claim = part.strip().strip(";")
             if not claim:
@@ -441,6 +445,23 @@ def _flatten_skill_tokens(model: ResumeRenderModel, *, skills_mode: str, selecte
                 continue
             seen.add(key)
             tokens.append(claim)
+    return tokens
+
+
+def extract_visible_skill_claims(model: ResumeRenderModel, prepared: object) -> list[str]:
+    """Return currently visible skill claims for the prepared template view."""
+
+    skills_mode = str(getattr(prepared, "skills_mode", "full"))
+    selected_skills_max_lines = int(getattr(prepared, "selected_skills_max_lines", 2) or 2)
+    return _flatten_skill_tokens(
+        model,
+        skills_mode=skills_mode,
+        selected_skills_max_lines=selected_skills_max_lines,
+    )
+
+
+def _flatten_skill_tokens(model: ResumeRenderModel, *, skills_mode: str, selected_skills_max_lines: int) -> list[str]:
+    tokens = extract_all_skill_claims(model)
     if not tokens:
         return []
 
@@ -587,12 +608,20 @@ def extract_evidence_items(model: ResumeRenderModel, prepared: object) -> list[E
     projects_to_render = list(getattr(prepared, "projects_to_render", model.projects))
     experience_mode = str(getattr(prepared, "experience_mode", "detailed"))
     earlier_mode = str(getattr(prepared, "earlier_experience_mode", "compact"))
+    detailed_bullet_cap = getattr(prepared, "detailed_bullet_cap", None)
+    bullet_cap = detailed_bullet_cap if isinstance(detailed_bullet_cap, int) and detailed_bullet_cap > 0 else None
 
     rendered_entry_ids: set[int] = set()
+    detailed_index_by_entry_id: dict[int, int] = {}
+    compact_index_by_entry_id: dict[int, int] = {}
     if experience_mode != "hidden":
-        rendered_entry_ids.update(id(entry) for entry in detailed_entries)
+        for idx, entry in enumerate(detailed_entries):
+            rendered_entry_ids.add(id(entry))
+            detailed_index_by_entry_id[id(entry)] = idx
         if earlier_mode in {"compact", "earlier_one_line", "grouped"}:
-            rendered_entry_ids.update(id(entry) for entry in compact_entries)
+            for idx, entry in enumerate(compact_entries):
+                rendered_entry_ids.add(id(entry))
+                compact_index_by_entry_id[id(entry)] = idx
 
     rendered_project_ids: set[int] = set()
     if projects_mode != "hidden":
@@ -610,6 +639,7 @@ def extract_evidence_items(model: ResumeRenderModel, prepared: object) -> list[E
         source_path: str,
         text: str,
         retained: bool,
+        reason_not_rendered: str | None = None,
     ) -> None:
         stripped = text.strip()
         if not stripped:
@@ -631,39 +661,115 @@ def extract_evidence_items(model: ResumeRenderModel, prepared: object) -> list[E
                 scale_signals=scale,
                 outcome_signals=outcome,
                 evidence_score=round(evidence_score, 3),
+                reason_not_rendered=reason_not_rendered,
             )
         )
 
     for idx, entry in enumerate(model.experience):
         label = entry.company or entry.title or f"Experience {idx + 1}"
         retained = id(entry) in rendered_entry_ids
+        is_detailed = id(entry) in detailed_index_by_entry_id
+        is_compact = id(entry) in compact_index_by_entry_id
+
+        compact_summary_rendered = False
+        if retained and is_compact:
+            compact_summary_rendered = earlier_mode in {"compact", "grouped"} and bool(entry.compact_summary.strip())
+
+        compact_bullets_rendered_count = 0
+        if retained and is_compact:
+            if earlier_mode == "compact" and not entry.compact_summary.strip():
+                compact_bullets_rendered_count = min(2, len(entry.bullets))
+            elif earlier_mode == "grouped" and not entry.compact_summary.strip():
+                compact_bullets_rendered_count = 1 if entry.bullets else 0
+
+        detailed_bullets_limit: int | None = None
+        if retained and is_detailed:
+            detailed_idx = detailed_index_by_entry_id[id(entry)]
+            if experience_mode == "detailed":
+                if detailed_idx > 0 and bullet_cap is not None:
+                    detailed_bullets_limit = bullet_cap
+            elif experience_mode == "medium":
+                medium_cap = 2
+                if detailed_idx > 0 and bullet_cap is not None:
+                    medium_cap = min(medium_cap, bullet_cap)
+                detailed_bullets_limit = medium_cap
+            else:
+                detailed_bullets_limit = 0
+
+        def _reason_for_hidden_experience_item(*, bullet_idx: int | None = None, is_compact_summary: bool = False) -> str:
+            if not retained:
+                return "role_collapsed"
+            if is_detailed:
+                if detailed_bullets_limit is None:
+                    return "unknown"
+                if detailed_bullets_limit == 0:
+                    return "role_collapsed"
+                if bullet_idx is not None and bullet_idx >= detailed_bullets_limit:
+                    return "bullet_trimmed"
+                return "unknown"
+            if is_compact:
+                if earlier_mode == "grouped":
+                    if is_compact_summary or (bullet_idx is not None and bullet_idx == 0 and not entry.compact_summary.strip()):
+                        return "unknown"
+                    return "earlier_grouped"
+                if earlier_mode == "earlier_one_line":
+                    return "role_collapsed"
+                if earlier_mode == "compact":
+                    if is_compact_summary and entry.compact_summary.strip():
+                        return "unknown"
+                    if bullet_idx is not None and bullet_idx < compact_bullets_rendered_count and not entry.compact_summary.strip():
+                        return "unknown"
+                    if bullet_idx is not None and bullet_idx >= compact_bullets_rendered_count:
+                        return "bullet_trimmed"
+                    return "unknown"
+            return "unknown"
+
         if entry.compact_summary.strip():
             _add_item(
                 source_type="experience_compact_summary",
                 source_label=label,
                 source_path=f"experience[{idx}].compact_summary",
                 text=entry.compact_summary,
-                retained=retained,
+                retained=compact_summary_rendered,
+                reason_not_rendered=None if compact_summary_rendered else _reason_for_hidden_experience_item(is_compact_summary=True),
             )
         for bidx, bullet in enumerate(entry.bullets):
+            bullet_retained = False
+            if retained and is_detailed:
+                if detailed_bullets_limit is None:
+                    bullet_retained = True
+                else:
+                    bullet_retained = bidx < detailed_bullets_limit
+            elif retained and is_compact:
+                bullet_retained = bidx < compact_bullets_rendered_count
             _add_item(
                 source_type="experience_bullet",
                 source_label=label,
                 source_path=f"experience[{idx}].bullets[{bidx}]",
                 text=bullet,
-                retained=retained,
+                retained=bullet_retained,
+                reason_not_rendered=None if bullet_retained else _reason_for_hidden_experience_item(bullet_idx=bidx),
             )
 
     for idx, entry in enumerate(model.projects):
         label = entry.title or f"Project {idx + 1}"
         retained = id(entry) in rendered_project_ids
+        if projects_mode == "hidden":
+            reason = "hidden_project"
+        elif projects_mode == "selected" and not retained:
+            reason = "not_selected_by_bullet_cap"
+        elif projects_mode == "compact":
+            reason = "bullet_trimmed"
+        else:
+            reason = "unknown"
         if entry.compact_summary.strip():
             _add_item(
                 source_type="project_compact_summary",
                 source_label=label,
                 source_path=f"projects[{idx}].compact_summary",
                 text=entry.compact_summary,
-                retained=retained,
+                retained=retained and projects_mode == "compact",
+                reason_not_rendered=None if (retained and projects_mode == "compact") else reason,
             )
         for bidx, bullet in enumerate(entry.bullets):
             _add_item(
@@ -671,7 +777,8 @@ def extract_evidence_items(model: ResumeRenderModel, prepared: object) -> list[E
                 source_label=label,
                 source_path=f"projects[{idx}].bullets[{bidx}]",
                 text=bullet,
-                retained=retained,
+                retained=retained and projects_mode in {"full", "selected"},
+                reason_not_rendered=None if (retained and projects_mode in {"full", "selected"}) else reason,
             )
 
     if model.summary.strip():
@@ -681,6 +788,7 @@ def extract_evidence_items(model: ResumeRenderModel, prepared: object) -> list[E
             source_path="summary",
             text=model.summary,
             retained=str(getattr(prepared, "summary_mode", "full")) != "hidden",
+            reason_not_rendered="unknown",
         )
 
     return items
@@ -789,6 +897,20 @@ def _build_claim_coverage(
     return coverage
 
 
+def build_claim_coverage_for_claims(
+    *,
+    claims: list[str],
+    model: ResumeRenderModel,
+    prepared: object,
+    similarity_provider: SimilarityProvider | None = None,
+) -> list[ClaimCoverage]:
+    """Build claim coverage details for an explicit claim list."""
+
+    similarity = similarity_provider or TokenOverlapSimilarityProvider()
+    evidence_items = extract_evidence_items(model, prepared)
+    return _build_claim_coverage(claims, evidence_items, similarity)
+
+
 def build_evidence_mapping_report(
     *,
     job_description: str,
@@ -801,13 +923,7 @@ def build_evidence_mapping_report(
     evidence_items = extract_evidence_items(model, prepared)
     matches = _match_themes(themes, evidence_items, similarity)
 
-    skills_mode = str(getattr(prepared, "skills_mode", "full"))
-    selected_skills_max_lines = int(getattr(prepared, "selected_skills_max_lines", 2) or 2)
-    visible_claims = _flatten_skill_tokens(
-        model,
-        skills_mode=skills_mode,
-        selected_skills_max_lines=selected_skills_max_lines,
-    )
+    visible_claims = extract_visible_skill_claims(model, prepared)
     claim_coverage = _build_claim_coverage(visible_claims, evidence_items, similarity)
 
     unsupported = list(dict.fromkeys(c.claim for c in claim_coverage if c.coverage_status == "unsupported"))
@@ -843,11 +959,38 @@ def build_evidence_mapping_report(
         )
     strong_unused.sort(key=lambda item: float(item.get("evidence_score", 0.0)), reverse=True)
 
+    evidence_available_but_not_rendered = [
+        {
+            "claim": c.claim,
+            "coverage_status": c.coverage_status,
+            "source_primary_evidence_count": c.primary_supporting_evidence_count,
+            "retained_primary_evidence_count": c.retained_primary_supporting_evidence_count,
+            "candidate_evidence_items": [
+                {
+                    "source_type": item.source_type,
+                    "source_label": item.source_label,
+                    "source_path": item.source_path,
+                    "text": item.text[:180],
+                    "evidence_score": item.evidence_score,
+                    "reason_not_rendered": item.reason_not_rendered or "unknown",
+                }
+                for item in evidence_items
+                if _is_primary_evidence(item)
+                and c.claim in item.matched_visible_claims
+                and not item.is_retained_in_rendered_resume
+            ],
+            "recommendation": "preserve_supporting_evidence_in_future_planner",
+        }
+        for c in claim_coverage
+        if c.primary_supporting_evidence_count > 0 and c.retained_primary_supporting_evidence_count == 0
+    ]
+
     return {
         "job_themes": [theme.__dict__ for theme in themes],
         "theme_evidence_matches": [match.__dict__ for match in matches],
         "claim_coverage": [claim.__dict__ for claim in claim_coverage],
         "unsupported_visible_claims": unsupported,
         "weak_visible_claims": weak,
+        "evidence_available_but_not_rendered": evidence_available_but_not_rendered,
         "strong_unused_evidence": strong_unused[:10],
     }

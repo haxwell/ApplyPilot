@@ -891,8 +891,35 @@ def _render_experience(view: ProfessionalCompactTemplateView, mode: ExperienceMo
 
 
 def _render_projects(view: ProfessionalCompactTemplateView, mode: ProjectsMode) -> str:
+    forced_indices_raw = view.model.render_options.get("preserve_selected_project_indices")
+    forced_indices: list[int] = []
+    if isinstance(forced_indices_raw, list):
+        for raw in forced_indices_raw:
+            try:
+                parsed = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if parsed >= 0:
+                forced_indices.append(parsed)
     if mode == "hidden":
-        return ""
+        if not forced_indices:
+            return ""
+        entries = [view.model.projects[idx] for idx in forced_indices if 0 <= idx < len(view.model.projects)]
+        if not entries:
+            return ""
+        items = ""
+        for entry in entries[:1]:
+            context_line, date_line = _project_context_and_dates(entry)
+            title_row = (
+                '<div class="project-title-row">'
+                f'<h3 class="entry-title">{entry.title}</h3>'
+                f'<span class="project-dates">{date_line}</span>'
+                "</div>"
+            )
+            summary = entry.compact_summary.strip() or context_line
+            summary_html = f'<p class="project-summary">{summary}</p>' if summary else ""
+            items += f'<article class="entry">{title_row}{summary_html}</article>'
+        return f'<section class="section"><h2 class="section-title">Projects</h2>{items}</section>'
     entries = list(view.projects_to_render)
     if mode == "selected":
         entries = entries[:2]
