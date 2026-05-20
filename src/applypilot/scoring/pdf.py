@@ -21,6 +21,10 @@ from applypilot.resume.evidence import (
     extract_all_skill_claims,
     extract_visible_skill_claims,
 )
+from applypilot.scoring.evidence_aware_pdf_planner import (
+    EvidenceAwarePdfPlanner,
+    PdfPlanningContext,
+)
 from applypilot.scoring.pdf_render_model import (
     ResumeEntry,
     ResumeRenderModel,
@@ -1766,23 +1770,25 @@ def render_model_to_pdf_with_planning(
     )
     planning["unsupported_visible_claims_before_preservation"] = list(planning.get("unsupported_visible_claims", []))
     planning["weak_visible_claims_before_preservation"] = list(planning.get("weak_visible_claims", []))
-    model, html, prepared, planning = _apply_evidence_preservation(
+    planner = EvidenceAwarePdfPlanner(
+        apply_evidence_preservation=_apply_evidence_preservation,
+        apply_evidence_aware_skill_replacements=_apply_evidence_aware_skill_replacements,
+    )
+    planning_result = planner.plan(
         model=model,
         html=html,
         prepared=prepared,
         planning=planning,
-        template_name=template_name,
-        job_description=job_description,
+        context=PdfPlanningContext(
+            template_name=template_name,
+            job_description=job_description,
+            skills_selection=skills_selection,
+        ),
     )
-    model, html, prepared, planning = _apply_evidence_aware_skill_replacements(
-        model=model,
-        html=html,
-        prepared=prepared,
-        planning=planning,
-        template_name=template_name,
-        job_description=job_description,
-        skills_selection=skills_selection,
-    )
+    model = planning_result.model
+    html = planning_result.html
+    prepared = planning_result.prepared
+    planning = planning_result.planning
 
     if html_only:
         out.write_text(html, encoding="utf-8")
