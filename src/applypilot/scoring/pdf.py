@@ -25,17 +25,21 @@ from applypilot.scoring.evidence_aware_pdf_planner import (
     EvidenceAwarePdfPlanner,
     PdfPlanningContext,
 )
-from applypilot.scoring.skill_repair_planner import SkillRepairPlanner
-from applypilot.scoring.pdf_render_model import (
-    ResumeEntry,
-    ResumeRenderModel,
-    SkillSection,
-)
 from applypilot.scoring.pdf_planning_types import (
     PlanningOperation,
     ReplacementCandidate,
     SkillDisposition,
 )
+from applypilot.scoring.pdf_render_model import (
+    ResumeEntry,
+    ResumeRenderModel,
+    SkillSection,
+)
+from applypilot.scoring.render_planning_service import (
+    RenderPlanningContext,
+    RenderPlanningService,
+)
+from applypilot.scoring.skill_repair_planner import SkillRepairPlanner
 from applypilot.scoring.pdf_templates.registry import get_template
 
 log = logging.getLogger(__name__)
@@ -1762,13 +1766,21 @@ def render_model_to_pdf_with_planning(
     """Render a resume model and return template planning telemetry."""
 
     out = Path(output_path)
-    html, prepared = _build_html_and_prepared_for_resume(model, template_name=template_name)
-    planning = _build_planning_with_evidence(
-        model=model,
-        prepared=prepared,
-        template_name=template_name,
-        job_description=job_description,
+    render_service = RenderPlanningService(
+        build_html_and_prepared=_build_html_and_prepared_for_resume,
+        build_planning_with_evidence=_build_planning_with_evidence,
+        measured_fit=_measured_fit,
     )
+    state = render_service.build_state(
+        model=model,
+        context=RenderPlanningContext(
+            template_name=template_name,
+            job_description=job_description,
+        ),
+    )
+    html = state.html
+    prepared = state.prepared
+    planning = state.planning
     planning["unsupported_visible_claims_before_preservation"] = list(planning.get("unsupported_visible_claims", []))
     planning["weak_visible_claims_before_preservation"] = list(planning.get("weak_visible_claims", []))
     planner = EvidenceAwarePdfPlanner(
