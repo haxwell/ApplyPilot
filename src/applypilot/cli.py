@@ -460,6 +460,11 @@ def apply(
 @app.command("tailor")
 def tailor_cmd(
     url: Optional[str] = typer.Option(None, "--url", help="Tailor resume for a specific job URL."),
+    output_name: Optional[str] = typer.Option(
+        None,
+        "--output-name",
+        help="Optional base filename for generated artifacts (single --url run only).",
+    ),
     min_score: int = typer.Option(7, "--min-score", help="Minimum fit score for tailoring."),
     limit: int = typer.Option(0, "--limit", "-l", help="Max jobs to process when --url is not provided."),
     force: bool = typer.Option(False, "--force", help="Regenerate even if a tailored resume already exists."),
@@ -485,6 +490,9 @@ def tailor_cmd(
             f"Choose from: {', '.join(valid_modes)}"
         )
         raise typer.Exit(code=1)
+    if output_name and not url:
+        console.print("[red]--output-name requires --url (single-job tailoring).[/red]")
+        raise typer.Exit(code=1)
 
     check_tier(2, "resume tailoring")
 
@@ -493,6 +501,7 @@ def tailor_cmd(
         limit=limit,
         validation_mode=validation,
         target_url=url,
+        output_name=output_name,
         force=force,
     )
     console.print(

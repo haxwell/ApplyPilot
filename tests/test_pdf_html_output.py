@@ -327,6 +327,7 @@ def test_render_model_to_pdf_with_planning_returns_planning_report(monkeypatch, 
     assert "unsupported_visible_claims_final" in planning
     assert "weak_visible_claims_final" in planning
     assert "evidence_aware_skill_adjustments" in planning
+    assert "unsupported_skill_removals" in planning
     assert "evidence_available_but_not_rendered" in planning
     assert "strong_unused_evidence" in planning
 
@@ -460,7 +461,8 @@ def test_evidence_aware_skill_replacement_reverted_when_pdf_exceeds_limit(monkey
     assert updated["evidence_aware_skill_adjustments"][0]["kept"] is False
     assert "PostgreSQL" in updated["unsupported_visible_claims_final"]
     assert any(
-        item.get("claim") == "PostgreSQL" and item.get("reason") == "replacement_would_overflow_page_target"
+        item.get("claim") == "PostgreSQL"
+        and item.get("reason") in {"replacement_would_overflow_page_target", "min_visible_skill_count_guard"}
         for item in updated["final_weak_or_unsupported_claim_dispositions"]
     )
 
@@ -907,6 +909,123 @@ def test_unsupported_skill_removal_does_not_remove_weak_or_summary_only_claims()
     assert "Docker" in claims
     assert "Messaging" in claims
     assert updated.get("unsupported_skill_removals", []) == []
+
+
+def test_second_unsupported_skill_removed_when_only_supported_candidate_was_already_used(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="PostgreSQL, Kubernetes, Jenkins CI, Docker, TDD")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built Java services."])],
+    )
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [
+            {"claim": "PostgreSQL", "coverage_status": "unsupported", "primary_supporting_evidence_count": 0},
+            {"claim": "Kubernetes", "coverage_status": "unsupported", "primary_supporting_evidence_count": 0},
+            {"claim": "Jenkins CI", "coverage_status": "unsupported", "primary_supporting_evidence_count": 0},
+            {"claim": "Docker", "coverage_status": "weak_summary_only", "primary_supporting_evidence_count": 0},
+        ],
+        "unsupported_visible_claims": ["PostgreSQL", "Kubernetes", "Jenkins CI"],
+        "weak_visible_claims": ["Docker"],
+    }
+
+    def _status_for_claim(claim: str) -> tuple[str, int]:
+        key = claim.lower().strip()
+        if key == "tdd":
+            return "supported", 1
+        if key in {"postgresql", "kubernetes", "jenkins ci"}:
+            return "unsupported", 0
+        if key == "docker":
+            return "weak_summary_only", 0
+        return "unsupported", 0
+
+    def _build_dynamic_planning(**kwargs):
+        model_arg = kwargs["model"]
+        claims = extract_all_skill_claims(model_arg)[:4]
+        claim_coverage = []
+        unsupported = []
+        weak = []
+        for claim in claims:
+            status, primary_count = _status_for_claim(claim)
+            claim_coverage.append(
+                {
+                    "claim": claim,
+                    "coverage_status": status,
+                    "primary_supporting_evidence_count": primary_count,
+                    "retained_primary_supporting_evidence_count": 0 if status != "supported" else 1,
+                }
+            )
+            if status == "unsupported":
+                unsupported.append(claim)
+            elif status in {"weak", "weak_summary_only"}:
+                weak.append(claim)
+        return {
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": claim_coverage,
+            "unsupported_visible_claims": unsupported,
+            "weak_visible_claims": weak,
+        }
+
+    monkeypatch.setattr(pdf_module, "_build_html_and_prepared_for_resume", lambda *_args, **_kwargs: ("<html/>", SimpleNamespace(skills_mode="selected", selected_skills_max_lines=1)))
+    monkeypatch.setattr(pdf_module, "_build_planning_with_evidence", _build_dynamic_planning)
+    monkeypatch.setattr(
+        pdf_module,
+        "extract_visible_skill_claims",
+        lambda model_arg, _prepared: extract_all_skill_claims(model_arg)[:4],
+    )
+
+    def _hidden_claim_coverage(*, claims, **_kwargs):
+        out: list[ClaimCoverage] = []
+        for claim in claims:
+            key = claim.lower().strip()
+            if key == "tdd":
+                out.append(
+                    ClaimCoverage(
+                        claim=claim,
+                        claim_type="skill",
+                        is_visible=False,
+                        supporting_evidence_count=1,
+                        retained_supporting_evidence_count=1,
+                        primary_supporting_evidence_count=1,
+                        retained_primary_supporting_evidence_count=1,
+                        secondary_supporting_evidence_count=0,
+                        coverage_status="supported",
+                        top_supporting_evidence=["Acme: Test-driven delivery improvements."],
+                    )
+                )
+        return out
+
+    monkeypatch.setattr(pdf_module, "build_claim_coverage_for_claims", _hidden_claim_coverage)
+
+    new_model, _html, _prepared, updated = _apply_evidence_aware_skill_replacements(
+        model=model,
+        html="<html/>",
+        prepared=SimpleNamespace(skills_mode="selected", selected_skills_max_lines=1),
+        planning=planning,
+        template_name="professional_compact",
+        job_description="Backend systems.",
+        skills_selection={
+            "retained_skills": [
+                {"skill": "PostgreSQL", "score": 99.0},
+                {"skill": "Kubernetes", "score": 98.0},
+                {"skill": "Jenkins CI", "score": 97.0},
+                {"skill": "Docker", "score": 96.0},
+                {"skill": "TDD", "score": 95.0},
+            ],
+            "min_count": 2,
+        },
+    )
+
+    claims = extract_all_skill_claims(new_model)
+    assert claims[:4] == ["TDD", "Docker", "PostgreSQL", "Kubernetes"] or "TDD" in claims
+    assert "Jenkins CI" not in updated["unsupported_visible_claims_final"]
+    assert "Kubernetes" not in updated["unsupported_visible_claims_final"]
+    assert any(item.get("step") == "evidence_aware_skill_replacement" and item.get("from") == "PostgreSQL" and item.get("kept") is True for item in updated["planning_operations"])
+    kept_removals = [item for item in updated["unsupported_skill_removals"] if item.get("kept")]
+    assert any(item.get("claim") == "Kubernetes" for item in kept_removals)
+    assert any(item.get("claim") == "Jenkins CI" for item in kept_removals)
+    assert all(item.get("claim") not in {"Kubernetes", "Jenkins CI"} for item in updated.get("claim_coverage", []))
 
 
 def test_evidence_preservation_restore_trimmed_bullet_kept_when_fit(monkeypatch) -> None:

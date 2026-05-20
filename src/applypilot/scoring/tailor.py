@@ -878,6 +878,16 @@ def _build_tailored_prefix(job: dict) -> str:
     return build_artifact_prefix(job)
 
 
+def _sanitize_output_name(value: str) -> str:
+    """Sanitize a user-provided output artifact base name."""
+
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value).strip())
+    normalized = normalized.strip("._-")
+    if not normalized:
+        raise ValueError("output_name must contain at least one alphanumeric character.")
+    return normalized
+
+
 def _count_skill_items_for_report(skills: object) -> int:
     if isinstance(skills, dict):
         total = 0
@@ -1816,6 +1826,7 @@ def run_tailoring(
     limit: int = 0,
     validation_mode: str = "normal",
     target_url: str | None = None,
+    output_name: str | None = None,
     force: bool = False,
 ) -> dict:
     """Generate tailored resumes for high-scoring jobs.
@@ -1914,6 +1925,10 @@ def run_tailoring(
         "pdf_template_input_preferences": pdf_template_input_preferences,
     }
 
+    custom_output_name = _sanitize_output_name(output_name) if output_name else None
+    if custom_output_name and len(jobs) != 1:
+        raise ValueError("output_name is supported only when tailoring exactly one job.")
+
     for job in jobs:
         completed += 1
         try:
@@ -1932,7 +1947,7 @@ def run_tailoring(
                 report["profile_education_rendered"] = profile_education_rendered
 
             # Build collision-resistant filename prefix
-            prefix = _build_tailored_prefix(job)
+            prefix = custom_output_name if custom_output_name else _build_tailored_prefix(job)
 
             # Save tailored resume text
             txt_path = TAILORED_DIR / f"{prefix}.txt"

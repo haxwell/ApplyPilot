@@ -84,6 +84,39 @@ def test_run_tailoring_requires_pdf_for_submission(monkeypatch, tmp_path: Path) 
     assert conn.committed
 
 
+def test_run_tailoring_uses_custom_output_name_for_single_job(monkeypatch, tmp_path: Path) -> None:
+    conn = _FakeConnection()
+    job = _make_job()
+
+    monkeypatch.setattr(tailor, "TAILORED_DIR", tmp_path)
+    monkeypatch.setattr(tailor, "load_profile", lambda: {"personal": {}})
+    monkeypatch.setattr(tailor, "load_resume_text", lambda: "base resume")
+    monkeypatch.setattr(tailor, "get_connection", lambda: conn)
+    monkeypatch.setattr(tailor, "get_jobs_by_stage", lambda **_: [job])
+    monkeypatch.setattr(tailor, "tailor_resume", lambda *args, **kwargs: ("tailored resume", _approved_report()))
+
+    def _fake_convert_to_pdf(text_path: Path, output_path: Path | None = None, **_kwargs) -> Path:
+        out = output_path or Path(text_path).with_suffix(".pdf")
+        out = Path(out)
+        out.write_bytes(b"%PDF-1.4 fake\n")
+        return out
+
+    monkeypatch.setattr("applypilot.scoring.pdf.convert_to_pdf", _fake_convert_to_pdf)
+
+    result = tailor.run_tailoring(
+        min_score=7,
+        limit=1,
+        validation_mode="normal",
+        output_name="OUTPUT",
+    )
+
+    assert result["approved"] == 1
+    assert (tmp_path / "OUTPUT.txt").exists()
+    assert (tmp_path / "OUTPUT.pdf").exists()
+    assert (tmp_path / "OUTPUT_REPORT.json").exists()
+    assert (tmp_path / "OUTPUT_JOB.txt").exists()
+
+
 def test_run_tailoring_does_not_persist_when_pdf_generation_fails(monkeypatch, tmp_path: Path) -> None:
     conn = _FakeConnection()
     job = _make_job()
