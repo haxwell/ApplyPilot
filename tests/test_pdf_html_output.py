@@ -1043,8 +1043,8 @@ def test_second_unsupported_skill_removed_when_only_supported_candidate_was_alre
     assert postgres_disp.get("reason") == "unsupported_no_replacement_no_source_evidence"
     assert "replacement" not in postgres_disp
     assert postgres_disp.get("action_history") == [
-        {"action": "replaced", "replacement": "TDD"},
-        {"action": "removed"},
+        {"action": "replaced", "replacement": "TDD", "reason": "replaced_by_supported_retained_skill"},
+        {"action": "removed", "reason": "unsupported_no_replacement_no_source_evidence"},
     ]
     assert "user_action" in postgres_disp
 
