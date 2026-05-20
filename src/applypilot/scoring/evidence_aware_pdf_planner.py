@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from applypilot.scoring.pdf_render_model import ResumeRenderModel
+from applypilot.scoring.render_planning_service import RenderPlanningService
 from applypilot.scoring.skill_repair_planner import (
     SkillRepairContext,
     SkillRepairPlanner,
@@ -15,6 +16,7 @@ class PdfPlanningContext:
     template_name: str
     job_description: str = ""
     skills_selection: dict[str, Any] | None = None
+    render_planning_service: RenderPlanningService | None = None
 
 
 @dataclass
@@ -67,6 +69,7 @@ class EvidenceAwarePdfPlanner:
                 template_name=context.template_name,
                 job_description=context.job_description,
                 skills_selection=context.skills_selection,
+                render_planning_service=context.render_planning_service,
             ),
         )
         return PdfPlanningResult(

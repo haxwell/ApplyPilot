@@ -940,6 +940,7 @@ def _apply_evidence_aware_skill_replacements(
     template_name: str,
     job_description: str,
     skills_selection: dict[str, Any] | None,
+    render_planning_service: RenderPlanningService | None = None,
 ) -> tuple[ResumeRenderModel, str, Any, dict[str, Any]]:
     """Prefer supported visible skills over weak/unsupported claims."""
 
@@ -1033,6 +1034,10 @@ def _apply_evidence_aware_skill_replacements(
             min_visible_skill_count = max(1, int(skills_selection.get("min_count", min_visible_skill_count)))
         except (TypeError, ValueError):
             min_visible_skill_count = 12
+    render_context = RenderPlanningContext(
+        template_name=template_name,
+        job_description=job_description,
+    )
 
     def _visible_skill_count_and_names(
         model_state: ResumeRenderModel,
@@ -1333,14 +1338,24 @@ def _apply_evidence_aware_skill_replacements(
                     )
                 )
                 continue
-            swapped_html, swapped_prepared = _build_html_and_prepared_for_resume(swapped_model, template_name=template_name)
-            swapped_planning = _build_planning_with_evidence(
-                model=swapped_model,
-                prepared=swapped_prepared,
-                template_name=template_name,
-                job_description=job_description,
-            )
-            measured_pages, fit = _measured_fit(swapped_planning)
+            if render_planning_service is not None:
+                swapped_state = render_planning_service.rebuild_state(
+                    model=swapped_model,
+                    context=render_context,
+                )
+                swapped_html = swapped_state.html
+                swapped_prepared = swapped_state.prepared
+                swapped_planning = swapped_state.planning
+                measured_pages, fit = render_planning_service.measured_fit(swapped_state)
+            else:
+                swapped_html, swapped_prepared = _build_html_and_prepared_for_resume(swapped_model, template_name=template_name)
+                swapped_planning = _build_planning_with_evidence(
+                    model=swapped_model,
+                    prepared=swapped_prepared,
+                    template_name=template_name,
+                    job_description=job_description,
+                )
+                measured_pages, fit = _measured_fit(swapped_planning)
             op = PlanningOperation(
                 step="evidence_aware_skill_replacement",
                 claim=claim,
@@ -1508,14 +1523,24 @@ def _apply_evidence_aware_skill_replacements(
                 planning_step_ops.append(op)
                 continue
 
-            next_html, next_prepared = _build_html_and_prepared_for_resume(next_model, template_name=template_name)
-            next_planning = _build_planning_with_evidence(
-                model=next_model,
-                prepared=next_prepared,
-                template_name=template_name,
-                job_description=job_description,
-            )
-            measured_pages, fit = _measured_fit(next_planning)
+            if render_planning_service is not None:
+                next_state = render_planning_service.rebuild_state(
+                    model=next_model,
+                    context=render_context,
+                )
+                next_html = next_state.html
+                next_prepared = next_state.prepared
+                next_planning = next_state.planning
+                measured_pages, fit = render_planning_service.measured_fit(next_state)
+            else:
+                next_html, next_prepared = _build_html_and_prepared_for_resume(next_model, template_name=template_name)
+                next_planning = _build_planning_with_evidence(
+                    model=next_model,
+                    prepared=next_prepared,
+                    template_name=template_name,
+                    job_description=job_description,
+                )
+                measured_pages, fit = _measured_fit(next_planning)
             visible_after, _visible_names_after = _visible_skill_count_and_names(
                 next_model, next_prepared, next_planning
             )
@@ -1787,6 +1812,7 @@ def render_model_to_pdf_with_planning(
         apply_evidence_preservation=_apply_evidence_preservation,
         skill_repair_planner=SkillRepairPlanner(
             apply_skill_repair=_apply_evidence_aware_skill_replacements,
+            render_planning_service=render_service,
         ),
     )
     planning_result = planner.plan(
@@ -1798,6 +1824,7 @@ def render_model_to_pdf_with_planning(
             template_name=template_name,
             job_description=job_description,
             skills_selection=skills_selection,
+            render_planning_service=render_service,
         ),
     )
     model = planning_result.model
