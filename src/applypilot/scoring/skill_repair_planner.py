@@ -12,6 +12,13 @@ from applypilot.scoring.render_planning_service import (
     RenderPlanningService,
 )
 
+GROUPED_SKILL_TAXONOMY: dict[str, set[str]] = {
+    "aws": {"ec2", "lambda", "route53", "s3", "cloudfront", "rds"},
+    "adobe": {"photoshop", "illustrator", "indesign"},
+    "adobe creative suite": {"photoshop", "illustrator", "indesign"},
+    "healthcare coding": {"icd-10", "cpt", "snomed"},
+}
+
 
 @dataclass
 class SkillRepairContext:
@@ -229,8 +236,70 @@ class SkillRepairPlanner:
         text = re.sub(r",\s*([.;:])", r"\1", text)
         text = re.sub(r"\b(\w+)\s*-\s*based\b", r"\1-based", text, flags=re.IGNORECASE)
         text = re.sub(r"\b(\w+)\s*-\s*driven\b", r"\1-driven", text, flags=re.IGNORECASE)
+        text = re.sub(r"\b(\w+)-\s*-\s*(based|driven)\b", r"\1-\2", text, flags=re.IGNORECASE)
         text = re.sub(r"\(\s*\)", "", text)
         return text.strip()
+
+    def _taxonomy_children(self, parent: str) -> set[str]:
+        return set(GROUPED_SKILL_TAXONOMY.get(self._normalize_skill_claim_key(parent), set()))
+
+    def _is_parent_child_subclaim(
+        self,
+        *,
+        parent: str,
+        subclaim: str,
+        relation: str,
+        evidence_span: str,
+        sibling_subclaims: list[str],
+    ) -> bool:
+        parent_key = self._normalize_skill_claim_key(parent)
+        sub_key = self._normalize_skill_claim_key(subclaim)
+        taxonomy_children = self._taxonomy_children(parent)
+        if taxonomy_children and sub_key not in taxonomy_children:
+            return False
+
+        explicit_relations = {"existing_parenthetical", "repeated_prefix", "pool_parenthetical"}
+        if relation in explicit_relations:
+            return True
+
+        if relation == "pool_prefix":
+            if not evidence_span.strip():
+                return False
+            if not re.search(rf"\b{re.escape(parent.strip())}\b", evidence_span, flags=re.IGNORECASE):
+                return False
+            if not re.search(rf"\b{re.escape(subclaim.strip())}\b", evidence_span, flags=re.IGNORECASE):
+                return False
+            if not ("," in evidence_span or re.search(r"\band\b", evidence_span, flags=re.IGNORECASE)):
+                return False
+            # Unknown parents stay conservative: require more than one sibling
+            # signal in the same inferred group when we cannot validate taxonomy.
+            if not taxonomy_children and len([item for item in sibling_subclaims if item.strip()]) < 2:
+                return False
+            return True
+
+        # Standalone in-span attachment is high risk for false grouping; allow
+        # only for taxonomy-backed parents.
+        if relation == "standalone_span":
+            return bool(taxonomy_children and sub_key in taxonomy_children)
+
+        return False
+
+    def _parent_subclaim_removed_unsupported(
+        self,
+        *,
+        parent: str,
+        subclaim: str,
+        removed_unsupported_claim_keys: set[str],
+    ) -> bool:
+        parent_child_key = self._normalize_skill_claim_key(f"{parent} {subclaim}")
+        if parent_child_key in removed_unsupported_claim_keys:
+            return True
+        # Safe contextual fallback: if exact subclaim key was removed and the
+        # parent has taxonomy children, block re-introducing that child.
+        sub_key = self._normalize_skill_claim_key(subclaim)
+        if sub_key in removed_unsupported_claim_keys and self._taxonomy_children(parent):
+            return True
+        return False
 
     def _split_skill_tokens_preserving_parentheses(self, text: str) -> list[str]:
         parts: list[str] = []
@@ -460,7 +529,11 @@ class SkillRepairPlanner:
                 for claim in subclaims:
                     parent_child_claim = f"{parent} {claim}"
                     parent_child_key = self._normalize_skill_claim_key(parent_child_claim)
-                    if parent_child_key in removed_unsupported_claim_keys:
+                    if self._parent_subclaim_removed_unsupported(
+                        parent=parent,
+                        subclaim=claim,
+                        removed_unsupported_claim_keys=removed_unsupported_claim_keys,
+                    ):
                         unsupported_subclaims.append(claim)
                         continue
                     item = by_key.get(parent_child_key)
@@ -579,17 +652,34 @@ class SkillRepairPlanner:
                     if not is_eligible and subclaim not in ineligible_subclaims:
                         ineligible_subclaims.append(subclaim)
                     parent_subclaim_claim = f"{parent} {subclaim}"
-                    parent_subclaim_key = self._normalize_skill_claim_key(parent_subclaim_claim)
                     parent_subclaim_supported = (
-                        parent_subclaim_key not in removed_unsupported_claim_keys
+                        not self._parent_subclaim_removed_unsupported(
+                            parent=parent,
+                            subclaim=subclaim,
+                            removed_unsupported_claim_keys=removed_unsupported_claim_keys,
+                        )
                         and _claim_supported(parent_subclaim_claim)
                     )
                     coherent_span = _subclaim_supported_in_parent_evidence_span(parent, subclaim)
                     listed_with_parent = _subclaim_listed_with_parent_in_evidence_span(parent, subclaim)
+                    span_sources = _claim_evidence_sources(parent_subclaim_claim) or _claim_evidence_sources(parent)
+                    evidence_span = " ".join(span_sources).lower()
+                    parent_child_semantic = self._is_parent_child_subclaim(
+                        parent=parent,
+                        subclaim=subclaim,
+                        relation=relation,
+                        evidence_span=evidence_span,
+                        sibling_subclaims=[entry[1] for entry in entries],
+                    )
                     if relation == "pool_prefix":
-                        relation_supported = parent_subclaim_supported and coherent_span and listed_with_parent
+                        relation_supported = (
+                            parent_subclaim_supported
+                            and coherent_span
+                            and listed_with_parent
+                            and parent_child_semantic
+                        )
                     else:
-                        relation_supported = parent_subclaim_supported
+                        relation_supported = parent_subclaim_supported and parent_child_semantic
                     if is_eligible and relation_supported:
                         if subclaim not in ordered_supported:
                             ordered_supported.append(subclaim)
@@ -625,12 +715,24 @@ class SkillRepairPlanner:
                         continue
                     seen_standalone_candidates.add(standalone_key)
                     parent_subclaim_claim = f"{parent} {standalone}"
-                    parent_subclaim_key = self._normalize_skill_claim_key(parent_subclaim_claim)
+                    span_sources = _claim_evidence_sources(parent_subclaim_claim) or _claim_evidence_sources(parent)
+                    evidence_span = " ".join(span_sources).lower()
                     if (
-                        parent_subclaim_key not in removed_unsupported_claim_keys
+                        not self._parent_subclaim_removed_unsupported(
+                            parent=parent,
+                            subclaim=standalone,
+                            removed_unsupported_claim_keys=removed_unsupported_claim_keys,
+                        )
                         and _claim_supported(parent_subclaim_claim)
                         and _subclaim_supported_in_parent_evidence_span(parent, standalone)
                         and _subclaim_listed_with_parent_in_evidence_span(parent, standalone)
+                        and self._is_parent_child_subclaim(
+                            parent=parent,
+                            subclaim=standalone,
+                            relation="standalone_span",
+                            evidence_span=evidence_span,
+                            sibling_subclaims=[entry[1] for entry in entries],
+                        )
                     ):
                         if pos is not None:
                             remove_positions.add(pos)
@@ -674,6 +776,9 @@ class SkillRepairPlanner:
                             "ineligible_subclaims_rejected": ineligible_subclaims,
                             "retained_subclaim_evidence_sources": retained_evidence_sources,
                             "family_cap_group_recovery": any(entry[0] >= len(tokens) for entry in entries),
+                            "grouping_inference_sources": sorted(
+                                dict.fromkeys([entry[3] for entry in entries])
+                            ),
                             "reason": "unsupported_compound_subclaims_removed",
                         }
                     )
@@ -726,26 +831,65 @@ class SkillRepairPlanner:
             removed_unsupported_claim_keys=removed_unsupported_claim_keys,
         )
         if not repairs:
-            return model, html, prepared, planning, [], [], []
-
-        render_service = context.render_planning_service or self._render_planning_service
-        render_context = RenderPlanningContext(
-            template_name=context.template_name,
-            job_description=context.job_description,
-        )
-        if render_service is not None:
-            state = render_service.rebuild_state(model=next_model, context=render_context)
-            model, html, prepared, planning = state.model, state.html, state.prepared, state.planning
+            next_model = model
+            repairs = []
+            removed_subclaims = []
+            unresolved = []
+            render_service = context.render_planning_service or self._render_planning_service
+            if render_service is not None:
+                state = render_service.rebuild_state(
+                    model=next_model,
+                    context=RenderPlanningContext(
+                        template_name=context.template_name,
+                        job_description=context.job_description,
+                    ),
+                )
+                model, html, prepared, planning = state.model, state.html, state.prepared, state.planning
+            else:
+                model, html, prepared, planning = next_model, html, prepared, planning
         else:
-            next_html, next_prepared = build_html_and_prepared_fn(next_model, template_name=context.template_name)
-            next_planning = build_planning_with_evidence_fn(
-                model=next_model,
-                prepared=next_prepared,
+            render_service = context.render_planning_service or self._render_planning_service
+            render_context = RenderPlanningContext(
                 template_name=context.template_name,
                 job_description=context.job_description,
             )
-            measured_fit_fn(next_planning)
-            model, html, prepared, planning = next_model, next_html, next_prepared, next_planning
+            if render_service is not None:
+                state = render_service.rebuild_state(model=next_model, context=render_context)
+                model, html, prepared, planning = state.model, state.html, state.prepared, state.planning
+            else:
+                next_html, next_prepared = build_html_and_prepared_fn(next_model, template_name=context.template_name)
+                next_planning = build_planning_with_evidence_fn(
+                    model=next_model,
+                    prepared=next_prepared,
+                    template_name=context.template_name,
+                    job_description=context.job_description,
+                )
+                measured_fit_fn(next_planning)
+                model, html, prepared, planning = next_model, next_html, next_prepared, next_planning
+
+        (
+            model,
+            html,
+            prepared,
+            planning,
+            sanitizer_repairs,
+            sanitizer_removed_subclaims,
+            sanitizer_unresolved,
+        ) = self._sanitize_final_grouped_claims(
+            model=model,
+            html=html,
+            prepared=prepared,
+            planning=planning,
+            context=context,
+            removed_unsupported_claim_keys=removed_unsupported_claim_keys,
+            build_claim_coverage_for_claims_fn=build_claim_coverage_for_claims_fn,
+            build_html_and_prepared_fn=build_html_and_prepared_fn,
+            build_planning_with_evidence_fn=build_planning_with_evidence_fn,
+            measured_fit_fn=measured_fit_fn,
+        )
+        repairs.extend(sanitizer_repairs)
+        removed_subclaims.extend(sanitizer_removed_subclaims)
+        unresolved.extend(sanitizer_unresolved)
 
         # Re-check unresolved subclaims in final state for reporting.
         final_unresolved: list[str] = []
@@ -770,7 +914,20 @@ class SkillRepairPlanner:
                     item = by_key.get(self._normalize_skill_claim_key(f"{parent} {subclaim}"))
                     status = str(getattr(item, "coverage_status", ""))
                     retained_primary = int(getattr(item, "retained_primary_supporting_evidence_count", 0) or 0)
-                    if status != "supported" or retained_primary == 0:
+                    evidence_span = " ".join(list(getattr(item, "top_supporting_evidence", [])[:2]))
+                    allowed = self._is_parent_child_subclaim(
+                        parent=parent,
+                        subclaim=subclaim,
+                        relation="existing_parenthetical",
+                        evidence_span=evidence_span,
+                        sibling_subclaims=list(subclaims),
+                    )
+                    removed_block = self._parent_subclaim_removed_unsupported(
+                        parent=parent,
+                        subclaim=subclaim,
+                        removed_unsupported_claim_keys=removed_unsupported_claim_keys or set(),
+                    )
+                    if status != "supported" or retained_primary == 0 or not allowed or removed_block:
                         final_unresolved.append(f"{parent}: {subclaim}")
 
         return (
@@ -781,6 +938,177 @@ class SkillRepairPlanner:
             repairs,
             removed_subclaims,
             sorted(dict.fromkeys(final_unresolved)),
+        )
+
+    def _sanitize_final_grouped_claims(
+        self,
+        *,
+        model: ResumeRenderModel,
+        html: str,
+        prepared: Any,
+        planning: dict[str, Any],
+        context: SkillRepairContext,
+        removed_unsupported_claim_keys: set[str] | None,
+        build_claim_coverage_for_claims_fn: Callable[..., list[Any]],
+        build_html_and_prepared_fn: Callable[..., tuple[str, Any]],
+        build_planning_with_evidence_fn: Callable[..., dict[str, Any]],
+        measured_fit_fn: Callable[[dict[str, Any]], tuple[int | None, bool]],
+    ) -> tuple[ResumeRenderModel, str, Any, dict[str, Any], list[dict[str, Any]], list[str], list[str]]:
+        removed_unsupported_claim_keys = set(removed_unsupported_claim_keys or set())
+        repairs: list[dict[str, Any]] = []
+        removed_subclaims: list[str] = []
+        unresolved: list[str] = []
+        updated_skills = list(model.skills)
+        changed = False
+
+        for idx, section in enumerate(updated_skills):
+            tokens = self._split_skill_tokens_preserving_parentheses(str(section.value))
+            if not tokens:
+                continue
+            next_tokens = list(tokens)
+            for token_idx, token in enumerate(tokens):
+                parsed = self._parse_compound_skill_token(token)
+                if not parsed:
+                    continue
+                parent, subclaims = parsed
+                kept: list[str] = []
+                dropped: list[str] = []
+                evidence_sources: dict[str, list[str]] = {}
+                for subclaim in subclaims:
+                    parent_child_claim = f"{parent} {subclaim}"
+                    parent_child_key = self._normalize_skill_claim_key(parent_child_claim)
+                    coverage_items = build_claim_coverage_for_claims_fn(
+                        claims=[parent_child_claim],
+                        model=model,
+                        prepared=prepared,
+                    )
+                    item = next(
+                        (
+                            c
+                            for c in coverage_items
+                            if self._normalize_skill_claim_key(str(getattr(c, "claim", ""))) == parent_child_key
+                        ),
+                        None,
+                    )
+                    status = str(getattr(item, "coverage_status", "unsupported"))
+                    retained_primary = int(getattr(item, "retained_primary_supporting_evidence_count", 0) or 0)
+                    evidence_span = " ".join(list(getattr(item, "top_supporting_evidence", [])[:2]))
+                    allowed = self._is_parent_child_subclaim(
+                        parent=parent,
+                        subclaim=subclaim,
+                        relation="existing_parenthetical",
+                        evidence_span=evidence_span,
+                        sibling_subclaims=list(subclaims),
+                    )
+                    removed_block = self._parent_subclaim_removed_unsupported(
+                        parent=parent,
+                        subclaim=subclaim,
+                        removed_unsupported_claim_keys=removed_unsupported_claim_keys,
+                    )
+                    if status == "supported" and retained_primary > 0 and allowed and not removed_block:
+                        kept.append(subclaim)
+                        evidence_sources[subclaim] = list(getattr(item, "top_supporting_evidence", [])[:2])
+                    else:
+                        dropped.append(subclaim)
+                if not dropped:
+                    continue
+                rewritten: str
+                if len(kept) >= 2:
+                    rewritten = f"{parent} ({', '.join(kept)})"
+                elif len(kept) == 1:
+                    rewritten = f"{parent} {kept[0]}"
+                else:
+                    parent_cov = build_claim_coverage_for_claims_fn(
+                        claims=[parent],
+                        model=model,
+                        prepared=prepared,
+                    )
+                    parent_item = next(
+                        (
+                            c
+                            for c in parent_cov
+                            if self._normalize_skill_claim_key(str(getattr(c, "claim", "")))
+                            == self._normalize_skill_claim_key(parent)
+                        ),
+                        None,
+                    )
+                    parent_supported = bool(
+                        parent_item is not None
+                        and str(getattr(parent_item, "coverage_status", "")) == "supported"
+                        and int(getattr(parent_item, "retained_primary_supporting_evidence_count", 0) or 0) > 0
+                    )
+                    rewritten = parent if parent_supported else token
+                if rewritten.strip() != token.strip():
+                    next_tokens[token_idx] = rewritten
+                    changed = True
+                    repairs.append(
+                        {
+                            "step": "grouped_skill_sanitizer",
+                            "original_skill": token,
+                            "rewritten_skill": rewritten,
+                            "removed_subclaims": list(dropped),
+                            "kept_subclaims": list(kept),
+                            "retained_subclaim_evidence_sources": evidence_sources,
+                        }
+                    )
+                    removed_subclaims.extend(dropped)
+                    unresolved.extend(f"{parent}: {item}" for item in dropped)
+            if next_tokens != tokens:
+                updated_skills[idx] = type(section)(
+                    category=section.category,
+                    value=", ".join(next_tokens),
+                )
+
+        if not changed:
+            return model, html, prepared, planning, [], [], []
+
+        updated_model = ResumeRenderModel(
+            name=model.name,
+            title=model.title,
+            location=model.location,
+            contact=model.contact,
+            summary=model.summary,
+            skills=updated_skills,
+            experience=list(model.experience),
+            projects=list(model.projects),
+            education=model.education,
+            certifications=model.certifications,
+            render_options=dict(model.render_options),
+        )
+        render_service = context.render_planning_service or self._render_planning_service
+        if render_service is not None:
+            state = render_service.rebuild_state(
+                model=updated_model,
+                context=RenderPlanningContext(
+                    template_name=context.template_name,
+                    job_description=context.job_description,
+                ),
+            )
+            return (
+                state.model,
+                state.html,
+                state.prepared,
+                state.planning,
+                repairs,
+                sorted(dict.fromkeys(removed_subclaims)),
+                sorted(dict.fromkeys(unresolved)),
+            )
+        next_html, next_prepared = build_html_and_prepared_fn(updated_model, template_name=context.template_name)
+        next_planning = build_planning_with_evidence_fn(
+            model=updated_model,
+            prepared=next_prepared,
+            template_name=context.template_name,
+            job_description=context.job_description,
+        )
+        measured_fit_fn(next_planning)
+        return (
+            updated_model,
+            next_html,
+            next_prepared,
+            next_planning,
+            repairs,
+            sorted(dict.fromkeys(removed_subclaims)),
+            sorted(dict.fromkeys(unresolved)),
         )
 
     def apply_summary_claim_repairs(

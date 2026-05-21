@@ -1581,6 +1581,55 @@ def test_summary_rewrite_normalizes_hyphen_whitespace_artifacts(monkeypatch) -> 
     assert "cloud-based" in updated_model.summary
 
 
+def test_summary_rewrite_normalizes_double_hyphen_artifact_after_claim_removal(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        summary="Built Kubernetes- and Docker-based deployment systems at scale.",
+        skills=[SkillSection(category="Core", value="Kubernetes, Docker, Java")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built Java systems."])],
+    )
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [
+            {"claim": "Kubernetes", "coverage_status": "supported", "retained_primary_supporting_evidence_count": 1},
+            {"claim": "Docker", "coverage_status": "weak_summary_only", "primary_supporting_evidence_count": 0, "retained_primary_supporting_evidence_count": 0},
+            {"claim": "Java", "coverage_status": "supported", "retained_primary_supporting_evidence_count": 1},
+        ],
+        "unsupported_visible_claims": [],
+        "weak_visible_claims": ["Docker"],
+    }
+    monkeypatch.setattr(pdf_module, "build_claim_coverage_for_claims", lambda **_kwargs: [])
+    monkeypatch.setattr(pdf_module, "_build_html_and_prepared_for_resume", lambda *_args, **_kwargs: ("<html/>", SimpleNamespace()))
+    monkeypatch.setattr(
+        pdf_module,
+        "_build_planning_with_evidence",
+        lambda **_kwargs: {
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [
+                {"claim": "Kubernetes", "coverage_status": "supported", "retained_primary_supporting_evidence_count": 1},
+                {"claim": "Java", "coverage_status": "supported", "retained_primary_supporting_evidence_count": 1},
+            ],
+            "unsupported_visible_claims": [],
+            "weak_visible_claims": [],
+        },
+    )
+    updated_model, _html, _prepared, _updated = _apply_evidence_aware_skill_replacements(
+        model=model,
+        html="<html/>",
+        prepared=SimpleNamespace(),
+        planning=planning,
+        template_name="professional_compact",
+        job_description="Cloud platform role.",
+        skills_selection={"retained_skills": [{"skill": "Kubernetes", "score": 95.0}, {"skill": "Docker", "score": 90.0}], "min_count": 1},
+    )
+    summary = updated_model.summary
+    assert "Docker" not in summary
+    assert "Kubernetes- -based" not in summary
+    assert "Kubernetes-based" in summary
+    assert "  " not in summary
+
+
 def test_compound_skill_removes_unsupported_subclaims(monkeypatch) -> None:
     model = ResumeRenderModel(
         skills=[SkillSection(category="Core", value="AWS (EC2, S3, Lambda, Route53), Java")],

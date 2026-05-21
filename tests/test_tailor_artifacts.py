@@ -408,6 +408,92 @@ def test_run_tailoring_marks_needs_review_when_final_unsupported_claims_remain(
     assert report_data["unsupported_visible_claims_final"] == ["AWS S3"]
 
 
+def test_run_tailoring_flags_high_specificity_claim_provenance_risk(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    conn = _FakeConnection()
+    job = _make_job()
+    report = _approved_report()
+    report["tailored_json"] = {
+        "title": "Senior Engineer",
+        "summary": "Summary",
+        "skills": {"Core": "Kubernetes, Java"},
+        "experience": [{"header": "Engineer", "subtitle": "Example | 2020-2024", "bullets": ["Built APIs"]}],
+        "projects": [],
+        "education": "BS",
+    }
+
+    monkeypatch.setattr(tailor, "TAILORED_DIR", tmp_path)
+    monkeypatch.setattr(tailor, "load_profile", lambda: {"personal": {"full_name": "Alex Example"}})
+    monkeypatch.setattr(tailor, "load_resume_text", lambda: "base resume with Java services only")
+    monkeypatch.setattr(tailor, "get_connection", lambda: conn)
+    monkeypatch.setattr(tailor, "get_jobs_by_stage", lambda **_: [job])
+    monkeypatch.setattr(tailor, "tailor_resume", lambda *args, **kwargs: ("tailored resume", report))
+
+    def _fake_render_model_to_pdf_with_planning(
+        model,
+        output_path: Path,
+        template_name: str = "professional_compact",
+        html_only: bool = False,
+        **_kwargs,
+    ) -> tuple[Path, dict]:
+        del model, template_name, html_only
+        out = Path(output_path)
+        out.write_bytes(b"%PDF-1.4 fake\n")
+        return out, {
+            "template_used": "professional_compact",
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [
+                {
+                    "claim": "Kubernetes",
+                    "coverage_status": "supported",
+                    "retained_primary_supporting_evidence_count": 1,
+                    "supporting_evidence_match_reasons": [
+                        {
+                            "source_label": "Example Corp",
+                            "source_path": "experience[0].bullets[0]",
+                            "reason": "direct_phrase_match",
+                            "text": "Built automation with Kubernetes and GitHub Actions for releases.",
+                        }
+                    ],
+                },
+                {
+                    "claim": "Java",
+                    "coverage_status": "supported",
+                    "retained_primary_supporting_evidence_count": 1,
+                    "supporting_evidence_match_reasons": [
+                        {
+                            "source_label": "Example Corp",
+                            "source_path": "experience[0].bullets[1]",
+                            "reason": "direct_phrase_match",
+                            "text": "Built Java services.",
+                        }
+                    ],
+                },
+            ],
+            "unsupported_visible_claims_final": [],
+            "weak_visible_claims_final": [],
+        }
+
+    monkeypatch.setattr(
+        "applypilot.scoring.pdf.render_model_to_pdf_with_planning",
+        _fake_render_model_to_pdf_with_planning,
+    )
+
+    result = tailor.run_tailoring(min_score=7, limit=1, validation_mode="normal")
+    assert result["approved"] == 1
+
+    report_paths = list(tmp_path.glob("*_REPORT.json"))
+    assert len(report_paths) == 1
+    report_data = json.loads(report_paths[0].read_text(encoding="utf-8"))
+    assert report_data["status"] == "approved_with_warnings"
+    planning = report_data["pdf_render_planning"]
+    risks = planning.get("high_specificity_claim_provenance_risks", [])
+    assert any(item.get("claim") == "Kubernetes" for item in risks)
+
+
 def test_run_tailoring_scopes_banned_phrase_warning_to_tailored_json_only(
     monkeypatch,
     tmp_path: Path,

@@ -1091,6 +1091,87 @@ def _apply_final_render_quality_status(report: dict) -> None:
         report["compound_skill_claims_final_unresolved"] = compound_unresolved
 
 
+def _normalize_for_provenance_match(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]+", " ", str(text).lower())).strip()
+
+
+def _is_high_specificity_claim(claim: str) -> bool:
+    token_count = len([tok for tok in re.split(r"[\s/(),-]+", str(claim).strip()) if tok])
+    if token_count >= 2:
+        return True
+    return bool(re.search(r"[0-9]|ci|cd|sql|kafka|docker|kubernetes|jenkins|postgres|route53|lambda|ec2|s3", str(claim), flags=re.IGNORECASE))
+
+
+def _attach_claim_support_provenance(report: dict, *, source_resume_text: str) -> None:
+    if not isinstance(report, dict):
+        return
+    planning = report.get("pdf_render_planning", {})
+    if not isinstance(planning, dict):
+        return
+    coverage = planning.get("claim_coverage", [])
+    if not isinstance(coverage, list):
+        return
+    base_norm = _normalize_for_provenance_match(source_resume_text)
+    provenance_rows: list[dict[str, Any]] = []
+    provenance_risks: list[dict[str, Any]] = []
+    for item in coverage:
+        if not isinstance(item, dict):
+            continue
+        claim = str(item.get("claim", "")).strip()
+        if not claim:
+            continue
+        support_reasons = item.get("supporting_evidence_match_reasons", [])
+        if not isinstance(support_reasons, list):
+            support_reasons = []
+        support_samples = [str(entry.get("text", "")) for entry in support_reasons if isinstance(entry, dict)]
+        if not support_samples:
+            support_samples = [str(entry) for entry in item.get("top_supporting_evidence", [])[:3]]
+        source_matches = 0
+        non_source_matches = 0
+        for sample in support_samples:
+            snippet = sample.split(": ", 1)[-1].strip()
+            norm_snippet = _normalize_for_provenance_match(snippet)
+            if not norm_snippet:
+                continue
+            if norm_snippet in base_norm:
+                source_matches += 1
+            else:
+                non_source_matches += 1
+        row = {
+            "claim": claim,
+            "coverage_status": str(item.get("coverage_status", "")),
+            "retained_primary_supporting_evidence_count": int(item.get("retained_primary_supporting_evidence_count", 0) or 0),
+            "source_resume_support_count": source_matches,
+            "tailored_or_generated_support_count": non_source_matches,
+        }
+        provenance_rows.append(row)
+        if (
+            row["coverage_status"] == "supported"
+            and row["retained_primary_supporting_evidence_count"] > 0
+            and _is_high_specificity_claim(claim)
+            and source_matches == 0
+            and non_source_matches > 0
+        ):
+            provenance_risks.append(
+                {
+                    "claim": claim,
+                    "reason": "supported_only_by_tailored_or_generated_evidence_not_traced_to_source_resume",
+                    "tailored_or_generated_support_count": non_source_matches,
+                }
+            )
+    planning["claim_support_provenance"] = provenance_rows
+    planning["high_specificity_claim_provenance_risks"] = provenance_risks
+    if provenance_risks:
+        status = str(report.get("status", ""))
+        if status in {"approved", "approved_with_judge_warning"}:
+            report["status"] = "approved_with_warnings"
+        if report.get("status") == "approved_with_warnings":
+            report["quality_warning"] = (
+                "Some supported high-specificity claims are only backed by tailored/generated text "
+                "and could not be traced to source resume evidence."
+            )
+
+
 # ── Resume Assembly (profile-driven header) ──────────────────────────────
 
 def _normalize_company_text(value: str) -> str:
@@ -2165,6 +2246,7 @@ def run_tailoring(
             report["status"] = status
             _attach_skills_count_diagnostics(report)
             _attach_validator_warning_scope(report)
+            _attach_claim_support_provenance(report, source_resume_text=resume_text)
             _apply_final_render_quality_status(report)
             status = str(report.get("status", status))
             report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
