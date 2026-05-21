@@ -26,7 +26,6 @@ from applypilot.scoring.evidence_aware_pdf_planner import (
 )
 from applypilot.scoring.pdf_planning_types import (
     PlanningOperation,
-    ReplacementCandidate,
     SkillDisposition,
 )
 from applypilot.scoring.pdf_render_model import (
@@ -1012,97 +1011,6 @@ def _apply_evidence_aware_skill_replacements(
             names = [str(item.get("claim", "")).strip() for item in claim_items if str(item.get("claim", "")).strip()]
             return len(names), names
 
-    def _find_usable_supported_replacements_for_claim(
-        *,
-        claim: str,
-        claim_status: str,
-        model_state: ResumeRenderModel,
-        prepared_state: Any,
-        planning_state: dict[str, Any],
-        used_candidate_keys: set[str],
-    ) -> tuple[list[str], list[str]]:
-        claim_key = _normalize_skill_claim_key(claim)
-        claim_coverage_items_state = [item for item in planning_state.get("claim_coverage", []) if isinstance(item, dict)]
-        visible_claims_state = [str(item.get("claim", "")) for item in claim_coverage_items_state if str(item.get("claim", "")).strip()]
-        visible_set_state = {_normalize_skill_claim_key(value) for value in visible_claims_state if value.strip()}
-        all_claims_state = extract_all_skill_claims(model_state)
-        hidden_claims_state = [token for token in all_claims_state if _normalize_skill_claim_key(token) not in visible_set_state]
-        if not hidden_claims_state:
-            return [], []
-
-        hidden_coverage_state = build_claim_coverage_for_claims(
-            claims=hidden_claims_state,
-            model=model_state,
-            prepared=prepared_state,
-        )
-        hidden_lookup_state = {_normalize_skill_claim_key(item.claim): item for item in hidden_coverage_state}
-        source_score_state = score_map.get(claim_key)
-        ranked_hidden_state = sorted(
-            hidden_claims_state,
-            key=lambda token: (
-                score_map.get(_normalize_skill_claim_key(token), float("-inf")),
-                -all_claims_state.index(token),
-            ),
-            reverse=True,
-        )
-
-        overflow_pairs = {
-            (
-                _normalize_skill_claim_key(str(item.get("from", ""))),
-                _normalize_skill_claim_key(str(item.get("to", ""))),
-            )
-            for item in adjustments
-            if isinstance(item, dict)
-            and str(item.get("step", "")) == "evidence_aware_skill_replacement"
-            and not bool(item.get("kept", False))
-            and str(item.get("reason", "")) == "weak_or_unsupported_claim_replaced_by_supported_retained_skill"
-        }
-
-        candidates: list[ReplacementCandidate] = []
-        for token in ranked_hidden_state:
-            token_key = _normalize_skill_claim_key(token)
-            coverage = hidden_lookup_state.get(token_key)
-            candidate_score = score_map.get(token_key)
-            candidate = ReplacementCandidate(
-                original_claim=claim,
-                candidate=token,
-                coverage_status=coverage.coverage_status if coverage else "missing",
-                supported=bool(coverage is not None and coverage.coverage_status == "supported"),
-                metadata={"candidate_score": candidate_score},
-            )
-            if not candidate.supported:
-                candidate.rejection_reasons.append("rejected_not_supported")
-                candidates.append(candidate)
-                continue
-            if token_key in used_candidate_keys:
-                candidate.already_used = True
-                candidate.rejection_reasons.append("rejected_already_used")
-                candidates.append(candidate)
-                continue
-            if helpers.alias_conflict(
-                candidate=token,
-                visible_claims=visible_claims_state,
-                claim_being_replaced=claim,
-            ):
-                candidate.alias_conflict = True
-                candidate.rejection_reasons.append("rejected_alias_conflict")
-                candidates.append(candidate)
-                continue
-            if (claim_key, token_key) in overflow_pairs:
-                candidate.failed_page_fit = True
-                candidate.rejection_reasons.append("rejected_page_overflow")
-                candidates.append(candidate)
-                continue
-            if claim_status == "weak" and source_score_state is not None and candidate_score is not None:
-                if candidate_score + 6.0 < source_score_state:
-                    candidate.rejection_reasons.append("rejected_lower_relevance")
-                    candidates.append(candidate)
-                    continue
-            candidate.usable = True
-            candidates.append(candidate)
-        all_supported = [item.candidate for item in candidates if item.supported]
-        usable = [item.candidate for item in candidates if item.usable]
-        return all_supported, usable
     replacement_result = helpers.apply_replacements(
         model=current_model,
         html=current_html,
@@ -1161,7 +1069,10 @@ def _apply_evidence_aware_skill_replacements(
         replaced_claim_keys=replaced_claim_keys,
         planning_step_ops=planning_step_ops,
         unsupported_skill_removals=unsupported_skill_removals,
-        find_usable_supported_replacements_for_claim_fn=_find_usable_supported_replacements_for_claim,
+        score_map=score_map,
+        adjustments=adjustments,
+        build_claim_coverage_for_claims_fn=build_claim_coverage_for_claims,
+        extract_all_skill_claims_fn=extract_all_skill_claims,
         clone_model_without_skill_fn=_clone_model_without_skill,
         measured_fit_fn=_measured_fit,
         build_html_and_prepared_fn=_build_html_and_prepared_for_resume,

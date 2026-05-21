@@ -249,7 +249,10 @@ def test_remove_unsupported_claims_until_stable_removes_to_fixed_point() -> None
         replaced_claim_keys=set(),
         planning_step_ops=[],
         unsupported_skill_removals=[],
-        find_usable_supported_replacements_for_claim_fn=lambda **_kwargs: ([], []),
+        score_map={},
+        adjustments=[],
+        build_claim_coverage_for_claims_fn=lambda **_kwargs: [],
+        extract_all_skill_claims_fn=lambda _model: [],
         clone_model_without_skill_fn=lambda model, _claim: model,
         measured_fit_fn=lambda _planning: (2, True),
         build_html_and_prepared_fn=lambda *_args, **_kwargs: ("<html/>", object()),
@@ -321,3 +324,64 @@ def test_finalize_repair_report_reconciles_stale_replaced_and_preserves_fields()
     assert dispositions["PostgreSQL"]["reason"] == "replacement_would_overflow_page_target"
     assert dispositions["AWS S3"]["final_action"] == "removed"
     assert "replacement" not in dispositions["AWS S3"]
+
+
+def test_find_usable_supported_replacements_filters_candidates() -> None:
+    planner = SkillRepairPlanner(
+        apply_skill_repair=lambda **kwargs: (kwargs["model"], kwargs["html"], kwargs["prepared"], kwargs["planning"]),
+    )
+    model = ResumeRenderModel(skills=[SkillSection(category="Core", value="Jenkins CI, TDD, Kafka, Docker")])
+    planning = {"claim_coverage": [{"claim": "Jenkins CI", "coverage_status": "unsupported"}, {"claim": "Kafka", "coverage_status": "supported"}]}
+
+    def _coverage(**_kwargs):
+        return [
+            SimpleNamespace(claim="TDD", coverage_status="supported"),
+            SimpleNamespace(claim="Kafka", coverage_status="supported"),
+            SimpleNamespace(claim="Docker", coverage_status="unsupported"),
+        ]
+
+    all_supported, usable = planner.find_usable_supported_replacements_for_claim(
+        claim="Jenkins CI",
+        claim_status="unsupported",
+        model=model,
+        prepared=object(),
+        planning=planning,
+        used_candidate_keys={"tdd"},
+        score_map={"tdd": 95.0, "kafka": 90.0, "docker": 80.0},
+        adjustments=[],
+        build_claim_coverage_for_claims_fn=_coverage,
+        extract_all_skill_claims_fn=lambda _model: ["Jenkins CI", "TDD", "Kafka", "Docker"],
+    )
+    # TDD supported but already used, Docker unsupported, Kafka already visible.
+    assert all_supported == ["TDD"]
+    assert usable == []
+
+
+def test_find_usable_supported_replacements_rejects_overflow_and_weak_low_relevance() -> None:
+    planner = SkillRepairPlanner(
+        apply_skill_repair=lambda **kwargs: (kwargs["model"], kwargs["html"], kwargs["prepared"], kwargs["planning"]),
+    )
+    model = ResumeRenderModel(skills=[SkillSection(category="Core", value="Messaging, Candidate A, Candidate B")])
+    planning = {"claim_coverage": [{"claim": "Messaging", "coverage_status": "weak"}]}
+
+    def _coverage(**_kwargs):
+        return [
+            SimpleNamespace(claim="Candidate A", coverage_status="supported"),
+            SimpleNamespace(claim="Candidate B", coverage_status="supported"),
+        ]
+
+    all_supported, usable = planner.find_usable_supported_replacements_for_claim(
+        claim="Messaging",
+        claim_status="weak",
+        model=model,
+        prepared=object(),
+        planning=planning,
+        used_candidate_keys=set(),
+        score_map={"messaging": 100.0, "candidate a": 90.0, "candidate b": 80.0},
+        adjustments=[{"step": "evidence_aware_skill_replacement", "from": "Messaging", "to": "Candidate A", "kept": False, "reason": "weak_or_unsupported_claim_replaced_by_supported_retained_skill"}],
+        build_claim_coverage_for_claims_fn=_coverage,
+        extract_all_skill_claims_fn=lambda _model: ["Messaging", "Candidate A", "Candidate B"],
+    )
+    # Candidate A excluded by prior overflow pair; Candidate B excluded by weak lower relevance guard.
+    assert all_supported == ["Candidate A", "Candidate B"]
+    assert usable == []
