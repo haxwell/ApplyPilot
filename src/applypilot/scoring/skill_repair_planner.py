@@ -183,6 +183,162 @@ class SkillRepairPlanner:
             )
         return payload
 
+    def _claim_pattern(self, claim: str) -> re.Pattern[str]:
+        escaped = re.escape(str(claim).strip())
+        escaped = escaped.replace(r"\ ", r"\s+")
+        return re.compile(rf"\b{escaped}\b", flags=re.IGNORECASE)
+
+    def _summary_contains_claim(self, summary: str, claim: str) -> bool:
+        if not summary.strip() or not str(claim).strip():
+            return False
+        return bool(self._claim_pattern(claim).search(summary))
+
+    def _rewrite_summary_without_claim(self, summary: str, claim: str) -> str:
+        text = str(summary or "")
+        claim_escaped = re.escape(str(claim).strip())
+        if not text.strip() or not claim_escaped:
+            return text
+        # Prefer precise phrase rewrites before token-level cleanup.
+        text = re.sub(
+            rf"\bAWS\s+and\s+{claim_escaped}\s+environments?\b",
+            "AWS-backed environments",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(
+            rf"\b{claim_escaped}\s+and\s+AWS\s+environments?\b",
+            "AWS-backed environments",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(
+            rf"\b{claim_escaped}\s+environments?\b",
+            "deployment environments",
+            text,
+            flags=re.IGNORECASE,
+        )
+        # Remove unresolved claim from conjunctions/lists.
+        text = re.sub(rf"(,\s*)?and\s+{claim_escaped}\b", "", text, flags=re.IGNORECASE)
+        text = re.sub(rf"\b{claim_escaped}\s+and\s+", "", text, flags=re.IGNORECASE)
+        text = re.sub(rf"\b{claim_escaped}\b", "", text, flags=re.IGNORECASE)
+        # Cleanup punctuation/spacing artifacts from removals.
+        text = re.sub(r"\s+,", ",", text)
+        text = re.sub(r",\s*,+", ", ", text)
+        text = re.sub(r"\s{2,}", " ", text).strip()
+        text = re.sub(r"\s+([,.;:])", r"\1", text)
+        text = re.sub(r",\s*([.;:])", r"\1", text)
+        text = re.sub(r"\(\s*\)", "", text)
+        return text.strip()
+
+    def apply_summary_claim_repairs(
+        self,
+        *,
+        model: ResumeRenderModel,
+        html: str,
+        prepared: Any,
+        planning: dict[str, Any],
+        context: SkillRepairContext,
+        dispositions: list[SkillDisposition],
+        build_html_and_prepared_fn: Callable[..., tuple[str, Any]],
+        build_planning_with_evidence_fn: Callable[..., dict[str, Any]],
+        measured_fit_fn: Callable[[dict[str, Any]], tuple[int | None, bool]],
+    ) -> tuple[ResumeRenderModel, str, Any, dict[str, Any], list[dict[str, Any]], list[str], list[str]]:
+        summary = str(model.summary or "")
+        if not summary.strip():
+            return model, html, prepared, planning, [], [], []
+
+        final_lookup: dict[str, dict[str, Any]] = {}
+        for item in planning.get("claim_coverage", []):
+            if isinstance(item, dict):
+                key = self._normalize_skill_claim_key(str(item.get("claim", "")))
+                if key:
+                    final_lookup[key] = item
+
+        unresolved_claims: list[str] = []
+        seen_keys: set[str] = set()
+
+        for item in dispositions:
+            if not isinstance(item, SkillDisposition):
+                continue
+            if item.final_action != "removed":
+                continue
+            claim = str(item.claim).strip()
+            key = self._normalize_skill_claim_key(claim)
+            if not key or key in seen_keys:
+                continue
+            seen_keys.add(key)
+            unresolved_claims.append(claim)
+
+        for item in planning.get("claim_coverage", []):
+            if not isinstance(item, dict):
+                continue
+            claim = str(item.get("claim", "")).strip()
+            key = self._normalize_skill_claim_key(claim)
+            if not key or key in seen_keys:
+                continue
+            status = str(item.get("coverage_status", ""))
+            retained_primary = int(item.get("retained_primary_supporting_evidence_count", 0) or 0)
+            if status in {"unsupported", "weak_summary_only"} or (status == "weak" and retained_primary == 0):
+                seen_keys.add(key)
+                unresolved_claims.append(claim)
+
+        repairs: list[dict[str, Any]] = []
+        rewritten_claims: list[str] = []
+        updated_summary = summary
+        for claim in unresolved_claims:
+            if not self._summary_contains_claim(updated_summary, claim):
+                continue
+            rewritten = self._rewrite_summary_without_claim(updated_summary, claim)
+            if rewritten == updated_summary:
+                continue
+            repairs.append(
+                {
+                    "claim": claim,
+                    "action": "rewritten",
+                    "summary_before": updated_summary,
+                    "summary_after": rewritten,
+                    "reason": "summary_claim_unresolved_after_skill_repair",
+                }
+            )
+            rewritten_claims.append(claim)
+            updated_summary = rewritten
+
+        if updated_summary != summary:
+            next_model = ResumeRenderModel(
+                name=model.name,
+                title=model.title,
+                location=model.location,
+                contact=model.contact,
+                summary=updated_summary,
+                skills=list(model.skills),
+                experience=list(model.experience),
+                projects=list(model.projects),
+                education=model.education,
+                certifications=model.certifications,
+                render_options=dict(model.render_options),
+            )
+            render_service = context.render_planning_service or self._render_planning_service
+            render_context = RenderPlanningContext(
+                template_name=context.template_name,
+                job_description=context.job_description,
+            )
+            if render_service is not None:
+                state = render_service.rebuild_state(model=next_model, context=render_context)
+                model, html, prepared, planning = state.model, state.html, state.prepared, state.planning
+            else:
+                next_html, next_prepared = build_html_and_prepared_fn(next_model, template_name=context.template_name)
+                next_planning = build_planning_with_evidence_fn(
+                    model=next_model,
+                    prepared=next_prepared,
+                    template_name=context.template_name,
+                    job_description=context.job_description,
+                )
+                measured_fit_fn(next_planning)
+                model, html, prepared, planning = next_model, next_html, next_prepared, next_planning
+
+        unresolved_after = [claim for claim in unresolved_claims if self._summary_contains_claim(str(model.summary or ""), claim)]
+        return model, html, prepared, planning, repairs, rewritten_claims, unresolved_after
+
     def find_usable_supported_replacements_for_claim(
         self,
         *,
@@ -912,6 +1068,9 @@ class SkillRepairPlanner:
         dispositions: list[SkillDisposition],
         replaced_claim_keys: set[str],
         removed_claim_keys: set[str],
+        summary_claim_repairs: list[dict[str, Any]],
+        removed_or_rewritten_summary_claims: list[str],
+        summary_claims_final_unresolved: list[str],
     ) -> dict[str, Any]:
         current_planning = planning
         dispositions_by_key = {
@@ -1053,6 +1212,9 @@ class SkillRepairPlanner:
         current_planning["final_weak_or_unsupported_claim_dispositions"] = [item.to_report_dict() for item in dispositions]
         current_planning["unsupported_visible_claims_final"] = list(current_planning.get("unsupported_visible_claims", []))
         current_planning["weak_visible_claims_final"] = list(current_planning.get("weak_visible_claims", []))
+        current_planning["summary_claim_repairs"] = summary_claim_repairs
+        current_planning["removed_or_rewritten_summary_claims"] = list(dict.fromkeys(removed_or_rewritten_summary_claims))
+        current_planning["summary_claims_final_unresolved"] = list(dict.fromkeys(summary_claims_final_unresolved))
         current_planning["unsupported_visible_claims_without_source_evidence"] = [
             {"claim": item.get("claim"), "reason": "no_primary_source_evidence_found"}
             for item in current_planning.get("claim_coverage", [])
@@ -1177,6 +1339,30 @@ class SkillRepairPlanner:
             planning_step_ops = removal_result.planning_step_ops
             dispositions = removal_result.dispositions
             removed_claim_keys = removal_result.removed_claim_keys
+            (
+                current_model,
+                current_html,
+                current_prepared,
+                current_planning,
+                summary_claim_repairs,
+                removed_or_rewritten_summary_claims,
+                summary_claims_final_unresolved,
+            ) = self.apply_summary_claim_repairs(
+                model=current_model,
+                html=current_html,
+                prepared=current_prepared,
+                planning=current_planning,
+                context=SkillRepairContext(
+                    template_name=context.template_name,
+                    job_description=context.job_description,
+                    skills_selection=context.skills_selection,
+                    render_planning_service=context.render_planning_service or self._render_planning_service,
+                ),
+                dispositions=dispositions,
+                build_html_and_prepared_fn=deps.build_html_and_prepared_fn,
+                build_planning_with_evidence_fn=deps.build_planning_with_evidence_fn,
+                measured_fit_fn=deps.measured_fit_fn,
+            )
             current_planning = self.finalize_repair_report(
                 planning=current_planning,
                 planning_step_ops=planning_step_ops,
@@ -1192,6 +1378,9 @@ class SkillRepairPlanner:
                 dispositions=dispositions,
                 replaced_claim_keys=replaced_claim_keys,
                 removed_claim_keys=removed_claim_keys,
+                summary_claim_repairs=summary_claim_repairs,
+                removed_or_rewritten_summary_claims=removed_or_rewritten_summary_claims,
+                summary_claims_final_unresolved=summary_claims_final_unresolved,
             )
             model, html, prepared, planning = (
                 current_model,

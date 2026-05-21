@@ -1055,6 +1055,17 @@ def _apply_final_render_quality_status(report: dict) -> None:
     if weak_final and status == "approved":
         report["status"] = "approved_with_warnings"
         report["quality_warning"] = "Final rendered resume contains weak visible claims; review recommended."
+    summary_unresolved = planning.get("summary_claims_final_unresolved", [])
+    if isinstance(summary_unresolved, list):
+        summary_unresolved = [str(item).strip() for item in summary_unresolved if str(item).strip()]
+    else:
+        summary_unresolved = []
+    if summary_unresolved:
+        report["status"] = "needs_review"
+        report["quality_warning"] = (
+            "Final rendered resume summary contains unresolved unsupported technology claims."
+        )
+        report["summary_claims_final_unresolved"] = summary_unresolved
 
 
 # ── Resume Assembly (profile-driven header) ──────────────────────────────
