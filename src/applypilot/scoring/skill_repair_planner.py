@@ -51,6 +51,18 @@ class SkillReplacementPassResult:
     replaced_claim_keys: set[str] = field(default_factory=set)
 
 
+@dataclass
+class SkillUnsupportedRemovalResult:
+    model: ResumeRenderModel
+    html: str
+    prepared: Any
+    planning: dict[str, Any]
+    unsupported_skill_removals: list[dict[str, Any]] = field(default_factory=list)
+    planning_step_ops: list[dict[str, Any]] = field(default_factory=list)
+    dispositions: list[SkillDisposition] = field(default_factory=list)
+    removed_claim_keys: set[str] = field(default_factory=set)
+
+
 class SkillRepairPlanner:
     """Thin wrapper around the existing skill repair workflow."""
 
@@ -478,6 +490,235 @@ class SkillRepairPlanner:
             candidate_search_lookup=candidate_search_lookup,
             used_candidates=used_candidates,
             replaced_claim_keys=replaced_claim_keys,
+        )
+
+    def remove_unsupported_claims_until_stable(
+        self,
+        *,
+        model: ResumeRenderModel,
+        html: str,
+        prepared: Any,
+        planning: dict[str, Any],
+        context: SkillRepairContext,
+        min_visible_skill_count: int,
+        dispositions: list[SkillDisposition],
+        candidate_search_lookup: dict[str, dict[str, Any]],
+        used_candidates: set[str],
+        replaced_claim_keys: set[str],
+        planning_step_ops: list[dict[str, Any]],
+        unsupported_skill_removals: list[dict[str, Any]],
+        find_usable_supported_replacements_for_claim_fn: Callable[..., tuple[list[str], list[str]]],
+        clone_model_without_skill_fn: Callable[[ResumeRenderModel, str], ResumeRenderModel | None],
+        measured_fit_fn: Callable[[dict[str, Any]], tuple[int | None, bool]],
+        build_html_and_prepared_fn: Callable[..., tuple[str, Any]],
+        build_planning_with_evidence_fn: Callable[..., dict[str, Any]],
+    ) -> SkillUnsupportedRemovalResult:
+        current_model = model
+        current_html = html
+        current_prepared = prepared
+        current_planning = planning
+        render_service = context.render_planning_service or self._render_planning_service
+        render_context = RenderPlanningContext(
+            template_name=context.template_name,
+            job_description=context.job_description,
+        )
+        planning_step_ops = list(planning_step_ops)
+        unsupported_skill_removals = list(unsupported_skill_removals)
+        removed_claim_keys: set[str] = set()
+        dispositions_by_key = {
+            self._normalize_skill_claim_key(item.claim): item
+            for item in dispositions
+            if isinstance(item, SkillDisposition)
+        }
+
+        def _render_rebuild(next_model: ResumeRenderModel) -> tuple[str, Any, dict[str, Any], int | None, bool]:
+            if render_service is not None:
+                next_state = render_service.rebuild_state(
+                    model=next_model,
+                    context=render_context,
+                )
+                measured_pages, fit = render_service.measured_fit(next_state)
+                return next_state.html, next_state.prepared, next_state.planning, measured_pages, fit
+            next_html, next_prepared = build_html_and_prepared_fn(next_model, template_name=context.template_name)
+            next_planning = build_planning_with_evidence_fn(
+                model=next_model,
+                prepared=next_prepared,
+                template_name=context.template_name,
+                job_description=context.job_description,
+            )
+            measured_pages, fit = measured_fit_fn(next_planning)
+            return next_html, next_prepared, next_planning, measured_pages, fit
+
+        while True:
+            removal_made = False
+            removal_targets = [
+                str(claim).strip() for claim in current_planning.get("unsupported_visible_claims", []) if str(claim).strip()
+            ]
+            if not removal_targets:
+                break
+
+            for claim in removal_targets:
+                claim_key = self._normalize_skill_claim_key(claim)
+                claim_coverage_items = [item for item in current_planning.get("claim_coverage", []) if isinstance(item, dict)]
+                claim_coverage_lookup = {
+                    self._normalize_skill_claim_key(str(item.get("claim", ""))): item for item in claim_coverage_items
+                }
+                coverage_item = claim_coverage_lookup.get(claim_key, {})
+                if str(coverage_item.get("coverage_status", "")) != "unsupported":
+                    continue
+                if int(coverage_item.get("primary_supporting_evidence_count", 0) or 0) > 0:
+                    continue
+
+                supported_candidates_raw, usable_candidates = find_usable_supported_replacements_for_claim_fn(
+                    claim=claim,
+                    claim_status="unsupported",
+                    model_state=current_model,
+                    prepared_state=current_prepared,
+                    planning_state=current_planning,
+                    used_candidate_keys=used_candidates,
+                )
+                if usable_candidates:
+                    disp = dispositions_by_key.get(claim_key)
+                    if isinstance(disp, SkillDisposition):
+                        disp.metadata["replacement_candidates_available"] = max(
+                            int(disp.metadata.get("replacement_candidates_available", 0) or 0),
+                            len(supported_candidates_raw),
+                        )
+                        disp.metadata["supported_replacement_candidates_available"] = len(usable_candidates)
+                        disp.supported_replacement_candidates_available_raw = len(supported_candidates_raw)
+                        disp.usable_supported_replacement_candidates_available = len(usable_candidates)
+                        disp.metadata["remaining_supported_retained_skills_not_visible"] = list(usable_candidates)
+                    continue
+
+                visible_before, _ = self.visible_skill_count_and_names(
+                    model=current_model,
+                    prepared=current_prepared,
+                    planning=current_planning,
+                )
+                removal_record: dict[str, Any] = {
+                    "claim": claim,
+                    "coverage_status": "unsupported",
+                    "reason": "unsupported_visible_claim_no_supported_replacement_no_source_evidence",
+                    "visible_skill_count_before": visible_before,
+                    "min_visible_skill_count": min_visible_skill_count,
+                    "kept": False,
+                }
+                op = PlanningOperation(
+                    step="unsupported_skill_removal",
+                    claim=claim,
+                    reason="unsupported_visible_claim_no_supported_replacement_no_source_evidence",
+                    visible_skill_count_before=visible_before,
+                    metadata={"from": claim},
+                ).to_report_dict()
+
+                if visible_before - 1 < min_visible_skill_count:
+                    removal_record["visible_skill_count_after"] = visible_before
+                    removal_record["revert_reason"] = "visible_skill_count_below_minimum"
+                    op["kept"] = False
+                    op["fit"] = True
+                    op["measured_pages"] = current_planning.get("measured_pages_final")
+                    op["revert_reason"] = "visible_skill_count_below_minimum"
+                    unsupported_skill_removals.append(removal_record)
+                    planning_step_ops.append(op)
+                    disp = dispositions_by_key.get(claim_key)
+                    if isinstance(disp, SkillDisposition):
+                        disp.reason = "min_visible_skill_count_guard"
+                        disp.metadata["replacement_candidates_available"] = max(
+                            int(disp.metadata.get("replacement_candidates_available", 0) or 0),
+                            len(supported_candidates_raw),
+                        )
+                        disp.metadata["supported_replacement_candidates_available"] = len(usable_candidates)
+                        disp.supported_replacement_candidates_available_raw = len(supported_candidates_raw)
+                        disp.usable_supported_replacement_candidates_available = len(usable_candidates)
+                        disp.metadata["remaining_supported_retained_skills_not_visible"] = list(usable_candidates)
+                    continue
+
+                next_model = clone_model_without_skill_fn(current_model, claim)
+                if next_model is None:
+                    removal_record["visible_skill_count_after"] = visible_before
+                    removal_record["revert_reason"] = "unable_to_remove_claim"
+                    op["kept"] = False
+                    op["fit"] = True
+                    op["measured_pages"] = current_planning.get("measured_pages_final")
+                    op["revert_reason"] = "unable_to_remove_claim"
+                    unsupported_skill_removals.append(removal_record)
+                    planning_step_ops.append(op)
+                    continue
+
+                next_html, next_prepared, next_planning, measured_pages, fit = _render_rebuild(next_model)
+                visible_after, _ = self.visible_skill_count_and_names(
+                    model=next_model,
+                    prepared=next_prepared,
+                    planning=next_planning,
+                )
+                removal_record["visible_skill_count_after"] = visible_after
+                removal_record["measured_pages"] = measured_pages
+                removal_record["fit"] = fit
+                op["measured_pages"] = measured_pages
+                op["fit"] = fit
+
+                if fit and visible_after >= min_visible_skill_count:
+                    removal_record["kept"] = True
+                    op["kept"] = True
+                    current_model = next_model
+                    current_html = next_html
+                    current_prepared = next_prepared
+                    current_planning = next_planning
+                    removed_claim_keys.add(claim_key)
+                    disp = dispositions_by_key.get(claim_key)
+                    if isinstance(disp, SkillDisposition):
+                        disp.mark_removed("unsupported_no_replacement_no_source_evidence")
+                        disp.metadata["replacement_candidates_available"] = max(
+                            int(disp.metadata.get("replacement_candidates_available", 0) or 0),
+                            len(supported_candidates_raw),
+                        )
+                        disp.metadata["supported_replacement_candidates_available"] = len(usable_candidates)
+                        disp.supported_replacement_candidates_available_raw = len(supported_candidates_raw)
+                        disp.usable_supported_replacement_candidates_available = len(usable_candidates)
+                        disp.metadata["remaining_supported_retained_skills_not_visible"] = list(usable_candidates)
+                    else:
+                        new_disp = self.build_disposition(
+                            claim=claim,
+                            coverage_status="unsupported",
+                            final_action="removed",
+                            reason="unsupported_no_replacement_no_source_evidence",
+                            replacement_search_performed=True,
+                            replacement_candidates_available=len(supported_candidates_raw),
+                            supported_replacement_candidates_available=len(usable_candidates),
+                            supported_replacement_candidates_available_raw=len(supported_candidates_raw),
+                            usable_supported_replacement_candidates_available=len(usable_candidates),
+                            rejection_summary=["no_supported_retained_replacement_available"],
+                            remaining_supported_retained_skills_not_visible=list(usable_candidates),
+                        )
+                        new_disp.mark_removed("unsupported_no_replacement_no_source_evidence")
+                        dispositions.append(new_disp)
+                        dispositions_by_key[claim_key] = new_disp
+                    unsupported_skill_removals.append(removal_record)
+                    planning_step_ops.append(op)
+                    removal_made = True
+                    break
+                else:
+                    op["kept"] = False
+                    removal_record["kept"] = False
+                    removal_record["revert_reason"] = (
+                        "visible_skill_count_below_minimum" if visible_after < min_visible_skill_count else "page_fit_failed"
+                    )
+                    op["revert_reason"] = removal_record["revert_reason"]
+                    unsupported_skill_removals.append(removal_record)
+                    planning_step_ops.append(op)
+
+            if not removal_made:
+                break
+
+        return SkillUnsupportedRemovalResult(
+            model=current_model,
+            html=current_html,
+            prepared=current_prepared,
+            planning=current_planning,
+            unsupported_skill_removals=unsupported_skill_removals,
+            planning_step_ops=planning_step_ops,
+            dispositions=dispositions,
+            removed_claim_keys=removed_claim_keys,
         )
 
     def repair(

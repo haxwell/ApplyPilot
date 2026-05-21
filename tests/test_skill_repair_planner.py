@@ -190,3 +190,76 @@ def test_apply_replacements_replaces_unsupported_claim() -> None:
 
     assert any(item.get("claim") == "PostgreSQL" and item.get("final_action") == "replaced" for item in [d.to_report_dict() for d in result.dispositions])
     assert result.adjustments and result.adjustments[0]["step"] == "evidence_aware_skill_replacement"
+
+
+def test_remove_unsupported_claims_until_stable_removes_to_fixed_point() -> None:
+    planner = SkillRepairPlanner(
+        apply_skill_repair=lambda **kwargs: (kwargs["model"], kwargs["html"], kwargs["prepared"], kwargs["planning"]),
+    )
+    d1 = planner.build_disposition(
+        claim="PostgreSQL",
+        coverage_status="unsupported",
+        final_action="replaced",
+        reason="replaced_by_supported_retained_skill",
+        replacement="CI/CD",
+    )
+    d2 = planner.build_disposition(
+        claim="AWS S3",
+        coverage_status="unsupported",
+        final_action="kept",
+        reason="no_supported_retained_replacement_available",
+    )
+    planning_seq = [
+        {
+            "unsupported_visible_claims": ["AWS S3"],
+            "claim_coverage": [{"claim": "AWS S3", "coverage_status": "unsupported", "primary_supporting_evidence_count": 0}],
+            "measured_pages_final": 2,
+            "allowed_physical_pages": 2,
+        },
+        {
+            "unsupported_visible_claims": ["PostgreSQL"],
+            "claim_coverage": [{"claim": "PostgreSQL", "coverage_status": "unsupported", "primary_supporting_evidence_count": 0}],
+            "measured_pages_final": 2,
+            "allowed_physical_pages": 2,
+        },
+        {
+            "unsupported_visible_claims": [],
+            "claim_coverage": [],
+            "measured_pages_final": 2,
+            "allowed_physical_pages": 2,
+        },
+    ]
+    idx = {"n": 0}
+
+    def _build_planning(**_kwargs):
+        i = idx["n"]
+        idx["n"] += 1
+        return planning_seq[min(i, len(planning_seq) - 1)]
+
+    result = planner.remove_unsupported_claims_until_stable(
+        model=ResumeRenderModel(skills=[SkillSection(category="Core", value="A")]),
+        html="<html/>",
+        prepared=object(),
+        planning=planning_seq[0],
+        context=SkillRepairContext(template_name="professional_compact"),
+        min_visible_skill_count=0,
+        dispositions=[d1, d2],
+        candidate_search_lookup={},
+        used_candidates=set(),
+        replaced_claim_keys=set(),
+        planning_step_ops=[],
+        unsupported_skill_removals=[],
+        find_usable_supported_replacements_for_claim_fn=lambda **_kwargs: ([], []),
+        clone_model_without_skill_fn=lambda model, _claim: model,
+        measured_fit_fn=lambda _planning: (2, True),
+        build_html_and_prepared_fn=lambda *_args, **_kwargs: ("<html/>", object()),
+        build_planning_with_evidence_fn=_build_planning,
+    )
+
+    claims = [item["claim"] for item in result.unsupported_skill_removals if item.get("kept")]
+    assert "AWS S3" in claims
+    assert "PostgreSQL" in claims
+    disp_lookup = {d.claim: d for d in result.dispositions}
+    post_payload = disp_lookup["PostgreSQL"].to_report_dict()
+    assert post_payload["final_action"] == "removed"
+    assert [a["action"] for a in post_payload["action_history"]] == ["replaced", "removed"]
