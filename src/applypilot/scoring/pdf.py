@@ -26,7 +26,6 @@ from applypilot.scoring.evidence_aware_pdf_planner import (
 )
 from applypilot.scoring.pdf_planning_types import (
     PlanningOperation,
-    SkillDisposition,
 )
 from applypilot.scoring.pdf_render_model import (
     ResumeEntry,
@@ -947,136 +946,40 @@ def _apply_evidence_aware_skill_replacements(
     ``SkillRepairDependencies`` and direct orchestration. This wrapper remains
     available for older internal callers and focused compatibility tests.
     """
-    adjustments: list[dict[str, Any]] = []
-    planning_step_ops: list[dict[str, Any]] = []
-    unsupported_skill_removals: list[dict[str, Any]] = []
-    dispositions: list[SkillDisposition] = []
-    candidates_considered: list[dict[str, Any]] = []
-    candidate_search_summaries: list[dict[str, Any]] = []
-    candidate_search_lookup: dict[str, dict[str, Any]] = {}
-    score_map = _skill_score_map_from_selection(skills_selection)
-    current_model = model
-    current_html = html
-    current_prepared = prepared
-    current_planning = planning
-    preserved_attempts = list(planning.get("evidence_preservation_attempts", [])) if isinstance(
-        planning.get("evidence_preservation_attempts"), list
-    ) else []
-    preserved_decisions = list(planning.get("evidence_preservation_decisions", [])) if isinstance(
-        planning.get("evidence_preservation_decisions"), list
-    ) else []
-    unsupported_before = list(planning.get("unsupported_visible_claims_before_preservation", []))
-    weak_before = list(planning.get("weak_visible_claims_before_preservation", []))
-    used_candidates: set[str] = set()
-    replaced_claim_keys: set[str] = set()
-    min_visible_skill_count = 12
-    if isinstance(skills_selection, dict):
-        try:
-            min_visible_skill_count = max(1, int(skills_selection.get("min_count", min_visible_skill_count)))
-        except (TypeError, ValueError):
-            min_visible_skill_count = 12
-    helpers = skill_repair_helpers or SkillRepairPlanner(
-        apply_skill_repair=lambda **kwargs: (
-            kwargs["model"],
-            kwargs["html"],
-            kwargs["prepared"],
-            kwargs["planning"],
-        ),
-        render_planning_service=render_planning_service,
-    )
-
-    replacement_result = helpers.apply_replacements(
-        model=current_model,
-        html=current_html,
-        prepared=current_prepared,
-        planning=current_planning,
-        context=SkillRepairContext(
-            template_name=template_name,
-            job_description=job_description,
-            skills_selection=skills_selection,
-            render_planning_service=render_planning_service,
-        ),
-        score_map=score_map,
-        used_candidates=used_candidates,
-        replaced_claim_keys=replaced_claim_keys,
-        adjustments=adjustments,
-        planning_step_ops=planning_step_ops,
-        dispositions=dispositions,
-        candidates_considered=candidates_considered,
-        candidate_search_summaries=candidate_search_summaries,
-        candidate_search_lookup=candidate_search_lookup,
+    dependencies = SkillRepairDependencies(
+        skill_score_map_from_selection_fn=_skill_score_map_from_selection,
         build_claim_coverage_for_claims_fn=build_claim_coverage_for_claims,
         extract_all_skill_claims_fn=extract_all_skill_claims,
         clone_model_with_swapped_skills_fn=_clone_model_with_swapped_skills,
-        measured_fit_fn=_measured_fit,
-        build_html_and_prepared_fn=_build_html_and_prepared_for_resume,
-        build_planning_with_evidence_fn=_build_planning_with_evidence,
-    )
-    current_model = replacement_result.model
-    current_html = replacement_result.html
-    current_prepared = replacement_result.prepared
-    current_planning = replacement_result.planning
-    adjustments = replacement_result.adjustments
-    planning_step_ops = replacement_result.planning_step_ops
-    dispositions = replacement_result.dispositions
-    candidates_considered = replacement_result.candidates_considered
-    candidate_search_summaries = replacement_result.candidate_search_summaries
-    candidate_search_lookup = replacement_result.candidate_search_lookup
-    used_candidates = replacement_result.used_candidates
-    replaced_claim_keys = replacement_result.replaced_claim_keys
-
-    removal_result = helpers.remove_unsupported_claims_until_stable(
-        model=current_model,
-        html=current_html,
-        prepared=current_prepared,
-        planning=current_planning,
-        context=SkillRepairContext(
-            template_name=template_name,
-            job_description=job_description,
-            skills_selection=skills_selection,
-            render_planning_service=render_planning_service,
-        ),
-        min_visible_skill_count=min_visible_skill_count,
-        dispositions=dispositions,
-        candidate_search_lookup=candidate_search_lookup,
-        used_candidates=used_candidates,
-        replaced_claim_keys=replaced_claim_keys,
-        planning_step_ops=planning_step_ops,
-        unsupported_skill_removals=unsupported_skill_removals,
-        score_map=score_map,
-        adjustments=adjustments,
-        build_claim_coverage_for_claims_fn=build_claim_coverage_for_claims,
-        extract_all_skill_claims_fn=extract_all_skill_claims,
         clone_model_without_skill_fn=_clone_model_without_skill,
         measured_fit_fn=_measured_fit,
         build_html_and_prepared_fn=_build_html_and_prepared_for_resume,
         build_planning_with_evidence_fn=_build_planning_with_evidence,
     )
-    current_model = removal_result.model
-    current_html = removal_result.html
-    current_prepared = removal_result.prepared
-    current_planning = removal_result.planning
-    unsupported_skill_removals = removal_result.unsupported_skill_removals
-    planning_step_ops = removal_result.planning_step_ops
-    dispositions = removal_result.dispositions
-    removed_claim_keys = removal_result.removed_claim_keys
-    current_planning = helpers.finalize_repair_report(
-        planning=current_planning,
-        planning_step_ops=planning_step_ops,
-        preserved_attempts=preserved_attempts,
-        preserved_decisions=preserved_decisions,
-        unsupported_before=unsupported_before,
-        weak_before=weak_before,
-        adjustments=adjustments,
-        unsupported_skill_removals=unsupported_skill_removals,
-        candidates_considered=candidates_considered,
-        candidate_search_summaries=candidate_search_summaries,
-        candidate_search_lookup=candidate_search_lookup,
-        dispositions=dispositions,
-        replaced_claim_keys=replaced_claim_keys,
-        removed_claim_keys=removed_claim_keys,
+    # Guard against recursion when callers pass a helper configured only for
+    # legacy callback mode. Only reuse the provided helper if it already has
+    # direct dependencies configured.
+    helper_has_direct_dependencies = (
+        isinstance(skill_repair_helpers, SkillRepairPlanner)
+        and getattr(skill_repair_helpers, "_dependencies", None) is not None
     )
-    return current_model, current_html, current_prepared, current_planning
+    planner = skill_repair_helpers if helper_has_direct_dependencies else SkillRepairPlanner(
+        render_planning_service=render_planning_service,
+        dependencies=dependencies,
+    )
+    result = planner.repair(
+        model=model,
+        html=html,
+        prepared=prepared,
+        planning=planning,
+        context=SkillRepairContext(
+            template_name=template_name,
+            job_description=job_description,
+            skills_selection=skills_selection,
+            render_planning_service=render_planning_service,
+        ),
+    )
+    return result.model, result.html, result.prepared, result.planning
 
 
 def resolve_pdf_template_name(profile: dict, explicit_template: str | None = None) -> str:

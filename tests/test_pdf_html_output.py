@@ -20,6 +20,7 @@ from applypilot.scoring.pdf_render_model import (
     build_render_model_from_tailored_json,
 )
 from applypilot.scoring.render_planning_service import RenderPlanningContext, RenderPlanningState
+from applypilot.scoring.skill_repair_planner import SkillRepairPlanner
 from applypilot.scoring.pdf_templates import compact as compact_template
 
 
@@ -507,6 +508,69 @@ def test_evidence_aware_skill_replacement_uses_render_planning_service_when_supp
     assert service.calls >= 1
     assert extract_all_skill_claims(new_model)[0] == "Kafka"
     assert updated["evidence_aware_skill_adjustments"][0]["kept"] is True
+
+
+def test_legacy_wrapper_delegates_without_recursing_on_callback_only_helper(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="PostgreSQL, Java, Kafka")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built Kafka event pipelines."])],
+    )
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [{"claim": "PostgreSQL", "coverage_status": "unsupported"}],
+        "unsupported_visible_claims": ["PostgreSQL"],
+        "weak_visible_claims": [],
+    }
+
+    monkeypatch.setattr(
+        pdf_module,
+        "build_claim_coverage_for_claims",
+        lambda **_kwargs: [
+            ClaimCoverage(
+                claim="Kafka",
+                claim_type="skill",
+                is_visible=False,
+                supporting_evidence_count=1,
+                retained_supporting_evidence_count=1,
+                primary_supporting_evidence_count=1,
+                retained_primary_supporting_evidence_count=1,
+                secondary_supporting_evidence_count=0,
+                coverage_status="supported",
+                top_supporting_evidence=["Acme: Built Kafka event pipelines."],
+            )
+        ],
+    )
+    monkeypatch.setattr(pdf_module, "_build_html_and_prepared_for_resume", lambda *_args, **_kwargs: ("<html/>", SimpleNamespace()))
+    monkeypatch.setattr(
+        pdf_module,
+        "_build_planning_with_evidence",
+        lambda **_kwargs: {
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [{"claim": "Kafka", "coverage_status": "supported"}],
+            "unsupported_visible_claims": [],
+            "weak_visible_claims": [],
+        },
+    )
+    callback_only_helper = SkillRepairPlanner(
+        apply_skill_repair=lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("callback-only helper should not be used by legacy wrapper")
+        ),
+    )
+    new_model, _html, _prepared, updated = _apply_evidence_aware_skill_replacements(
+        model=model,
+        html="<html/>",
+        prepared=SimpleNamespace(),
+        planning=planning,
+        template_name="professional_compact",
+        job_description="Build event-driven systems.",
+        skills_selection={"retained_skills": [{"skill": "PostgreSQL", "score": 90.0}, {"skill": "Kafka", "score": 88.0}]},
+        skill_repair_helpers=callback_only_helper,
+    )
+
+    assert extract_all_skill_claims(new_model)[0] == "Kafka"
+    assert updated["unsupported_visible_claims_final"] == []
 
 
 def test_evidence_aware_skill_replacement_reverted_when_pdf_exceeds_limit(monkeypatch) -> None:
