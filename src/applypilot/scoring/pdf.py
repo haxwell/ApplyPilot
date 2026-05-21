@@ -1147,7 +1147,6 @@ def render_model_to_pdf_with_planning(
     planner = EvidenceAwarePdfPlanner(
         apply_evidence_preservation=_apply_evidence_preservation,
         skill_repair_planner=SkillRepairPlanner(
-            apply_skill_repair=_apply_evidence_aware_skill_replacements,
             render_planning_service=render_service,
             dependencies=SkillRepairDependencies(
                 skill_score_map_from_selection_fn=_skill_score_map_from_selection,

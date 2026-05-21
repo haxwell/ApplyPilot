@@ -99,6 +99,60 @@ def test_render_model_to_pdf_with_planning_uses_orchestrator(monkeypatch, tmp_pa
     assert planning["orchestrator_used"] is True
 
 
+def test_render_model_to_pdf_with_planning_uses_dependencies_without_legacy_callback(
+    monkeypatch, tmp_path: Path
+) -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        experience=[ResumeEntry(title="Role 1", subtitle="Company 1 | 2022", bullets=["Bullet 1"])],
+    )
+    monkeypatch.setattr(
+        pdf_module,
+        "_build_html_and_prepared_for_resume",
+        lambda *_args, **_kwargs: ("<html>base</html>", object()),
+    )
+    monkeypatch.setattr(
+        pdf_module,
+        "_build_planning_with_evidence",
+        lambda **_kwargs: {
+            "template_used": "professional_compact",
+            "allowed_physical_pages": 2,
+            "planning_attempts": [],
+            "planning_operations": [],
+            "render_modes_final": {"skills_mode": "selected"},
+            "unsupported_visible_claims": [],
+            "weak_visible_claims": [],
+        },
+    )
+
+    captured: dict[str, object] = {}
+
+    class _StubPlanner:
+        def __init__(self, *, apply_evidence_preservation, skill_repair_planner, **_kwargs):
+            captured["skill_repair_planner"] = skill_repair_planner
+            self._apply_evidence_preservation = apply_evidence_preservation
+
+        def plan(self, **kwargs):
+            return PdfPlanningResult(
+                model=kwargs["model"],
+                html=kwargs["html"],
+                prepared=kwargs["prepared"],
+                planning=kwargs["planning"],
+            )
+
+    monkeypatch.setattr(pdf_module, "EvidenceAwarePdfPlanner", _StubPlanner)
+    pdf_module.render_model_to_pdf_with_planning(
+        model,
+        output_path=tmp_path / "planned.html",
+        html_only=True,
+    )
+
+    planner = captured["skill_repair_planner"]
+    assert isinstance(planner, SkillRepairPlanner)
+    assert planner._apply_skill_repair is None
+    assert planner._dependencies is not None
+
+
 def test_evidence_aware_pdf_planner_delegates_repair_to_skill_repair_planner() -> None:
     calls: list[str] = []
 
