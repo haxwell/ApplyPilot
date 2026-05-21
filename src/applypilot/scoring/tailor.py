@@ -1066,6 +1066,17 @@ def _apply_final_render_quality_status(report: dict) -> None:
             "Final rendered resume summary contains unresolved unsupported technology claims."
         )
         report["summary_claims_final_unresolved"] = summary_unresolved
+    compound_unresolved = planning.get("compound_skill_claims_final_unresolved", [])
+    if isinstance(compound_unresolved, list):
+        compound_unresolved = [str(item).strip() for item in compound_unresolved if str(item).strip()]
+    else:
+        compound_unresolved = []
+    if compound_unresolved:
+        report["status"] = "needs_review"
+        report["quality_warning"] = (
+            "Final rendered resume contains unresolved compound skill subclaims."
+        )
+        report["compound_skill_claims_final_unresolved"] = compound_unresolved
 
 
 # ── Resume Assembly (profile-driven header) ──────────────────────────────

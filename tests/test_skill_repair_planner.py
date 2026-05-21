@@ -377,6 +377,9 @@ def test_finalize_repair_report_reconciles_stale_replaced_and_preserves_fields()
         summary_claim_repairs=[],
         removed_or_rewritten_summary_claims=[],
         summary_claims_final_unresolved=[],
+        compound_skill_repairs=[],
+        unsupported_compound_subclaims_removed=[],
+        compound_skill_claims_final_unresolved=[],
     )
 
     assert out["planning_operations"] == [{"step": "existing"}, {"step": "new_op"}]

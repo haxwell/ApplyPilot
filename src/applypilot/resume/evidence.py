@@ -160,6 +160,7 @@ _GENERIC_CONTEXT_TERMS = {
 }
 
 _DISTINCTIVE_GENERIC_TOKENS = {
+    "apache",
     "aws",
     "azure",
     "gcp",
@@ -1015,6 +1016,7 @@ def _build_claim_coverage(
         retained_primary = [item for item in primary if item.is_retained_in_rendered_resume]
         secondary = [item for item in matched if not _is_primary_evidence(item)]
         retained_count = sum(1 for item in matched if item.is_retained_in_rendered_resume)
+        missing_required_distinctive = sorted(set(required_distinctive) - set(matched_distinctive))
         if retained_primary:
             status = "supported"
         elif primary:
@@ -1023,6 +1025,10 @@ def _build_claim_coverage(
             status = "weak_summary_only"
         else:
             status = "unsupported"
+        # Compound claims with required distinctive sub-claims cannot be marked
+        # fully supported until all required tokens are matched across evidence.
+        if status == "supported" and missing_required_distinctive:
+            status = "weak"
         ranked = sorted(matched, key=lambda item: _rank_tuple(claim, item), reverse=True)
         top = [f"{item.source_label}: {item.text[:140]}" for item in ranked[:3]]
         coverage.append(

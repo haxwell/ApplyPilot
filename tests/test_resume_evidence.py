@@ -305,6 +305,42 @@ def test_claim_coverage_summary_only_is_not_supported() -> None:
     assert by_claim["Kubernetes"]["retained_primary_supporting_evidence_count"] == 0
 
 
+def test_compound_claim_not_supported_when_distinctive_subclaim_missing() -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        skills=[SkillSection(category="Core", value="AWS (EC2, S3, Lambda, Route53)")],
+        experience=[
+            ResumeEntry(
+                company="Acme",
+                title="Engineer",
+                bullets=["Built AWS EC2 and Lambda services with Route53 traffic management."],
+            )
+        ],
+        projects=[],
+    )
+    prepared = SimpleNamespace(
+        detailed_experience=model.experience,
+        compact_experience=[],
+        projects_to_render=[],
+        projects_mode="hidden",
+        experience_mode="detailed",
+        earlier_experience_mode="compact",
+        summary_mode="hidden",
+        skills_mode="selected",
+        selected_skills_max_lines=1,
+    )
+    report = build_evidence_mapping_report(
+        job_description="AWS platform engineering.",
+        model=model,
+        prepared=prepared,
+    )
+    by_claim = {item["claim"]: item for item in report["claim_coverage"]}
+    aws_group = by_claim["AWS (EC2, S3, Lambda, Route53)"]
+    assert aws_group["coverage_status"] != "supported"
+    assert sorted(aws_group["distinctive_tokens_required"]) == ["ec2", "lambda", "route53", "s3"]
+    assert sorted(aws_group["distinctive_tokens_matched"]) == ["ec2", "lambda", "route53"]
+
+
 def test_claim_variants_handle_versions_and_parentheses() -> None:
     assert "Java" in claim_variants("Java 17-21")
     assert "Spring Boot" in claim_variants("Spring Boot 3.x")

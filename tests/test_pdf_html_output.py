@@ -1538,6 +1538,258 @@ def test_supported_skill_claim_can_remain_in_summary_after_summary_repair(monkey
     assert updated.get("summary_claims_final_unresolved", []) == []
 
 
+def test_summary_rewrite_normalizes_hyphen_whitespace_artifacts(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        summary="Built cloud and Kubernetes-based systems for scale.",
+        skills=[SkillSection(category="Core", value="Kubernetes, Java")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built Java systems."])],
+    )
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [
+            {"claim": "Kubernetes", "coverage_status": "weak_summary_only", "primary_supporting_evidence_count": 0, "retained_primary_supporting_evidence_count": 0},
+            {"claim": "Java", "coverage_status": "supported", "retained_primary_supporting_evidence_count": 1},
+        ],
+        "unsupported_visible_claims": [],
+        "weak_visible_claims": ["Kubernetes"],
+    }
+    monkeypatch.setattr(pdf_module, "build_claim_coverage_for_claims", lambda **_kwargs: [])
+    monkeypatch.setattr(pdf_module, "_build_html_and_prepared_for_resume", lambda *_args, **_kwargs: ("<html/>", SimpleNamespace()))
+    monkeypatch.setattr(
+        pdf_module,
+        "_build_planning_with_evidence",
+        lambda **_kwargs: {
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [{"claim": "Java", "coverage_status": "supported", "retained_primary_supporting_evidence_count": 1}],
+            "unsupported_visible_claims": [],
+            "weak_visible_claims": [],
+        },
+    )
+    updated_model, _html, _prepared, _updated = _apply_evidence_aware_skill_replacements(
+        model=model,
+        html="<html/>",
+        prepared=SimpleNamespace(),
+        planning=planning,
+        template_name="professional_compact",
+        job_description="Cloud platform role.",
+        skills_selection={"retained_skills": [{"skill": "Kubernetes", "score": 90.0}, {"skill": "Java", "score": 89.0}], "min_count": 1},
+    )
+    assert "cloud -based" not in updated_model.summary
+    assert "  " not in updated_model.summary
+    assert "cloud-based" in updated_model.summary
+
+
+def test_compound_skill_removes_unsupported_subclaims(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="AWS (EC2, S3, Lambda, Route53), Java")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built AWS EC2 and Lambda services with Route53 routing."])],
+    )
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [{"claim": "AWS (EC2, S3, Lambda, Route53)", "coverage_status": "weak"}],
+        "unsupported_visible_claims": [],
+        "weak_visible_claims": [],
+    }
+
+    def _coverage_for_claims(*, claims, **_kwargs):
+        out = []
+        for claim in claims:
+            key = str(claim).lower().strip()
+            if key in {"ec2", "lambda", "route53", "aws"}:
+                status = "supported"
+                retained = 1
+            elif key == "s3":
+                status = "unsupported"
+                retained = 0
+            else:
+                status = "unsupported"
+                retained = 0
+            out.append(
+                ClaimCoverage(
+                    claim=str(claim),
+                    claim_type="skill",
+                    is_visible=False,
+                    supporting_evidence_count=1 if status == "supported" else 0,
+                    retained_supporting_evidence_count=retained,
+                    primary_supporting_evidence_count=retained,
+                    retained_primary_supporting_evidence_count=retained,
+                    secondary_supporting_evidence_count=0,
+                    coverage_status=status,
+                    top_supporting_evidence=[],
+                )
+            )
+        return out
+
+    def _planning_for_model(**kwargs):
+        claims = extract_all_skill_claims(kwargs["model"])
+        weak = []
+        unsupported = []
+        coverage = []
+        for claim in claims:
+            status = "supported"
+            if "S3" in claim:
+                status = "weak"
+                weak.append(claim)
+            coverage.append({"claim": claim, "coverage_status": status, "retained_primary_supporting_evidence_count": 1 if status == "supported" else 0})
+        return {
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": coverage,
+            "unsupported_visible_claims": unsupported,
+            "weak_visible_claims": weak,
+        }
+
+    monkeypatch.setattr(pdf_module, "_build_html_and_prepared_for_resume", lambda *_args, **_kwargs: ("<html/>", SimpleNamespace()))
+    monkeypatch.setattr(pdf_module, "_build_planning_with_evidence", _planning_for_model)
+    monkeypatch.setattr(pdf_module, "build_claim_coverage_for_claims", _coverage_for_claims)
+
+    new_model, _html, _prepared, updated = _apply_evidence_aware_skill_replacements(
+        model=model,
+        html="<html/>",
+        prepared=SimpleNamespace(),
+        planning=planning,
+        template_name="professional_compact",
+        job_description="AWS platform role.",
+        skills_selection={"retained_skills": [{"skill": "AWS (EC2, S3, Lambda, Route53)", "score": 95.0}, {"skill": "Java", "score": 90.0}], "min_count": 1},
+    )
+
+    rendered_claims = extract_all_skill_claims(new_model)
+    assert "AWS (EC2, Lambda, Route53)" in rendered_claims
+    assert all("S3" not in claim for claim in rendered_claims)
+    assert updated.get("compound_skill_repairs")
+    assert "S3" in updated.get("unsupported_compound_subclaims_removed", [])
+    assert updated.get("compound_skill_claims_final_unresolved", []) == []
+    assert updated.get("unsupported_visible_claims_final", []) == []
+    assert updated.get("weak_visible_claims_final", []) == []
+
+
+def test_compound_skill_collapses_to_parent_when_all_subclaims_unsupported(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="AWS (S3), Java")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built AWS deployment workflows."])],
+    )
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [{"claim": "AWS (S3)", "coverage_status": "weak"}],
+        "unsupported_visible_claims": [],
+        "weak_visible_claims": [],
+    }
+
+    def _coverage_for_claims(*, claims, **_kwargs):
+        out = []
+        for claim in claims:
+            key = str(claim).lower().strip()
+            status = "supported" if key == "aws" else "unsupported"
+            retained = 1 if status == "supported" else 0
+            out.append(
+                ClaimCoverage(
+                    claim=str(claim),
+                    claim_type="skill",
+                    is_visible=False,
+                    supporting_evidence_count=retained,
+                    retained_supporting_evidence_count=retained,
+                    primary_supporting_evidence_count=retained,
+                    retained_primary_supporting_evidence_count=retained,
+                    secondary_supporting_evidence_count=0,
+                    coverage_status=status,
+                    top_supporting_evidence=[],
+                )
+            )
+        return out
+
+    monkeypatch.setattr(pdf_module, "_build_html_and_prepared_for_resume", lambda *_args, **_kwargs: ("<html/>", SimpleNamespace()))
+    monkeypatch.setattr(
+        pdf_module,
+        "_build_planning_with_evidence",
+        lambda **kwargs: {
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [{"claim": claim, "coverage_status": "supported", "retained_primary_supporting_evidence_count": 1} for claim in extract_all_skill_claims(kwargs["model"])],
+            "unsupported_visible_claims": [],
+            "weak_visible_claims": [],
+        },
+    )
+    monkeypatch.setattr(pdf_module, "build_claim_coverage_for_claims", _coverage_for_claims)
+
+    new_model, _html, _prepared, updated = _apply_evidence_aware_skill_replacements(
+        model=model,
+        html="<html/>",
+        prepared=SimpleNamespace(),
+        planning=planning,
+        template_name="professional_compact",
+        job_description="AWS platform role.",
+        skills_selection={"retained_skills": [{"skill": "AWS (S3)", "score": 95.0}, {"skill": "Java", "score": 90.0}], "min_count": 1},
+    )
+
+    claims = extract_all_skill_claims(new_model)
+    assert "AWS" in claims
+    assert "AWS (S3)" not in claims
+    assert "S3" in updated.get("unsupported_compound_subclaims_removed", [])
+    assert updated.get("compound_skill_claims_final_unresolved", []) == []
+
+
+def test_compound_skill_unchanged_when_all_subclaims_supported(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="AWS (EC2, S3), Java")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built AWS EC2 and S3 services."])],
+    )
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [{"claim": "AWS (EC2, S3)", "coverage_status": "supported"}],
+        "unsupported_visible_claims": [],
+        "weak_visible_claims": [],
+    }
+
+    monkeypatch.setattr(pdf_module, "_build_html_and_prepared_for_resume", lambda *_args, **_kwargs: ("<html/>", SimpleNamespace()))
+    monkeypatch.setattr(
+        pdf_module,
+        "_build_planning_with_evidence",
+        lambda **kwargs: {
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [{"claim": claim, "coverage_status": "supported", "retained_primary_supporting_evidence_count": 1} for claim in extract_all_skill_claims(kwargs["model"])],
+            "unsupported_visible_claims": [],
+            "weak_visible_claims": [],
+        },
+    )
+    monkeypatch.setattr(
+        pdf_module,
+        "build_claim_coverage_for_claims",
+        lambda **kwargs: [
+            ClaimCoverage(
+                claim=str(claim),
+                claim_type="skill",
+                is_visible=False,
+                supporting_evidence_count=1,
+                retained_supporting_evidence_count=1,
+                primary_supporting_evidence_count=1,
+                retained_primary_supporting_evidence_count=1,
+                secondary_supporting_evidence_count=0,
+                coverage_status="supported",
+                top_supporting_evidence=[],
+            )
+            for claim in kwargs["claims"]
+        ],
+    )
+
+    new_model, _html, _prepared, updated = _apply_evidence_aware_skill_replacements(
+        model=model,
+        html="<html/>",
+        prepared=SimpleNamespace(),
+        planning=planning,
+        template_name="professional_compact",
+        job_description="AWS platform role.",
+        skills_selection={"retained_skills": [{"skill": "AWS (EC2, S3)", "score": 95.0}, {"skill": "Java", "score": 90.0}], "min_count": 1},
+    )
+    assert "AWS (EC2, S3)" in extract_all_skill_claims(new_model)
+    assert updated.get("compound_skill_repairs", []) == []
+
+
 def test_removed_disposition_action_history_does_not_use_kept_for_intermediate_state(monkeypatch) -> None:
     model = ResumeRenderModel(
         skills=[SkillSection(category="Core", value="PostgreSQL, Kafka")],

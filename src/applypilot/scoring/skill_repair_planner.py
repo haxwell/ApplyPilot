@@ -227,8 +227,199 @@ class SkillRepairPlanner:
         text = re.sub(r"\s{2,}", " ", text).strip()
         text = re.sub(r"\s+([,.;:])", r"\1", text)
         text = re.sub(r",\s*([.;:])", r"\1", text)
+        text = re.sub(r"\b(\w+)\s*-\s*based\b", r"\1-based", text, flags=re.IGNORECASE)
+        text = re.sub(r"\b(\w+)\s*-\s*driven\b", r"\1-driven", text, flags=re.IGNORECASE)
         text = re.sub(r"\(\s*\)", "", text)
         return text.strip()
+
+    def _split_skill_tokens_preserving_parentheses(self, text: str) -> list[str]:
+        parts: list[str] = []
+        buf: list[str] = []
+        depth = 0
+        for ch in str(text):
+            if ch == "(":
+                depth += 1
+                buf.append(ch)
+                continue
+            if ch == ")":
+                depth = max(0, depth - 1)
+                buf.append(ch)
+                continue
+            if ch == "," and depth == 0:
+                token = "".join(buf).strip()
+                if token:
+                    parts.append(token)
+                buf = []
+                continue
+            buf.append(ch)
+        tail = "".join(buf).strip()
+        if tail:
+            parts.append(tail)
+        return parts
+
+    def _parse_compound_skill_token(self, token: str) -> tuple[str, list[str]] | None:
+        match = re.match(r"^\s*([^()]+?)\s*\(([^)]+)\)\s*$", str(token).strip())
+        if not match:
+            return None
+        parent = str(match.group(1)).strip()
+        raw_inside = str(match.group(2)).strip()
+        if not parent or not raw_inside:
+            return None
+        subclaims = [part.strip().strip("() ,;:.") for part in re.split(r"[,;/]", raw_inside) if part.strip()]
+        subclaims = [claim for claim in subclaims if claim]
+        if not subclaims:
+            return None
+        return parent, subclaims
+
+    def _rewrite_compound_skills(
+        self,
+        *,
+        model: ResumeRenderModel,
+        prepared: Any,
+        build_claim_coverage_for_claims_fn: Callable[..., list[Any]],
+    ) -> tuple[ResumeRenderModel, list[dict[str, Any]], list[str], list[str]]:
+        repairs: list[dict[str, Any]] = []
+        removed_subclaims: list[str] = []
+        unresolved: list[str] = []
+        updated_skills = list(model.skills)
+        changed = False
+
+        for idx, section in enumerate(updated_skills):
+            tokens = self._split_skill_tokens_preserving_parentheses(str(section.value))
+            if not tokens:
+                continue
+            next_tokens = list(tokens)
+            for token_idx, token in enumerate(tokens):
+                parsed = self._parse_compound_skill_token(token)
+                if not parsed:
+                    continue
+                parent, subclaims = parsed
+                coverage = build_claim_coverage_for_claims_fn(
+                    claims=subclaims,
+                    model=model,
+                    prepared=prepared,
+                )
+                by_key = {self._normalize_skill_claim_key(str(item.claim)): item for item in coverage}
+                supported_subclaims: list[str] = []
+                unsupported_subclaims: list[str] = []
+                for claim in subclaims:
+                    item = by_key.get(self._normalize_skill_claim_key(claim))
+                    retained_primary = int(getattr(item, "retained_primary_supporting_evidence_count", 0) or 0) if item else 0
+                    status = str(getattr(item, "coverage_status", "")) if item else "unsupported"
+                    if status == "supported" and retained_primary > 0:
+                        supported_subclaims.append(claim)
+                    else:
+                        unsupported_subclaims.append(claim)
+                if not unsupported_subclaims:
+                    continue
+                removed_subclaims.extend(unsupported_subclaims)
+                if supported_subclaims:
+                    rewritten = f"{parent} ({', '.join(supported_subclaims)})"
+                else:
+                    rewritten = parent
+                if rewritten.strip() != token.strip():
+                    repairs.append(
+                        {
+                            "original_skill": token,
+                            "rewritten_skill": rewritten,
+                            "removed_subclaims": unsupported_subclaims,
+                            "kept_subclaims": supported_subclaims,
+                            "reason": "unsupported_compound_subclaims_removed",
+                        }
+                    )
+                    next_tokens[token_idx] = rewritten
+                    changed = True
+                unresolved.extend(f"{parent}: {subclaim}" for subclaim in unsupported_subclaims)
+
+            if next_tokens != tokens:
+                updated_skills[idx] = type(section)(
+                    category=section.category,
+                    value=", ".join(next_tokens),
+                )
+
+        if not changed:
+            return model, [], sorted(dict.fromkeys(removed_subclaims)), sorted(dict.fromkeys(unresolved))
+
+        updated_model = ResumeRenderModel(
+            name=model.name,
+            title=model.title,
+            location=model.location,
+            contact=model.contact,
+            summary=model.summary,
+            skills=updated_skills,
+            experience=list(model.experience),
+            projects=list(model.projects),
+            education=model.education,
+            certifications=model.certifications,
+            render_options=dict(model.render_options),
+        )
+        return updated_model, repairs, sorted(dict.fromkeys(removed_subclaims)), sorted(dict.fromkeys(unresolved))
+
+    def apply_compound_skill_repairs(
+        self,
+        *,
+        model: ResumeRenderModel,
+        html: str,
+        prepared: Any,
+        planning: dict[str, Any],
+        context: SkillRepairContext,
+        build_claim_coverage_for_claims_fn: Callable[..., list[Any]],
+        build_html_and_prepared_fn: Callable[..., tuple[str, Any]],
+        build_planning_with_evidence_fn: Callable[..., dict[str, Any]],
+        measured_fit_fn: Callable[[dict[str, Any]], tuple[int | None, bool]],
+    ) -> tuple[ResumeRenderModel, str, Any, dict[str, Any], list[dict[str, Any]], list[str], list[str]]:
+        next_model, repairs, removed_subclaims, unresolved = self._rewrite_compound_skills(
+            model=model,
+            prepared=prepared,
+            build_claim_coverage_for_claims_fn=build_claim_coverage_for_claims_fn,
+        )
+        if not repairs:
+            return model, html, prepared, planning, [], [], []
+
+        render_service = context.render_planning_service or self._render_planning_service
+        render_context = RenderPlanningContext(
+            template_name=context.template_name,
+            job_description=context.job_description,
+        )
+        if render_service is not None:
+            state = render_service.rebuild_state(model=next_model, context=render_context)
+            model, html, prepared, planning = state.model, state.html, state.prepared, state.planning
+        else:
+            next_html, next_prepared = build_html_and_prepared_fn(next_model, template_name=context.template_name)
+            next_planning = build_planning_with_evidence_fn(
+                model=next_model,
+                prepared=next_prepared,
+                template_name=context.template_name,
+                job_description=context.job_description,
+            )
+            measured_fit_fn(next_planning)
+            model, html, prepared, planning = next_model, next_html, next_prepared, next_planning
+
+        # Re-check unresolved subclaims in final state for reporting.
+        final_unresolved: list[str] = []
+        for section in model.skills:
+            tokens = self._split_skill_tokens_preserving_parentheses(str(section.value))
+            for token in tokens:
+                parsed = self._parse_compound_skill_token(token)
+                if not parsed:
+                    continue
+                parent, subclaims = parsed
+                coverage = build_claim_coverage_for_claims_fn(claims=subclaims, model=model, prepared=prepared)
+                for item in coverage:
+                    status = str(getattr(item, "coverage_status", ""))
+                    retained_primary = int(getattr(item, "retained_primary_supporting_evidence_count", 0) or 0)
+                    if status != "supported" or retained_primary == 0:
+                        final_unresolved.append(f"{parent}: {str(getattr(item, 'claim', '')).strip()}")
+
+        return (
+            model,
+            html,
+            prepared,
+            planning,
+            repairs,
+            removed_subclaims,
+            sorted(dict.fromkeys(final_unresolved)),
+        )
 
     def apply_summary_claim_repairs(
         self,
@@ -1071,6 +1262,9 @@ class SkillRepairPlanner:
         summary_claim_repairs: list[dict[str, Any]],
         removed_or_rewritten_summary_claims: list[str],
         summary_claims_final_unresolved: list[str],
+        compound_skill_repairs: list[dict[str, Any]],
+        unsupported_compound_subclaims_removed: list[str],
+        compound_skill_claims_final_unresolved: list[str],
     ) -> dict[str, Any]:
         current_planning = planning
         dispositions_by_key = {
@@ -1215,6 +1409,13 @@ class SkillRepairPlanner:
         current_planning["summary_claim_repairs"] = summary_claim_repairs
         current_planning["removed_or_rewritten_summary_claims"] = list(dict.fromkeys(removed_or_rewritten_summary_claims))
         current_planning["summary_claims_final_unresolved"] = list(dict.fromkeys(summary_claims_final_unresolved))
+        current_planning["compound_skill_repairs"] = list(compound_skill_repairs)
+        current_planning["unsupported_compound_subclaims_removed"] = list(
+            dict.fromkeys(unsupported_compound_subclaims_removed)
+        )
+        current_planning["compound_skill_claims_final_unresolved"] = list(
+            dict.fromkeys(compound_skill_claims_final_unresolved)
+        )
         current_planning["unsupported_visible_claims_without_source_evidence"] = [
             {"claim": item.get("claim"), "reason": "no_primary_source_evidence_found"}
             for item in current_planning.get("claim_coverage", [])
@@ -1242,6 +1443,9 @@ class SkillRepairPlanner:
             candidates_considered: list[dict[str, Any]] = []
             candidate_search_summaries: list[dict[str, Any]] = []
             candidate_search_lookup: dict[str, dict[str, Any]] = {}
+            compound_skill_repairs: list[dict[str, Any]] = []
+            unsupported_compound_subclaims_removed: list[str] = []
+            compound_skill_claims_final_unresolved: list[str] = []
             score_map = deps.skill_score_map_from_selection_fn(context.skills_selection)
             current_model = model
             current_html = html
@@ -1344,6 +1548,30 @@ class SkillRepairPlanner:
                 current_html,
                 current_prepared,
                 current_planning,
+                compound_skill_repairs,
+                unsupported_compound_subclaims_removed,
+                compound_skill_claims_final_unresolved,
+            ) = self.apply_compound_skill_repairs(
+                model=current_model,
+                html=current_html,
+                prepared=current_prepared,
+                planning=current_planning,
+                context=SkillRepairContext(
+                    template_name=context.template_name,
+                    job_description=context.job_description,
+                    skills_selection=context.skills_selection,
+                    render_planning_service=context.render_planning_service or self._render_planning_service,
+                ),
+                build_claim_coverage_for_claims_fn=deps.build_claim_coverage_for_claims_fn,
+                build_html_and_prepared_fn=deps.build_html_and_prepared_fn,
+                build_planning_with_evidence_fn=deps.build_planning_with_evidence_fn,
+                measured_fit_fn=deps.measured_fit_fn,
+            )
+            (
+                current_model,
+                current_html,
+                current_prepared,
+                current_planning,
                 summary_claim_repairs,
                 removed_or_rewritten_summary_claims,
                 summary_claims_final_unresolved,
@@ -1381,6 +1609,9 @@ class SkillRepairPlanner:
                 summary_claim_repairs=summary_claim_repairs,
                 removed_or_rewritten_summary_claims=removed_or_rewritten_summary_claims,
                 summary_claims_final_unresolved=summary_claims_final_unresolved,
+                compound_skill_repairs=compound_skill_repairs,
+                unsupported_compound_subclaims_removed=unsupported_compound_subclaims_removed,
+                compound_skill_claims_final_unresolved=compound_skill_claims_final_unresolved,
             )
             model, html, prepared, planning = (
                 current_model,
