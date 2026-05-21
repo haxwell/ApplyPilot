@@ -1598,10 +1598,10 @@ def test_compound_skill_removes_unsupported_subclaims(monkeypatch) -> None:
         out = []
         for claim in claims:
             key = str(claim).lower().strip()
-            if key in {"ec2", "lambda", "route53", "aws"}:
+            if key in {"aws ec2", "aws lambda", "aws route53", "ec2", "lambda", "route53", "aws"}:
                 status = "supported"
                 retained = 1
-            elif key == "s3":
+            elif key in {"s3", "aws s3"}:
                 status = "unsupported"
                 retained = 0
             else:
@@ -1686,7 +1686,7 @@ def test_compound_skill_with_one_supported_subclaim_becomes_parent_plus_subclaim
         out = []
         for claim in claims:
             key = str(claim).lower().strip()
-            if key in {"lambda", "aws"}:
+            if key in {"aws lambda", "lambda", "aws"}:
                 status = "supported"
                 retained = 1
             else:
@@ -2243,6 +2243,140 @@ def test_grouped_skill_consolidates_duplicate_parent_groups(monkeypatch) -> None
     claims = extract_all_skill_claims(new_model)
     assert claims.count("AWS (EC2, Lambda)") == 1
     assert all("CI/CD" not in claim for claim in claims)
+
+
+def test_grouped_skill_does_not_reintroduce_removed_unsupported_subclaim(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="AWS EC2, AWS S3, AWS Lambda, Route53, Linux, Java")],
+        experience=[
+            ResumeEntry(
+                title="Engineer",
+                subtitle="Acme",
+                bullets=["Implemented automation for deployments with AWS EC2, Lambda, Route53, GitHub Actions, Linux, and DNS scripting."],
+            )
+        ],
+    )
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [
+            {"claim": "AWS S3", "coverage_status": "unsupported", "primary_supporting_evidence_count": 0},
+            {"claim": "AWS EC2", "coverage_status": "supported", "retained_primary_supporting_evidence_count": 1},
+            {"claim": "AWS Lambda", "coverage_status": "supported", "retained_primary_supporting_evidence_count": 1},
+            {"claim": "Route53", "coverage_status": "supported", "retained_primary_supporting_evidence_count": 1},
+            {"claim": "Linux", "coverage_status": "supported", "retained_primary_supporting_evidence_count": 1},
+            {"claim": "Java", "coverage_status": "supported", "retained_primary_supporting_evidence_count": 1},
+        ],
+        "unsupported_visible_claims": ["AWS S3"],
+        "weak_visible_claims": [],
+    }
+
+    def _coverage_for_claims(*, claims, **_kwargs):
+        out = []
+        for claim in claims:
+            key = str(claim).lower().strip()
+            supported_keys = {
+                "aws",
+                "aws ec2",
+                "aws lambda",
+                "aws route53",
+                "ec2",
+                "lambda",
+                "route53",
+                "linux",
+                "java",
+            }
+            unsupported_keys = {"s3", "aws s3", "aws linux"}
+            supported = key in supported_keys and key not in unsupported_keys
+            retained = 1 if supported else 0
+            if key in {"aws", "aws ec2", "aws lambda", "aws route53", "ec2", "lambda", "route53"}:
+                top = ["Acme: Implemented automation for deployments with AWS EC2, Lambda, Route53, GitHub Actions, Linux, and DNS scripting."]
+            elif key == "linux":
+                top = ["Acme: Implemented automation for deployments with AWS EC2, Lambda, Route53, GitHub Actions, Linux, and DNS scripting."]
+            elif key == "java":
+                top = ["Acme: Built Java services."]
+            else:
+                top = []
+            out.append(
+                ClaimCoverage(
+                    claim=str(claim),
+                    claim_type="skill",
+                    is_visible=False,
+                    supporting_evidence_count=retained,
+                    retained_supporting_evidence_count=retained,
+                    primary_supporting_evidence_count=retained,
+                    retained_primary_supporting_evidence_count=retained,
+                    secondary_supporting_evidence_count=0,
+                    coverage_status="supported" if supported else "unsupported",
+                    top_supporting_evidence=top,
+                )
+            )
+        return out
+
+    def _planning_for_model(**kwargs):
+        claims = extract_all_skill_claims(kwargs["model"])
+        coverage: list[dict[str, object]] = []
+        unsupported: list[str] = []
+        weak: list[str] = []
+        for claim in claims:
+            key = claim.lower().strip()
+            if key == "aws s3":
+                status = "unsupported"
+                retained = 0
+                unsupported.append(claim)
+            elif key.startswith("aws (") and "s3" in key:
+                status = "weak"
+                retained = 0
+                weak.append(claim)
+            else:
+                status = "supported"
+                retained = 1
+            coverage.append(
+                {
+                    "claim": claim,
+                    "coverage_status": status,
+                    "primary_supporting_evidence_count": retained,
+                    "retained_primary_supporting_evidence_count": retained,
+                }
+            )
+        return {
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": coverage,
+            "unsupported_visible_claims": unsupported,
+            "weak_visible_claims": weak,
+        }
+
+    monkeypatch.setattr(pdf_module, "_build_html_and_prepared_for_resume", lambda *_args, **_kwargs: ("<html/>", SimpleNamespace()))
+    monkeypatch.setattr(pdf_module, "_build_planning_with_evidence", _planning_for_model)
+    monkeypatch.setattr(pdf_module, "build_claim_coverage_for_claims", _coverage_for_claims)
+
+    new_model, _html, _prepared, updated = _apply_evidence_aware_skill_replacements(
+        model=model,
+        html="<html/>",
+        prepared=SimpleNamespace(),
+        planning=planning,
+        template_name="professional_compact",
+        job_description="Cloud platform role.",
+        skills_selection={
+            "retained_skills": [
+                {"skill": "AWS EC2", "score": 95.0},
+                {"skill": "AWS S3", "score": 94.0},
+                {"skill": "AWS Lambda", "score": 93.0},
+                {"skill": "Route53", "score": 92.0},
+                {"skill": "Linux", "score": 91.0},
+                {"skill": "Java", "score": 90.0},
+            ],
+            "min_count": 1,
+        },
+    )
+    claims = extract_all_skill_claims(new_model)
+    assert "AWS (EC2, Lambda, Route53)" in claims
+    assert all("S3" not in claim for claim in claims)
+    assert all("Linux" not in claim for claim in claims if claim.startswith("AWS"))
+    assert "Linux" in claims
+    assert updated.get("unsupported_visible_claims_final", []) == []
+    assert updated.get("weak_visible_claims_final", []) == []
 
 
 def test_removed_disposition_action_history_does_not_use_kept_for_intermediate_state(monkeypatch) -> None:

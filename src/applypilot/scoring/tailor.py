@@ -1026,6 +1026,18 @@ def _apply_final_render_quality_status(report: dict) -> None:
     weak_final = planning.get("weak_visible_claims_final", [])
     if not isinstance(weak_final, list):
         weak_final = []
+    unsupported_final = planning.get("unsupported_visible_claims_final", [])
+    if not isinstance(unsupported_final, list):
+        unsupported_final = []
+
+    unsupported_final = [str(item).strip() for item in unsupported_final if str(item).strip()]
+    if unsupported_final:
+        report["status"] = "needs_review"
+        report["quality_warning"] = (
+            "Final rendered resume still contains unsupported visible skill claims."
+        )
+        report["unsupported_visible_claims_final"] = unsupported_final
+        return
 
     weak_lookup: dict[str, dict[str, Any]] = {}
     for item in claim_coverage:

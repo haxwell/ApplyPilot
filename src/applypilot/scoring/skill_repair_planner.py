@@ -305,12 +305,14 @@ class SkillRepairPlanner:
         prepared: Any,
         build_claim_coverage_for_claims_fn: Callable[..., list[Any]],
         candidate_skill_pool: list[str] | None = None,
+        removed_unsupported_claim_keys: set[str] | None = None,
     ) -> tuple[ResumeRenderModel, list[dict[str, Any]], list[str], list[str]]:
         repairs: list[dict[str, Any]] = []
         removed_subclaims: list[str] = []
         unresolved: list[str] = []
         updated_skills = list(model.skills)
         changed = False
+        removed_unsupported_claim_keys = set(removed_unsupported_claim_keys or set())
 
         def _claim_supported(claim: str) -> bool:
             coverage = build_claim_coverage_for_claims_fn(
@@ -447,7 +449,7 @@ class SkillRepairPlanner:
                     and int(getattr(parent_item, "retained_primary_supporting_evidence_count", 0) or 0) > 0
                 )
                 coverage = build_claim_coverage_for_claims_fn(
-                    claims=subclaims,
+                    claims=[f"{parent} {claim}" for claim in subclaims],
                     model=model,
                     prepared=prepared,
                 )
@@ -456,7 +458,12 @@ class SkillRepairPlanner:
                 unsupported_subclaims: list[str] = []
                 retained_evidence_sources: dict[str, list[str]] = {}
                 for claim in subclaims:
-                    item = by_key.get(self._normalize_skill_claim_key(claim))
+                    parent_child_claim = f"{parent} {claim}"
+                    parent_child_key = self._normalize_skill_claim_key(parent_child_claim)
+                    if parent_child_key in removed_unsupported_claim_keys:
+                        unsupported_subclaims.append(claim)
+                        continue
+                    item = by_key.get(parent_child_key)
                     retained_primary = int(getattr(item, "retained_primary_supporting_evidence_count", 0) or 0) if item else 0
                     status = str(getattr(item, "coverage_status", "")) if item else "unsupported"
                     if status == "supported" and retained_primary > 0:
@@ -571,9 +578,19 @@ class SkillRepairPlanner:
                         eligible_subclaims.append(subclaim)
                     if not is_eligible and subclaim not in ineligible_subclaims:
                         ineligible_subclaims.append(subclaim)
-                    parent_subclaim_supported = _claim_supported(f"{parent} {subclaim}")
-                    standalone_supported = _claim_supported(subclaim)
-                    if is_eligible and (parent_subclaim_supported or standalone_supported):
+                    parent_subclaim_claim = f"{parent} {subclaim}"
+                    parent_subclaim_key = self._normalize_skill_claim_key(parent_subclaim_claim)
+                    parent_subclaim_supported = (
+                        parent_subclaim_key not in removed_unsupported_claim_keys
+                        and _claim_supported(parent_subclaim_claim)
+                    )
+                    coherent_span = _subclaim_supported_in_parent_evidence_span(parent, subclaim)
+                    listed_with_parent = _subclaim_listed_with_parent_in_evidence_span(parent, subclaim)
+                    if relation == "pool_prefix":
+                        relation_supported = parent_subclaim_supported and coherent_span and listed_with_parent
+                    else:
+                        relation_supported = parent_subclaim_supported
+                    if is_eligible and relation_supported:
                         if subclaim not in ordered_supported:
                             ordered_supported.append(subclaim)
                             retained_evidence_sources[subclaim] = (
@@ -607,8 +624,11 @@ class SkillRepairPlanner:
                     if not standalone_key or standalone_key in seen_standalone_candidates:
                         continue
                     seen_standalone_candidates.add(standalone_key)
+                    parent_subclaim_claim = f"{parent} {standalone}"
+                    parent_subclaim_key = self._normalize_skill_claim_key(parent_subclaim_claim)
                     if (
-                        _claim_supported(standalone)
+                        parent_subclaim_key not in removed_unsupported_claim_keys
+                        and _claim_supported(parent_subclaim_claim)
                         and _subclaim_supported_in_parent_evidence_span(parent, standalone)
                         and _subclaim_listed_with_parent_in_evidence_span(parent, standalone)
                     ):
@@ -691,6 +711,7 @@ class SkillRepairPlanner:
         prepared: Any,
         planning: dict[str, Any],
         context: SkillRepairContext,
+        removed_unsupported_claim_keys: set[str] | None,
         build_claim_coverage_for_claims_fn: Callable[..., list[Any]],
         build_html_and_prepared_fn: Callable[..., tuple[str, Any]],
         build_planning_with_evidence_fn: Callable[..., dict[str, Any]],
@@ -702,6 +723,7 @@ class SkillRepairPlanner:
             prepared=prepared,
             build_claim_coverage_for_claims_fn=build_claim_coverage_for_claims_fn,
             candidate_skill_pool=candidate_skill_pool,
+            removed_unsupported_claim_keys=removed_unsupported_claim_keys,
         )
         if not repairs:
             return model, html, prepared, planning, [], [], []
@@ -734,12 +756,22 @@ class SkillRepairPlanner:
                 if not parsed:
                     continue
                 parent, subclaims = parsed
-                coverage = build_claim_coverage_for_claims_fn(claims=subclaims, model=model, prepared=prepared)
-                for item in coverage:
+                parent_subclaim_claims = [f"{parent} {subclaim}" for subclaim in subclaims]
+                coverage = build_claim_coverage_for_claims_fn(
+                    claims=parent_subclaim_claims,
+                    model=model,
+                    prepared=prepared,
+                )
+                by_key = {
+                    self._normalize_skill_claim_key(str(getattr(item, "claim", ""))): item
+                    for item in coverage
+                }
+                for subclaim in subclaims:
+                    item = by_key.get(self._normalize_skill_claim_key(f"{parent} {subclaim}"))
                     status = str(getattr(item, "coverage_status", ""))
                     retained_primary = int(getattr(item, "retained_primary_supporting_evidence_count", 0) or 0)
                     if status != "supported" or retained_primary == 0:
-                        final_unresolved.append(f"{parent}: {str(getattr(item, 'claim', '')).strip()}")
+                        final_unresolved.append(f"{parent}: {subclaim}")
 
         return (
             model,
@@ -1876,6 +1908,28 @@ class SkillRepairPlanner:
             planning_step_ops = removal_result.planning_step_ops
             dispositions = removal_result.dispositions
             removed_claim_keys = removal_result.removed_claim_keys
+            removed_unsupported_claim_keys: set[str] = set()
+            for disp in dispositions:
+                if not isinstance(disp, SkillDisposition):
+                    continue
+                if disp.final_action != "removed":
+                    continue
+                if str(disp.coverage_status) != "unsupported":
+                    continue
+                key = self._normalize_skill_claim_key(disp.claim)
+                if key:
+                    removed_unsupported_claim_keys.add(key)
+            for item in unsupported_skill_removals:
+                if not isinstance(item, dict):
+                    continue
+                if not bool(item.get("claim_removed")):
+                    continue
+                if str(item.get("coverage_status", "")) != "unsupported":
+                    continue
+                claim = str(item.get("claim", "")).strip()
+                key = self._normalize_skill_claim_key(claim)
+                if key:
+                    removed_unsupported_claim_keys.add(key)
             (
                 current_model,
                 current_html,
@@ -1895,6 +1949,7 @@ class SkillRepairPlanner:
                     skills_selection=context.skills_selection,
                     render_planning_service=context.render_planning_service or self._render_planning_service,
                 ),
+                removed_unsupported_claim_keys=removed_unsupported_claim_keys,
                 build_claim_coverage_for_claims_fn=deps.build_claim_coverage_for_claims_fn,
                 build_html_and_prepared_fn=deps.build_html_and_prepared_fn,
                 build_planning_with_evidence_fn=deps.build_planning_with_evidence_fn,
