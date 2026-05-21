@@ -967,69 +967,6 @@ def _apply_evidence_aware_skill_replacements(
                 return True
         return False
 
-    def _build_disposition(
-        *,
-        claim: str,
-        coverage_status: str,
-        final_action: str,
-        reason: str,
-        replacement: str | None = None,
-        distinctive_tokens_required: list[str] | None = None,
-        distinctive_tokens_matched: list[str] | None = None,
-        replacement_search_performed: bool = False,
-        replacement_candidates_available: int | None = None,
-        supported_replacement_candidates_available: int | None = None,
-        supported_replacement_candidates_available_raw: int | None = None,
-        usable_supported_replacement_candidates_available: int | None = None,
-        rejection_summary: list[str] | str | None = None,
-        remaining_supported_retained_skills_not_visible: list[str] | None = None,
-    ) -> SkillDisposition:
-        if skill_repair_helpers is not None:
-            return skill_repair_helpers.build_disposition(
-                claim=claim,
-                coverage_status=coverage_status,
-                final_action=final_action,
-                reason=reason,
-                replacement=replacement,
-                distinctive_tokens_required=distinctive_tokens_required,
-                distinctive_tokens_matched=distinctive_tokens_matched,
-                replacement_search_performed=replacement_search_performed,
-                replacement_candidates_available=replacement_candidates_available,
-                supported_replacement_candidates_available=supported_replacement_candidates_available,
-                supported_replacement_candidates_available_raw=supported_replacement_candidates_available_raw,
-                usable_supported_replacement_candidates_available=usable_supported_replacement_candidates_available,
-                rejection_summary=rejection_summary,
-                remaining_supported_retained_skills_not_visible=remaining_supported_retained_skills_not_visible,
-            )
-        payload = SkillDisposition(
-            claim=claim,
-            coverage_status=coverage_status,
-            final_action=final_action,
-            reason=reason,
-            replacement=replacement,
-            supported_replacement_candidates_available_raw=int(supported_replacement_candidates_available_raw or 0),
-            usable_supported_replacement_candidates_available=int(usable_supported_replacement_candidates_available or 0),
-            metadata={
-                "distinctive_tokens_required": list(distinctive_tokens_required or []),
-                "distinctive_tokens_matched": list(distinctive_tokens_matched or []),
-                "replacement_search_performed": bool(replacement_search_performed),
-            },
-        )
-        if replacement_candidates_available is not None:
-            payload.metadata["replacement_candidates_available"] = int(replacement_candidates_available)
-        if supported_replacement_candidates_available is not None:
-            payload.metadata["supported_replacement_candidates_available"] = int(supported_replacement_candidates_available)
-        if rejection_summary is not None:
-            payload.metadata["rejection_summary"] = rejection_summary
-        if remaining_supported_retained_skills_not_visible is not None:
-            payload.metadata["remaining_supported_retained_skills_not_visible"] = list(
-                remaining_supported_retained_skills_not_visible
-            )
-        if final_action in {"kept", "removed"}:
-            payload.user_action = (
-                f"Add a truthful experience bullet, compact summary, or project summary showing {claim} work if this skill should remain visible."
-            )
-        return payload
 
     adjustments: list[dict[str, Any]] = []
     planning_step_ops: list[dict[str, Any]] = []
@@ -1179,13 +1116,6 @@ def _apply_evidence_aware_skill_replacements(
         usable = [item.candidate for item in candidates if item.usable]
         return all_supported, usable
 
-    def _default_kept_reason_for_claim(claim_key: str) -> str:
-        summary = candidate_search_lookup.get(claim_key, {})
-        result = str(summary.get("result", "")).strip()
-        if result:
-            return result
-        return "no_supported_retained_replacement_available"
-
     helpers = skill_repair_helpers or SkillRepairPlanner(
         apply_skill_repair=lambda **kwargs: (
             kwargs["model"],
@@ -1267,145 +1197,22 @@ def _apply_evidence_aware_skill_replacements(
     planning_step_ops = removal_result.planning_step_ops
     dispositions = removal_result.dispositions
     removed_claim_keys = removal_result.removed_claim_keys
-    dispositions_by_key = {
-        _normalize_skill_claim_key(item.claim): item
-        for item in dispositions
-        if isinstance(item, SkillDisposition)
-    }
-
-    existing_ops = current_planning.get("planning_operations")
-    if not isinstance(existing_ops, list):
-        existing_ops = []
-    if planning_step_ops:
-        current_planning["planning_operations"] = [*existing_ops, *planning_step_ops]
-
-    final_claim_coverage = [item for item in current_planning.get("claim_coverage", []) if isinstance(item, dict)]
-    final_lookup = {
-        _normalize_skill_claim_key(str(item.get("claim", ""))): item for item in final_claim_coverage
-    }
-    final_visible_claim_keys = set(final_lookup.keys())
-    for claim_key, disp in list(dispositions_by_key.items()):
-        if not isinstance(disp, SkillDisposition):
-            continue
-        if claim_key in removed_claim_keys:
-            continue
-        if claim_key in final_visible_claim_keys and disp.final_action == "replaced":
-            status = str(final_lookup.get(claim_key, {}).get("coverage_status", "unsupported"))
-            disp.final_action = "kept"
-            disp.coverage_status = status
-            disp.reason = _default_kept_reason_for_claim(claim_key)
-
-    for claim in current_planning.get("unsupported_visible_claims", []):
-        key = _normalize_skill_claim_key(str(claim))
-        if key in replaced_claim_keys:
-            continue
-        if key in removed_claim_keys:
-            continue
-        if any(_normalize_skill_claim_key(item.claim) == key for item in dispositions):
-            continue
-        status = str(final_lookup.get(key, {}).get("coverage_status", "unsupported"))
-        dispositions.append(
-            _build_disposition(
-                claim=str(claim),
-                coverage_status=status,
-                final_action="kept",
-                reason="no_supported_retained_replacement_available",
-                distinctive_tokens_required=list(final_lookup.get(key, {}).get("distinctive_tokens_required", [])),
-                distinctive_tokens_matched=list(final_lookup.get(key, {}).get("distinctive_tokens_matched", [])),
-                replacement_search_performed=bool(candidate_search_lookup.get(key)),
-                replacement_candidates_available=(
-                    int(candidate_search_lookup.get(key, {}).get("non_visible_retained_candidates_count", 0))
-                    if candidate_search_lookup.get(key)
-                    else 0
-                ),
-                supported_replacement_candidates_available=(
-                    int(candidate_search_lookup.get(key, {}).get("supported_non_visible_candidates_count", 0))
-                    if candidate_search_lookup.get(key)
-                    else 0
-                ),
-                supported_replacement_candidates_available_raw=(
-                    int(candidate_search_lookup.get(key, {}).get("supported_non_visible_candidates_count", 0))
-                    if candidate_search_lookup.get(key)
-                    else 0
-                ),
-                usable_supported_replacement_candidates_available=(
-                    int(candidate_search_lookup.get(key, {}).get("supported_non_visible_candidates_count", 0))
-                    if candidate_search_lookup.get(key)
-                    else 0
-                ),
-                rejection_summary=(
-                    [str(candidate_search_lookup.get(key, {}).get("result", "no_supported_retained_replacement_available"))]
-                    if candidate_search_lookup.get(key)
-                    else ["no_supported_retained_replacement_available"]
-                ),
-                remaining_supported_retained_skills_not_visible=[],
-            )
-        )
-    for claim in current_planning.get("weak_visible_claims", []):
-        key = _normalize_skill_claim_key(str(claim))
-        if key in replaced_claim_keys:
-            continue
-        if key in removed_claim_keys:
-            continue
-        if any(_normalize_skill_claim_key(item.claim) == key for item in dispositions):
-            continue
-        status = str(final_lookup.get(key, {}).get("coverage_status", "weak"))
-        dispositions.append(
-            _build_disposition(
-                claim=str(claim),
-                coverage_status=status,
-                final_action="kept",
-                reason="no_supported_retained_replacement_available",
-                distinctive_tokens_required=list(final_lookup.get(key, {}).get("distinctive_tokens_required", [])),
-                distinctive_tokens_matched=list(final_lookup.get(key, {}).get("distinctive_tokens_matched", [])),
-                replacement_search_performed=bool(candidate_search_lookup.get(key)),
-                replacement_candidates_available=(
-                    int(candidate_search_lookup.get(key, {}).get("non_visible_retained_candidates_count", 0))
-                    if candidate_search_lookup.get(key)
-                    else 0
-                ),
-                supported_replacement_candidates_available=(
-                    int(candidate_search_lookup.get(key, {}).get("supported_non_visible_candidates_count", 0))
-                    if candidate_search_lookup.get(key)
-                    else 0
-                ),
-                supported_replacement_candidates_available_raw=(
-                    int(candidate_search_lookup.get(key, {}).get("supported_non_visible_candidates_count", 0))
-                    if candidate_search_lookup.get(key)
-                    else 0
-                ),
-                usable_supported_replacement_candidates_available=(
-                    int(candidate_search_lookup.get(key, {}).get("supported_non_visible_candidates_count", 0))
-                    if candidate_search_lookup.get(key)
-                    else 0
-                ),
-                rejection_summary=(
-                    [str(candidate_search_lookup.get(key, {}).get("result", "no_supported_retained_replacement_available"))]
-                    if candidate_search_lookup.get(key)
-                    else ["no_supported_retained_replacement_available"]
-                ),
-                remaining_supported_retained_skills_not_visible=[],
-            )
-        )
-
-    current_planning["evidence_preservation_attempts"] = preserved_attempts
-    current_planning["evidence_preservation_decisions"] = preserved_decisions
-    current_planning["unsupported_visible_claims_before_preservation"] = unsupported_before
-    current_planning["weak_visible_claims_before_preservation"] = weak_before
-    current_planning["evidence_aware_skill_adjustments"] = adjustments
-    current_planning["unsupported_skill_removals"] = unsupported_skill_removals
-    current_planning["supported_replacement_candidates_considered"] = candidates_considered
-    current_planning["supported_replacement_candidate_searches"] = candidate_search_summaries
-    current_planning["final_weak_or_unsupported_claim_dispositions"] = [item.to_report_dict() for item in dispositions]
-    current_planning["unsupported_visible_claims_final"] = list(current_planning.get("unsupported_visible_claims", []))
-    current_planning["weak_visible_claims_final"] = list(current_planning.get("weak_visible_claims", []))
-    current_planning["unsupported_visible_claims_without_source_evidence"] = [
-        {"claim": item.get("claim"), "reason": "no_primary_source_evidence_found"}
-        for item in current_planning.get("claim_coverage", [])
-        if isinstance(item, dict)
-        and str(item.get("coverage_status")) == "unsupported"
-        and int(item.get("primary_supporting_evidence_count", 0) or 0) == 0
-    ]
+    current_planning = helpers.finalize_repair_report(
+        planning=current_planning,
+        planning_step_ops=planning_step_ops,
+        preserved_attempts=preserved_attempts,
+        preserved_decisions=preserved_decisions,
+        unsupported_before=unsupported_before,
+        weak_before=weak_before,
+        adjustments=adjustments,
+        unsupported_skill_removals=unsupported_skill_removals,
+        candidates_considered=candidates_considered,
+        candidate_search_summaries=candidate_search_summaries,
+        candidate_search_lookup=candidate_search_lookup,
+        dispositions=dispositions,
+        replaced_claim_keys=replaced_claim_keys,
+        removed_claim_keys=removed_claim_keys,
+    )
     return current_model, current_html, current_prepared, current_planning
 
 

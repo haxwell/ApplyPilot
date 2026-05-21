@@ -263,3 +263,61 @@ def test_remove_unsupported_claims_until_stable_removes_to_fixed_point() -> None
     post_payload = disp_lookup["PostgreSQL"].to_report_dict()
     assert post_payload["final_action"] == "removed"
     assert [a["action"] for a in post_payload["action_history"]] == ["replaced", "removed"]
+
+
+def test_finalize_repair_report_reconciles_stale_replaced_and_preserves_fields() -> None:
+    planner = SkillRepairPlanner(
+        apply_skill_repair=lambda **kwargs: (kwargs["model"], kwargs["html"], kwargs["prepared"], kwargs["planning"]),
+    )
+    stale_replaced = planner.build_disposition(
+        claim="PostgreSQL",
+        coverage_status="unsupported",
+        final_action="replaced",
+        reason="replaced_by_supported_retained_skill",
+        replacement="CI/CD",
+    )
+    removed_disp = planner.build_disposition(
+        claim="AWS S3",
+        coverage_status="unsupported",
+        final_action="replaced",
+        reason="replaced_by_supported_retained_skill",
+        replacement="Integration Testing",
+    )
+    removed_disp.mark_removed("unsupported_no_replacement_no_source_evidence")
+    planning = {
+        "claim_coverage": [
+            {"claim": "PostgreSQL", "coverage_status": "unsupported", "primary_supporting_evidence_count": 0},
+            {"claim": "Docker", "coverage_status": "weak_summary_only", "primary_supporting_evidence_count": 0},
+        ],
+        "unsupported_visible_claims": ["PostgreSQL"],
+        "weak_visible_claims": ["Docker"],
+        "planning_operations": [{"step": "existing"}],
+    }
+    out = planner.finalize_repair_report(
+        planning=planning,
+        planning_step_ops=[{"step": "new_op"}],
+        preserved_attempts=[{"x": 1}],
+        preserved_decisions=[{"y": 1}],
+        unsupported_before=["PostgreSQL"],
+        weak_before=["Docker"],
+        adjustments=[{"step": "evidence_aware_skill_replacement"}],
+        unsupported_skill_removals=[{"claim": "AWS S3", "kept": True}],
+        candidates_considered=[{"candidate": "Kafka"}],
+        candidate_search_summaries=[{"claim": "PostgreSQL", "result": "replacement_would_overflow_page_target"}],
+        candidate_search_lookup={"postgresql": {"result": "replacement_would_overflow_page_target"}},
+        dispositions=[stale_replaced, removed_disp],
+        replaced_claim_keys={"postgresql"},
+        removed_claim_keys={"aws s3"},
+    )
+
+    assert out["planning_operations"] == [{"step": "existing"}, {"step": "new_op"}]
+    assert out["unsupported_visible_claims_before_preservation"] == ["PostgreSQL"]
+    assert out["weak_visible_claims_before_preservation"] == ["Docker"]
+    assert out["evidence_aware_skill_adjustments"] == [{"step": "evidence_aware_skill_replacement"}]
+    assert out["unsupported_skill_removals"] == [{"claim": "AWS S3", "kept": True}]
+    assert out["supported_replacement_candidates_considered"] == [{"candidate": "Kafka"}]
+    dispositions = {item["claim"]: item for item in out["final_weak_or_unsupported_claim_dispositions"]}
+    assert dispositions["PostgreSQL"]["final_action"] == "kept"
+    assert dispositions["PostgreSQL"]["reason"] == "replacement_would_overflow_page_target"
+    assert dispositions["AWS S3"]["final_action"] == "removed"
+    assert "replacement" not in dispositions["AWS S3"]
