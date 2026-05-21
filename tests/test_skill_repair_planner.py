@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+import pytest
 
 from applypilot.scoring.pdf_render_model import SkillSection
 from applypilot.scoring.pdf_render_model import ResumeRenderModel
@@ -10,6 +11,23 @@ from applypilot.scoring.skill_repair_planner import (
     SkillRepairPlanner,
     SkillRepairResult,
 )
+
+
+def test_skill_repair_planner_can_be_constructed_without_apply_callback() -> None:
+    planner = SkillRepairPlanner()
+    assert isinstance(planner, SkillRepairPlanner)
+
+
+def test_skill_repair_planner_repair_raises_without_apply_callback() -> None:
+    planner = SkillRepairPlanner()
+    with pytest.raises(NotImplementedError, match="requires apply_skill_repair"):
+        planner.repair(
+            model=ResumeRenderModel(name="Alex"),
+            html="<html>",
+            prepared=SimpleNamespace(),
+            planning={},
+            context=SkillRepairContext(template_name="professional_compact"),
+        )
 
 
 def test_skill_repair_planner_calls_injected_repair_fn() -> None:
@@ -71,7 +89,7 @@ def test_skill_repair_planner_passes_render_planning_service() -> None:
 
 
 def test_alias_conflict_detects_visible_alias_and_ignores_replaced_claim() -> None:
-    planner = SkillRepairPlanner(apply_skill_repair=lambda **kwargs: (kwargs["model"], kwargs["html"], kwargs["prepared"], kwargs["planning"]))
+    planner = SkillRepairPlanner()
 
     assert (
         planner.alias_conflict(
@@ -104,7 +122,6 @@ def test_alias_conflict_detects_visible_alias_and_ignores_replaced_claim() -> No
 
 def test_visible_skill_count_and_names_dedupes_and_falls_back_to_claim_coverage() -> None:
     planner = SkillRepairPlanner(
-        apply_skill_repair=lambda **kwargs: (kwargs["model"], kwargs["html"], kwargs["prepared"], kwargs["planning"]),
         extract_visible_skill_claims_fn=lambda _model, _prepared: ["Kafka", "kafka", " Spring Boot "],
     )
     count, names = planner.visible_skill_count_and_names(
@@ -119,7 +136,6 @@ def test_visible_skill_count_and_names_dedupes_and_falls_back_to_claim_coverage(
         raise RuntimeError("boom")
 
     planner_fallback = SkillRepairPlanner(
-        apply_skill_repair=lambda **kwargs: (kwargs["model"], kwargs["html"], kwargs["prepared"], kwargs["planning"]),
         extract_visible_skill_claims_fn=_raise,
     )
     fallback_count, fallback_names = planner_fallback.visible_skill_count_and_names(
@@ -132,7 +148,7 @@ def test_visible_skill_count_and_names_dedupes_and_falls_back_to_claim_coverage(
 
 
 def test_build_disposition_metadata_and_removed_serialization() -> None:
-    planner = SkillRepairPlanner(apply_skill_repair=lambda **kwargs: (kwargs["model"], kwargs["html"], kwargs["prepared"], kwargs["planning"]))
+    planner = SkillRepairPlanner()
     replaced = planner.build_disposition(
         claim="PostgreSQL",
         coverage_status="unsupported",

@@ -69,7 +69,7 @@ class SkillRepairPlanner:
     def __init__(
         self,
         *,
-        apply_skill_repair: SkillRepairFn,
+        apply_skill_repair: SkillRepairFn | None = None,
         render_planning_service: RenderPlanningService | None = None,
         extract_visible_skill_claims_fn: Callable[[ResumeRenderModel, Any], list[str]] | None = None,
     ) -> None:
@@ -997,6 +997,10 @@ class SkillRepairPlanner:
         planning: dict[str, Any],
         context: SkillRepairContext,
     ) -> SkillRepairResult:
+        if self._apply_skill_repair is None:
+            raise NotImplementedError(
+                "SkillRepairPlanner.repair requires apply_skill_repair until direct orchestration is implemented."
+            )
         model, html, prepared, planning = self._apply_skill_repair(
             model=model,
             html=html,
