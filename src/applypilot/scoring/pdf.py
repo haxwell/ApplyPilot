@@ -941,7 +941,12 @@ def _apply_evidence_aware_skill_replacements(
     render_planning_service: RenderPlanningService | None = None,
     skill_repair_helpers: SkillRepairPlanner | None = None,
 ) -> tuple[ResumeRenderModel, str, Any, dict[str, Any]]:
-    """Prefer supported visible skills over weak/unsupported claims."""
+    """Legacy compatibility wrapper for evidence-aware skill repair.
+
+    The normal production path now calls ``SkillRepairPlanner.repair(...)`` with
+    ``SkillRepairDependencies`` and direct orchestration. This wrapper remains
+    available for older internal callers and focused compatibility tests.
+    """
     adjustments: list[dict[str, Any]] = []
     planning_step_ops: list[dict[str, Any]] = []
     unsupported_skill_removals: list[dict[str, Any]] = []

@@ -153,6 +153,54 @@ def test_render_model_to_pdf_with_planning_uses_dependencies_without_legacy_call
     assert planner._dependencies is not None
 
 
+def test_render_model_to_pdf_with_planning_uses_direct_skill_repair_path(
+    monkeypatch, tmp_path: Path
+) -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        experience=[ResumeEntry(title="Role 1", subtitle="Company 1 | 2022", bullets=["Bullet 1"])],
+    )
+    monkeypatch.setattr(
+        pdf_module,
+        "_build_html_and_prepared_for_resume",
+        lambda *_args, **_kwargs: ("<html>base</html>", object()),
+    )
+    monkeypatch.setattr(
+        pdf_module,
+        "_build_planning_with_evidence",
+        lambda **_kwargs: {
+            "template_used": "professional_compact",
+            "allowed_physical_pages": 2,
+            "planning_attempts": [],
+            "planning_operations": [],
+            "render_modes_final": {"skills_mode": "selected"},
+            "claim_coverage": [],
+            "unsupported_visible_claims": [],
+            "weak_visible_claims": [],
+        },
+    )
+    monkeypatch.setattr(
+        pdf_module,
+        "_apply_evidence_preservation",
+        lambda **kwargs: (kwargs["model"], kwargs["html"], kwargs["prepared"], kwargs["planning"]),
+    )
+
+    def _legacy_should_not_run(**_kwargs):
+        raise AssertionError("legacy compatibility wrapper should not be used by the production path")
+
+    monkeypatch.setattr(pdf_module, "_apply_evidence_aware_skill_replacements", _legacy_should_not_run)
+
+    html_path, planning = pdf_module.render_model_to_pdf_with_planning(
+        model,
+        output_path=tmp_path / "planned.html",
+        html_only=True,
+    )
+
+    assert html_path.exists()
+    assert planning.get("unsupported_visible_claims_final") == []
+    assert planning.get("weak_visible_claims_final") == []
+
+
 def test_evidence_aware_pdf_planner_delegates_repair_to_skill_repair_planner() -> None:
     calls: list[str] = []
 
