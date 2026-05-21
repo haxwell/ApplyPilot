@@ -197,6 +197,9 @@ def test_render_model_to_pdf_with_planning_uses_direct_skill_repair_path(
     )
 
     assert html_path.exists()
+    assert planning.get("evidence_aware_skill_adjustments") == []
+    assert planning.get("unsupported_skill_removals") == []
+    assert planning.get("final_weak_or_unsupported_claim_dispositions") == []
     assert planning.get("unsupported_visible_claims_final") == []
     assert planning.get("weak_visible_claims_final") == []
 
