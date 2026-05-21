@@ -289,6 +289,8 @@ class ClaimCoverage:
     normalized_variants: list[str] = field(default_factory=list)
     distinctive_tokens_required: list[str] = field(default_factory=list)
     distinctive_tokens_matched: list[str] = field(default_factory=list)
+    support_match_methods: list[str] = field(default_factory=list)
+    supporting_evidence_match_reasons: list[dict[str, str]] = field(default_factory=list)
 
 
 class SimilarityProvider(Protocol):
@@ -623,6 +625,36 @@ def _claim_has_required_distinctive_match(claim: str, evidence_text: str) -> boo
         # Claims like CI/CD are inherently generic and can be supported by generic CI/CD evidence.
         return True
     return bool(_distinctive_tokens_matched(claim, evidence_text))
+
+
+def _concept_support_match_reason(claim: str, evidence_text: str) -> str | None:
+    claim_key = normalize_phrase_for_matching(_normalize_claim_fragment(claim))
+    evidence_norm = normalize_phrase_for_matching(evidence_text)
+    evidence_tokens = set(_phrase_tokens(evidence_norm))
+    if claim_key == "distributed systems":
+        if "distributed" not in evidence_tokens:
+            return None
+        context_terms = {
+            "services",
+            "systems",
+            "microservices",
+            "transactional",
+            "workflows",
+            "workflow",
+            "messaging",
+            "queues",
+            "pipelines",
+            "apis",
+            "orchestration",
+            "kafka",
+            "event",
+            "events",
+            "driven",
+        }
+        if evidence_tokens & context_terms:
+            return "concept_support_distributed_systems_context"
+        return None
+    return None
 
 
 def claim_supports_distinctive_tokens(claim: str, evidence_text: str) -> bool:
@@ -984,7 +1016,9 @@ def _build_claim_coverage(
     alias_provider = SkillAliasProvider()
     for claim in claims:
         matched: list[EvidenceItem] = []
+        match_reasons_by_evidence_id: dict[str, set[str]] = {}
         variants = claim_variants(claim, alias_provider=alias_provider)
+        claim_key_normalized = normalize_phrase_for_matching(_normalize_claim_fragment(claim))
         required_distinctive = claim_distinctive_tokens(claim)
         matched_distinctive: set[str] = set()
         for evidence in evidence_items:
@@ -1007,9 +1041,20 @@ def _build_claim_coverage(
                 _claim_has_required_distinctive_match(claim, evidence_variant)
                 for evidence_variant in evidence_variants
             )
-            if (score >= 0.18 or direct) and distinctive_ok:
+            concept_reason = _concept_support_match_reason(claim, evidence.text)
+            concept_ok = concept_reason is not None
+            require_concept_support = claim_key_normalized == "distributed systems"
+            base_match = (score >= 0.18 or direct) and distinctive_ok
+            if (base_match and not require_concept_support) or concept_ok:
                 matched.append(evidence)
                 evidence.matched_visible_claims.append(claim)
+                reasons = match_reasons_by_evidence_id.setdefault(evidence.id, set())
+                if concept_reason:
+                    reasons.add("concept_support")
+                elif direct:
+                    reasons.add("direct_phrase")
+                else:
+                    reasons.add("alias_or_similarity")
                 for evidence_variant in evidence_variants:
                     matched_distinctive.update(_distinctive_tokens_matched(claim, evidence_variant))
         primary = [item for item in matched if _is_primary_evidence(item)]
@@ -1046,6 +1091,22 @@ def _build_claim_coverage(
                 normalized_variants=variants,
                 distinctive_tokens_required=required_distinctive,
                 distinctive_tokens_matched=sorted(matched_distinctive),
+                support_match_methods=sorted(
+                    {
+                        reason
+                        for evidence_id in match_reasons_by_evidence_id
+                        for reason in match_reasons_by_evidence_id[evidence_id]
+                    }
+                ),
+                supporting_evidence_match_reasons=[
+                    {
+                        "source_label": item.source_label,
+                        "source_path": item.source_path,
+                        "reason": ",".join(sorted(match_reasons_by_evidence_id.get(item.id, set()))),
+                        "text": item.text[:180],
+                    }
+                    for item in ranked[:3]
+                ],
             )
         )
     return coverage

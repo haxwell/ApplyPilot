@@ -341,6 +341,73 @@ def test_compound_claim_not_supported_when_distinctive_subclaim_missing() -> Non
     assert sorted(aws_group["distinctive_tokens_matched"]) == ["ec2", "lambda", "route53"]
 
 
+def test_distributed_systems_supported_by_concept_context_match() -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        skills=[SkillSection(category="Core", value="Distributed Systems")],
+        experience=[
+            ResumeEntry(
+                company="Acme",
+                title="Engineer",
+                bullets=["Developed distributed services that produced and consumed events to orchestrate transactional workflows."],
+            )
+        ],
+        projects=[],
+    )
+    prepared = SimpleNamespace(
+        detailed_experience=model.experience,
+        compact_experience=[],
+        projects_to_render=[],
+        projects_mode="hidden",
+        experience_mode="detailed",
+        earlier_experience_mode="compact",
+        summary_mode="hidden",
+        skills_mode="selected",
+        selected_skills_max_lines=1,
+    )
+    report = build_evidence_mapping_report(
+        job_description="Distributed backend architecture ownership.",
+        model=model,
+        prepared=prepared,
+    )
+    by_claim = {item["claim"]: item for item in report["claim_coverage"]}
+    assert by_claim["Distributed Systems"]["coverage_status"] == "supported"
+    assert "concept_support" in by_claim["Distributed Systems"]["support_match_methods"]
+
+
+def test_distributed_systems_not_supported_by_irrelevant_distributed_phrase() -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        skills=[SkillSection(category="Core", value="Distributed Systems")],
+        experience=[
+            ResumeEntry(
+                company="Acme",
+                title="Coordinator",
+                bullets=["Distributed weekly reports to stakeholders and coordinated team responsibilities."],
+            )
+        ],
+        projects=[],
+    )
+    prepared = SimpleNamespace(
+        detailed_experience=model.experience,
+        compact_experience=[],
+        projects_to_render=[],
+        projects_mode="hidden",
+        experience_mode="detailed",
+        earlier_experience_mode="compact",
+        summary_mode="hidden",
+        skills_mode="selected",
+        selected_skills_max_lines=1,
+    )
+    report = build_evidence_mapping_report(
+        job_description="Distributed backend architecture ownership.",
+        model=model,
+        prepared=prepared,
+    )
+    by_claim = {item["claim"]: item for item in report["claim_coverage"]}
+    assert by_claim["Distributed Systems"]["coverage_status"] != "supported"
+
+
 def test_claim_variants_handle_versions_and_parentheses() -> None:
     assert "Java" in claim_variants("Java 17-21")
     assert "Spring Boot" in claim_variants("Spring Boot 3.x")

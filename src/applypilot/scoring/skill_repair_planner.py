@@ -271,12 +271,40 @@ class SkillRepairPlanner:
             return None
         return parent, subclaims
 
+    def _skills_selection_pool(self, skills_selection: dict[str, Any] | None) -> list[str]:
+        pool: list[str] = []
+        seen: set[str] = set()
+        if not isinstance(skills_selection, dict):
+            return []
+        retained = skills_selection.get("retained_skills")
+        if isinstance(retained, list):
+            for item in retained:
+                if not isinstance(item, dict):
+                    continue
+                skill = str(item.get("skill", "")).strip()
+                key = self._normalize_skill_claim_key(skill)
+                if not skill or not key or key in seen:
+                    continue
+                seen.add(key)
+                pool.append(skill)
+        dropped = skills_selection.get("dropped_skills")
+        if isinstance(dropped, list):
+            for raw in dropped:
+                skill = str(raw).strip()
+                key = self._normalize_skill_claim_key(skill)
+                if not skill or not key or key in seen:
+                    continue
+                seen.add(key)
+                pool.append(skill)
+        return pool
+
     def _rewrite_compound_skills(
         self,
         *,
         model: ResumeRenderModel,
         prepared: Any,
         build_claim_coverage_for_claims_fn: Callable[..., list[Any]],
+        candidate_skill_pool: list[str] | None = None,
     ) -> tuple[ResumeRenderModel, list[dict[str, Any]], list[str], list[str]]:
         repairs: list[dict[str, Any]] = []
         removed_subclaims: list[str] = []
@@ -290,13 +318,40 @@ class SkillRepairPlanner:
                 model=model,
                 prepared=prepared,
             )
-            item = coverage[0] if coverage else None
+            claim_key = self._normalize_skill_claim_key(claim)
+            item = next(
+                (
+                    candidate
+                    for candidate in coverage
+                    if self._normalize_skill_claim_key(str(getattr(candidate, "claim", ""))) == claim_key
+                ),
+                None,
+            )
             if item is None:
                 return False
             return (
                 str(getattr(item, "coverage_status", "")) == "supported"
                 and int(getattr(item, "retained_primary_supporting_evidence_count", 0) or 0) > 0
             )
+
+        def _claim_evidence_sources(claim: str) -> list[str]:
+            coverage = build_claim_coverage_for_claims_fn(
+                claims=[claim],
+                model=model,
+                prepared=prepared,
+            )
+            claim_key = self._normalize_skill_claim_key(claim)
+            item = next(
+                (
+                    candidate
+                    for candidate in coverage
+                    if self._normalize_skill_claim_key(str(getattr(candidate, "claim", ""))) == claim_key
+                ),
+                None,
+            )
+            if item is None:
+                return []
+            return list(getattr(item, "top_supporting_evidence", [])[:2])
 
         for idx, section in enumerate(updated_skills):
             tokens = self._split_skill_tokens_preserving_parentheses(str(section.value))
@@ -327,12 +382,14 @@ class SkillRepairPlanner:
                 by_key = {self._normalize_skill_claim_key(str(item.claim)): item for item in coverage}
                 supported_subclaims: list[str] = []
                 unsupported_subclaims: list[str] = []
+                retained_evidence_sources: dict[str, list[str]] = {}
                 for claim in subclaims:
                     item = by_key.get(self._normalize_skill_claim_key(claim))
                     retained_primary = int(getattr(item, "retained_primary_supporting_evidence_count", 0) or 0) if item else 0
                     status = str(getattr(item, "coverage_status", "")) if item else "unsupported"
                     if status == "supported" and retained_primary > 0:
                         supported_subclaims.append(claim)
+                        retained_evidence_sources[claim] = list(getattr(item, "top_supporting_evidence", [])[:2]) if item else []
                     else:
                         unsupported_subclaims.append(claim)
                 if not unsupported_subclaims:
@@ -353,6 +410,10 @@ class SkillRepairPlanner:
                             "rewritten_skill": rewritten,
                             "removed_subclaims": unsupported_subclaims,
                             "kept_subclaims": supported_subclaims,
+                            "inferred_parent": parent,
+                            "candidate_subclaims": list(subclaims),
+                            "retained_subclaim_evidence_sources": retained_evidence_sources,
+                            "family_cap_group_recovery": False,
                             "reason": "unsupported_compound_subclaims_removed",
                         }
                     )
@@ -378,7 +439,10 @@ class SkillRepairPlanner:
                 token_positions.setdefault(token, []).append(pos)
 
             parent_groups: dict[str, list[tuple[int, str, str]]] = {}
-            for pos, token in enumerate(tokens):
+            pool_tokens = list(tokens)
+            if candidate_skill_pool:
+                pool_tokens.extend([token for token in candidate_skill_pool if str(token).strip()])
+            for pos, token in enumerate(pool_tokens):
                 if "(" in token or ")" in token:
                     continue
                 parts = [part for part in token.strip().split() if part]
@@ -395,16 +459,24 @@ class SkillRepairPlanner:
 
             for parent, entries in parent_groups.items():
                 # Only infer when there is meaningful grouping signal.
+                unique_by_subclaim: dict[str, tuple[int, str, str]] = {}
+                for entry in sorted(entries, key=lambda item: item[0]):
+                    subclaim_key = self._normalize_skill_claim_key(entry[1])
+                    unique_by_subclaim.setdefault(subclaim_key, entry)
+                entries = list(unique_by_subclaim.values())
                 if len(entries) < 2:
                     continue
                 ordered_supported: list[str] = []
                 removed_for_parent: list[str] = []
+                retained_evidence_sources: dict[str, list[str]] = {}
                 remove_positions: set[int] = set()
                 for pos, subclaim, original_token in sorted(entries, key=lambda item: item[0]):
-                    remove_positions.add(pos)
+                    if pos < len(tokens):
+                        remove_positions.add(pos)
                     if _claim_supported(original_token):
                         if subclaim not in ordered_supported:
                             ordered_supported.append(subclaim)
+                            retained_evidence_sources[subclaim] = _claim_evidence_sources(original_token)
                     else:
                         removed_for_parent.append(subclaim)
 
@@ -422,6 +494,7 @@ class SkillRepairPlanner:
                         remove_positions.add(pos)
                         if token.strip() not in ordered_supported:
                             ordered_supported.append(token.strip())
+                            retained_evidence_sources[token.strip()] = _claim_evidence_sources(combined_claim)
 
                 parent_supported = _claim_supported(parent)
                 rewritten: str | None = None
@@ -453,6 +526,8 @@ class SkillRepairPlanner:
                             "kept_subclaims": ordered_supported,
                             "inferred_parent": parent,
                             "candidate_subclaims": [entry[1] for entry in sorted(entries, key=lambda item: item[0])],
+                            "retained_subclaim_evidence_sources": retained_evidence_sources,
+                            "family_cap_group_recovery": any(entry[0] >= len(tokens) for entry in entries),
                             "reason": "unsupported_compound_subclaims_removed",
                         }
                     )
@@ -495,10 +570,12 @@ class SkillRepairPlanner:
         build_planning_with_evidence_fn: Callable[..., dict[str, Any]],
         measured_fit_fn: Callable[[dict[str, Any]], tuple[int | None, bool]],
     ) -> tuple[ResumeRenderModel, str, Any, dict[str, Any], list[dict[str, Any]], list[str], list[str]]:
+        candidate_skill_pool = self._skills_selection_pool(context.skills_selection)
         next_model, repairs, removed_subclaims, unresolved = self._rewrite_compound_skills(
             model=model,
             prepared=prepared,
             build_claim_coverage_for_claims_fn=build_claim_coverage_for_claims_fn,
+            candidate_skill_pool=candidate_skill_pool,
         )
         if not repairs:
             return model, html, prepared, planning, [], [], []
