@@ -661,9 +661,24 @@ class SkillRepairPlanner:
 
         while True:
             removal_made = False
-            removal_targets = [
-                str(claim).strip() for claim in current_planning.get("unsupported_visible_claims", []) if str(claim).strip()
+            unsupported_targets = [
+                str(claim).strip()
+                for claim in current_planning.get("unsupported_visible_claims", [])
+                if str(claim).strip()
             ]
+            weak_summary_only_targets: list[str] = []
+            weak_claim_items = [item for item in current_planning.get("claim_coverage", []) if isinstance(item, dict)]
+            weak_lookup = {
+                self._normalize_skill_claim_key(str(item.get("claim", ""))): item for item in weak_claim_items
+            }
+            for claim in current_planning.get("weak_visible_claims", []):
+                claim_text = str(claim).strip()
+                if not claim_text:
+                    continue
+                item = weak_lookup.get(self._normalize_skill_claim_key(claim_text), {})
+                if str(item.get("coverage_status", "")) == "weak_summary_only":
+                    weak_summary_only_targets.append(claim_text)
+            removal_targets = list(dict.fromkeys([*unsupported_targets, *weak_summary_only_targets]))
             if not removal_targets:
                 break
 
@@ -674,14 +689,15 @@ class SkillRepairPlanner:
                     self._normalize_skill_claim_key(str(item.get("claim", ""))): item for item in claim_coverage_items
                 }
                 coverage_item = claim_coverage_lookup.get(claim_key, {})
-                if str(coverage_item.get("coverage_status", "")) != "unsupported":
+                claim_status = str(coverage_item.get("coverage_status", ""))
+                if claim_status not in {"unsupported", "weak_summary_only"}:
                     continue
                 if int(coverage_item.get("primary_supporting_evidence_count", 0) or 0) > 0:
                     continue
 
                 supported_candidates_raw, usable_candidates = self.find_usable_supported_replacements_for_claim(
                     claim=claim,
-                    claim_status="unsupported",
+                    claim_status=claim_status,
                     model=current_model,
                     prepared=current_prepared,
                     planning=current_planning,
@@ -709,10 +725,15 @@ class SkillRepairPlanner:
                     prepared=current_prepared,
                     planning=current_planning,
                 )
+                removal_reason = (
+                    "unsupported_visible_claim_no_supported_replacement_no_source_evidence"
+                    if claim_status == "unsupported"
+                    else "weak_summary_only_visible_claim_no_supported_replacement_no_primary_evidence"
+                )
                 removal_record: dict[str, Any] = {
                     "claim": claim,
-                    "coverage_status": "unsupported",
-                    "reason": "unsupported_visible_claim_no_supported_replacement_no_source_evidence",
+                    "coverage_status": claim_status,
+                    "reason": removal_reason,
                     "visible_skill_count_before": visible_before,
                     "min_visible_skill_count": min_visible_skill_count,
                     "kept": False,
@@ -720,7 +741,7 @@ class SkillRepairPlanner:
                 op = PlanningOperation(
                     step="unsupported_skill_removal",
                     claim=claim,
-                    reason="unsupported_visible_claim_no_supported_replacement_no_source_evidence",
+                    reason=removal_reason,
                     visible_skill_count_before=visible_before,
                     metadata={"from": claim},
                 ).to_report_dict()
@@ -781,7 +802,12 @@ class SkillRepairPlanner:
                     removed_claim_keys.add(claim_key)
                     disp = dispositions_by_key.get(claim_key)
                     if isinstance(disp, SkillDisposition):
-                        disp.mark_removed("unsupported_no_replacement_no_source_evidence")
+                        remove_disposition_reason = (
+                            "unsupported_no_replacement_no_source_evidence"
+                            if claim_status == "unsupported"
+                            else "weak_summary_only_no_replacement_no_primary_evidence"
+                        )
+                        disp.mark_removed(remove_disposition_reason)
                         disp.metadata["replacement_candidates_available"] = max(
                             int(disp.metadata.get("replacement_candidates_available", 0) or 0),
                             len(supported_candidates_raw),
@@ -791,11 +817,16 @@ class SkillRepairPlanner:
                         disp.usable_supported_replacement_candidates_available = len(usable_candidates)
                         disp.metadata["remaining_supported_retained_skills_not_visible"] = list(usable_candidates)
                     else:
+                        remove_disposition_reason = (
+                            "unsupported_no_replacement_no_source_evidence"
+                            if claim_status == "unsupported"
+                            else "weak_summary_only_no_replacement_no_primary_evidence"
+                        )
                         new_disp = self.build_disposition(
                             claim=claim,
-                            coverage_status="unsupported",
+                            coverage_status=claim_status,
                             final_action="removed",
-                            reason="unsupported_no_replacement_no_source_evidence",
+                            reason=remove_disposition_reason,
                             replacement_search_performed=True,
                             replacement_candidates_available=len(supported_candidates_raw),
                             supported_replacement_candidates_available=len(usable_candidates),
@@ -804,7 +835,7 @@ class SkillRepairPlanner:
                             rejection_summary=["no_supported_retained_replacement_available"],
                             remaining_supported_retained_skills_not_visible=list(usable_candidates),
                         )
-                        new_disp.mark_removed("unsupported_no_replacement_no_source_evidence")
+                        new_disp.mark_removed(remove_disposition_reason)
                         dispositions.append(new_disp)
                         dispositions_by_key[claim_key] = new_disp
                     unsupported_skill_removals.append(removal_record)

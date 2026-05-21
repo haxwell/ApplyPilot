@@ -797,6 +797,23 @@ def test_theme_labels_avoid_stemmed_truncated_artifacts() -> None:
     assert not any(re.search(r"\bcorrectnes\b", label) for label in labels)
 
 
+def test_theme_labels_filter_benefits_and_legal_boilerplate() -> None:
+    jd = """
+    Affirm offers excellent benefits, flexible time off, base pay transparency, and
+    flexible spending wallets. We are an equal employment opportunity employer.
+    You will design resilient backend services and improve API reliability.
+    """
+    themes = derive_job_themes(jd)
+    labels = [theme.label.lower() for theme in themes]
+    joined = " ".join(labels)
+    assert "time off" not in joined
+    assert "base pay" not in joined
+    assert "flexible spending" not in joined
+    assert "equal employment" not in joined
+    assert "affirm s" not in joined
+    assert "backend services" in joined or "api reliability" in joined or "resilient backend" in joined
+
+
 def test_strong_unused_evidence_is_reported_when_not_retained() -> None:
     model = _sample_model()
     model.skills = [SkillSection(category="Core", value="Throughput, Compliance")]

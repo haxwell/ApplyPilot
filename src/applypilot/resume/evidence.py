@@ -61,6 +61,66 @@ _THEME_GENERIC_TERMS = {
     "responsibilities",
 }
 
+_THEME_NOISE_TOKENS = {
+    "s",
+    "ll",
+    "re",
+    "ve",
+    "d",
+    "m",
+    "t",
+}
+
+_THEME_BOILERPLATE_TERMS = {
+    "benefits",
+    "compensation",
+    "salary",
+    "time",
+    "off",
+    "base",
+    "pay",
+    "equity",
+    "pto",
+    "holiday",
+    "holidays",
+    "medical",
+    "dental",
+    "vision",
+    "retirement",
+    "insurance",
+    "stipend",
+    "stock",
+    "spending",
+    "wallets",
+    "transparency",
+    "equal",
+    "employment",
+    "opportunity",
+    "eeo",
+    "privacy",
+    "policy",
+    "accommodation",
+    "accommodations",
+    "veteran",
+    "disability",
+    "citizenship",
+    "location",
+    "office",
+    "offices",
+}
+
+_THEME_BOILERPLATE_PHRASES = {
+    "about us",
+    "who we are",
+    "equal employment",
+    "pay transparency",
+    "privacy policy",
+    "salary range",
+    "base pay",
+    "time off",
+    "flexible spending",
+}
+
 _GENERIC_CLAIM_TERMS = {
     "architecture",
     "development",
@@ -358,9 +418,16 @@ def derive_job_themes(job_description: str, *, max_themes: int = 8) -> list[JobT
                 gram = tokens[i : i + n]
                 if len(set(gram)) == 1:
                     continue
+                if any(token in _THEME_NOISE_TOKENS or (len(token) == 1 and token.isalpha()) for token in gram):
+                    continue
                 phrase = " ".join(gram)
                 generic_ratio = sum(1 for token in gram if token in _THEME_GENERIC_TERMS) / max(1, len(gram))
                 if generic_ratio >= 0.67:
+                    continue
+                boilerplate_token_ratio = sum(1 for token in gram if token in _THEME_BOILERPLATE_TERMS) / max(1, len(gram))
+                if boilerplate_token_ratio >= 0.5:
+                    continue
+                if any(noise_phrase in phrase for noise_phrase in _THEME_BOILERPLATE_PHRASES):
                     continue
                 phrase_scores[phrase] = phrase_scores.get(phrase, 0.0) + boost
                 phrase_terms.setdefault(phrase, set()).update(gram)
