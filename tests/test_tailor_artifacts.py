@@ -275,6 +275,73 @@ def test_run_tailoring_reports_skills_count_diagnostics_with_validator_scope(
     assert diagnostics["validator_count_scope"] == "tailored_json_skills"
     assert diagnostics["rendered_visible_skill_names"] == ["Java", "Spring Boot", "Kafka"]
     assert "skills_warning_context" in report_data
+    assert report_data["validator_warning_scope"] == "tailored_json"
+    assert report_data["validator_warnings_tailored_json"]
+    assert report_data["validator_warnings_rendered_resume"] == []
+
+
+def test_run_tailoring_marks_needs_review_when_final_weak_claims_lack_retained_primary(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    conn = _FakeConnection()
+    job = _make_job()
+    report = _approved_report()
+    report["tailored_json"] = {
+        "title": "Staff Software Engineer - AI II",
+        "summary": "Summary",
+        "skills": {"Core": "Docker, Kubernetes, Java"},
+        "experience": [{"header": "Engineer", "subtitle": "Example | 2020-2024", "bullets": ["Built APIs"]}],
+        "projects": [],
+        "education": "BS",
+    }
+
+    monkeypatch.setattr(tailor, "TAILORED_DIR", tmp_path)
+    monkeypatch.setattr(tailor, "load_profile", lambda: {"personal": {"full_name": "Alex Example"}})
+    monkeypatch.setattr(tailor, "load_resume_text", lambda: "base resume")
+    monkeypatch.setattr(tailor, "get_connection", lambda: conn)
+    monkeypatch.setattr(tailor, "get_jobs_by_stage", lambda **_: [job])
+    monkeypatch.setattr(tailor, "tailor_resume", lambda *args, **kwargs: ("tailored resume", report))
+
+    def _fake_render_model_to_pdf_with_planning(
+        model,
+        output_path: Path,
+        template_name: str = "professional_compact",
+        html_only: bool = False,
+        **_kwargs,
+    ) -> tuple[Path, dict]:
+        del model, template_name, html_only
+        out = Path(output_path)
+        out.write_bytes(b"%PDF-1.4 fake\n")
+        return out, {
+            "template_used": "professional_compact",
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [
+                {
+                    "claim": "Kubernetes",
+                    "coverage_status": "weak",
+                    "retained_primary_supporting_evidence_count": 0,
+                }
+            ],
+            "unsupported_visible_claims_final": [],
+            "weak_visible_claims_final": ["Kubernetes"],
+        }
+
+    monkeypatch.setattr(
+        "applypilot.scoring.pdf.render_model_to_pdf_with_planning",
+        _fake_render_model_to_pdf_with_planning,
+    )
+
+    result = tailor.run_tailoring(min_score=7, limit=1, validation_mode="normal")
+    assert result["approved"] == 0
+    assert result["failed"] == 1
+
+    report_paths = list(tmp_path.glob("*_REPORT.json"))
+    assert len(report_paths) == 1
+    report_data = json.loads(report_paths[0].read_text(encoding="utf-8"))
+    assert report_data["status"] == "needs_review"
+    assert "Kubernetes" in report_data["unresolved_weak_claims_without_retained_primary"]
 
 
 def test_run_tailoring_falls_back_to_text_pdf_when_structured_render_fails(monkeypatch, tmp_path: Path) -> None:

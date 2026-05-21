@@ -972,6 +972,91 @@ def _attach_skills_count_diagnostics(report: dict) -> None:
         )
 
 
+def _attach_validator_warning_scope(report: dict) -> None:
+    if not isinstance(report, dict):
+        return
+    validator = report.get("validator", {})
+    if not isinstance(validator, dict):
+        return
+    warnings = validator.get("warnings", [])
+    if not isinstance(warnings, list):
+        return
+    warnings = [str(item) for item in warnings]
+    report["validator_warnings_tailored_json"] = list(warnings)
+
+    diagnostics = report.get("skills_count_diagnostics", {})
+    if not isinstance(diagnostics, dict):
+        diagnostics = {}
+    rendered_visible_count = int(diagnostics.get("rendered_visible_skill_count", 0) or 0)
+
+    rendered_warnings: list[str] = []
+    for warning in warnings:
+        lowered = warning.lower()
+        if "skills section may be too broad" in lowered and rendered_visible_count <= 24:
+            continue
+        if warning.startswith("Banned words:"):
+            # Validator warnings are based on tailored JSON. Treat banned-word
+            # warnings as source-level diagnostics unless independently confirmed
+            # in rendered output diagnostics.
+            continue
+        rendered_warnings.append(warning)
+
+    report["validator_warnings_rendered_resume"] = rendered_warnings
+    report["validator_warning_scope"] = "tailored_json"
+    if rendered_warnings != warnings:
+        report["validator_warning_context"] = (
+            "Validator warnings are generated from tailored JSON input. Rendered-resume "
+            "warnings are filtered to only include issues that plausibly apply to visible output."
+        )
+
+
+def _apply_final_render_quality_status(report: dict) -> None:
+    if not isinstance(report, dict):
+        return
+    status = str(report.get("status", ""))
+    if status not in {"approved", "approved_with_judge_warning", "approved_with_warnings"}:
+        return
+    planning = report.get("pdf_render_planning", {})
+    if not isinstance(planning, dict):
+        return
+
+    claim_coverage = planning.get("claim_coverage", [])
+    if not isinstance(claim_coverage, list):
+        claim_coverage = []
+    weak_final = planning.get("weak_visible_claims_final", [])
+    if not isinstance(weak_final, list):
+        weak_final = []
+
+    weak_lookup: dict[str, dict[str, Any]] = {}
+    for item in claim_coverage:
+        if not isinstance(item, dict):
+            continue
+        claim = str(item.get("claim", "")).strip()
+        if not claim:
+            continue
+        weak_lookup[claim.lower()] = item
+
+    unresolved_zero_retained: list[str] = []
+    for claim in weak_final:
+        key = str(claim).strip().lower()
+        item = weak_lookup.get(key, {})
+        retained_primary = int(item.get("retained_primary_supporting_evidence_count", 0) or 0)
+        if retained_primary == 0:
+            unresolved_zero_retained.append(str(claim).strip())
+
+    if unresolved_zero_retained:
+        report["status"] = "needs_review"
+        report["quality_warning"] = (
+            "Final rendered resume still contains weak visible claims without retained primary evidence."
+        )
+        report["unresolved_weak_claims_without_retained_primary"] = unresolved_zero_retained
+        return
+
+    if weak_final and status == "approved":
+        report["status"] = "approved_with_warnings"
+        report["quality_warning"] = "Final rendered resume contains weak visible claims; review recommended."
+
+
 # ── Resume Assembly (profile-driven header) ──────────────────────────────
 
 def _normalize_company_text(value: str) -> str:
@@ -1896,7 +1981,14 @@ def run_tailoring(
     t0 = time.time()
     completed = 0
     results: list[dict] = []
-    stats: dict[str, int] = {"approved": 0, "failed_validation": 0, "failed_judge": 0, "error": 0}
+    stats: dict[str, int] = {
+        "approved": 0,
+        "approved_with_warnings": 0,
+        "failed_validation": 0,
+        "failed_judge": 0,
+        "needs_review": 0,
+        "error": 0,
+    }
     from applypilot.scoring.pdf import DEFAULT_PDF_TEMPLATE, resolve_pdf_template_name
     from applypilot.scoring.pdf_templates.registry import get_template, get_template_input_preferences
 
@@ -2038,6 +2130,9 @@ def run_tailoring(
 
             report["status"] = status
             _attach_skills_count_diagnostics(report)
+            _attach_validator_warning_scope(report)
+            _apply_final_render_quality_status(report)
+            status = str(report.get("status", status))
             report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
             result = {
@@ -2076,7 +2171,7 @@ def run_tailoring(
 
     # Persist to DB: increment attempt counter for ALL, save path only for approved
     now = datetime.now(timezone.utc).isoformat()
-    _success_statuses = {"approved", "approved_with_judge_warning"}
+    _success_statuses = {"approved", "approved_with_judge_warning", "approved_with_warnings"}
     for r in results:
         if r["status"] in _success_statuses:
             conn.execute(
@@ -2102,8 +2197,12 @@ def run_tailoring(
     )
 
     return {
-        "approved": stats.get("approved", 0),
-        "failed": stats.get("failed_validation", 0) + stats.get("failed_judge", 0),
+        "approved": (
+            stats.get("approved", 0)
+            + stats.get("approved_with_judge_warning", 0)
+            + stats.get("approved_with_warnings", 0)
+        ),
+        "failed": stats.get("failed_validation", 0) + stats.get("failed_judge", 0) + stats.get("needs_review", 0),
         "errors": stats.get("error", 0),
         "elapsed": elapsed,
     }

@@ -797,7 +797,7 @@ def test_evidence_aware_skill_adjustment_removes_weak_summary_only_but_keeps_wea
                     "claim": claim,
                     "coverage_status": status,
                     "primary_supporting_evidence_count": primary,
-                    "retained_primary_supporting_evidence_count": 1 if status == "supported" else 0,
+                    "retained_primary_supporting_evidence_count": 1 if status in {"supported", "weak"} else 0,
                 }
             )
         return {
@@ -1153,6 +1153,63 @@ def test_weak_summary_only_skill_not_removed_when_minimum_visible_skill_guard_hi
     )
 
 
+def test_weak_claim_removed_when_no_retained_primary_evidence_and_above_minimum(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="Kubernetes, Java")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built Java services."])],
+    )
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [
+            {
+                "claim": "Kubernetes",
+                "coverage_status": "weak",
+                "primary_supporting_evidence_count": 1,
+                "retained_primary_supporting_evidence_count": 0,
+            },
+            {
+                "claim": "Java",
+                "coverage_status": "supported",
+                "primary_supporting_evidence_count": 1,
+                "retained_primary_supporting_evidence_count": 1,
+            },
+        ],
+        "unsupported_visible_claims": [],
+        "weak_visible_claims": ["Kubernetes"],
+    }
+    monkeypatch.setattr(pdf_module, "_build_html_and_prepared_for_resume", lambda *_args, **_kwargs: ("<html/>", SimpleNamespace()))
+    monkeypatch.setattr(
+        pdf_module,
+        "_build_planning_with_evidence",
+        lambda **_kwargs: {
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [{"claim": "Java", "coverage_status": "supported", "retained_primary_supporting_evidence_count": 1}],
+            "unsupported_visible_claims": [],
+            "weak_visible_claims": [],
+        },
+    )
+    new_model, _html, _prepared, updated = _apply_evidence_aware_skill_replacements(
+        model=model,
+        html="<html/>",
+        prepared=SimpleNamespace(),
+        planning=planning,
+        template_name="professional_compact",
+        job_description="Kubernetes platform reliability.",
+        skills_selection={"retained_skills": [{"skill": "Kubernetes", "score": 90.0}, {"skill": "Java", "score": 89.0}], "min_count": 1},
+    )
+    assert "Kubernetes" not in extract_all_skill_claims(new_model)
+    assert "Kubernetes" not in updated.get("weak_visible_claims_final", [])
+    assert any(
+        item.get("claim") == "Kubernetes"
+        and item.get("coverage_status") == "weak"
+        and item.get("kept") is True
+        and item.get("removal_applied") is True
+        for item in updated.get("unsupported_skill_removals", [])
+    )
+
+
 def test_unsupported_skill_removal_keeps_weak_claims_and_can_remove_weak_summary_only(monkeypatch) -> None:
     model = ResumeRenderModel(
         skills=[SkillSection(category="Core", value="Docker, Messaging, Java")],
@@ -1197,7 +1254,7 @@ def test_unsupported_skill_removal_keeps_weak_claims_and_can_remove_weak_summary
                     "claim": claim,
                     "coverage_status": status,
                     "primary_supporting_evidence_count": primary,
-                    "retained_primary_supporting_evidence_count": 1 if status == "supported" else 0,
+                    "retained_primary_supporting_evidence_count": 1 if status in {"supported", "weak"} else 0,
                 }
             )
         return {
@@ -1857,10 +1914,10 @@ def test_hidden_project_preservation_uses_supporting_bullet_when_compact_summary
     assert updated["evidence_preservation_attempts"][0]["kept"] is True
 
 
-def test_evidence_preservation_decision_records_no_supported_operation() -> None:
+def test_evidence_preservation_decision_records_compact_summary_preservation_attempt(monkeypatch) -> None:
     model = ResumeRenderModel(
         skills=[SkillSection(category="Core", value="Jenkins, Java")],
-        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built Java services"])],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built Java services"], compact_summary="Worked with Jenkins")],
         projects=[],
     )
     planning = {
@@ -1885,6 +1942,68 @@ def test_evidence_preservation_decision_records_no_supported_operation() -> None
             }
         ],
     }
+    monkeypatch.setattr(pdf_module, "_build_html_and_prepared_for_resume", lambda *_args, **_kwargs: ("<html/>", SimpleNamespace()))
+    monkeypatch.setattr(
+        pdf_module,
+        "_build_planning_with_evidence",
+        lambda **_kwargs: {
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [
+                {
+                    "claim": "Jenkins",
+                    "coverage_status": "supported",
+                    "primary_supporting_evidence_count": 1,
+                    "retained_primary_supporting_evidence_count": 1,
+                }
+            ],
+            "unsupported_visible_claims": [],
+            "weak_visible_claims": [],
+            "evidence_available_but_not_rendered": [],
+        },
+    )
+    _model, _html, _prepared, updated = _apply_evidence_preservation(
+        model=model,
+        html="<html/>",
+        prepared=SimpleNamespace(detailed_bullet_cap=2, earlier_experience_mode="compact"),
+        planning=planning,
+        template_name="professional_compact",
+        job_description="CI platform reliability.",
+    )
+    assert updated["evidence_preservation_decisions"][0]["decision"] in {"attempted", "not_attempted"}
+    assert any(
+        item.get("operation") == "restore_experience_compact_summary"
+        for item in updated.get("evidence_preservation_attempts", [])
+    )
+
+
+def test_evidence_preservation_reports_low_score_skip_reason_for_non_distinctive_candidate() -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="GitLab CI, Java")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built Java services"])],
+    )
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [{"claim": "GitLab CI", "coverage_status": "weak", "primary_supporting_evidence_count": 1, "retained_primary_supporting_evidence_count": 0}],
+        "unsupported_visible_claims": [],
+        "weak_visible_claims": ["GitLab CI"],
+        "evidence_available_but_not_rendered": [
+            {
+                "claim": "GitLab CI",
+                "candidate_evidence_items": [
+                    {
+                        "source_type": "project_bullet",
+                        "source_label": "Acme",
+                        "source_path": "projects[0].bullets[0]",
+                        "text": "Improved release process quality.",
+                        "evidence_score": 0.1,
+                        "reason_not_rendered": "hidden_project",
+                    }
+                ],
+            }
+        ],
+    }
     _model, _html, _prepared, updated = _apply_evidence_preservation(
         model=model,
         html="<html/>",
@@ -1894,7 +2013,8 @@ def test_evidence_preservation_decision_records_no_supported_operation() -> None
         job_description="CI platform reliability.",
     )
     assert updated["evidence_preservation_attempts"] == []
-    assert updated["evidence_preservation_decisions"][0]["decision"] == "not_attempted"
+    assert updated["evidence_preservation_decisions"][0]["decision"] == "skipped_low_evidence_score"
+    assert updated["evidence_preservation_decisions"][0]["reason"] == "evidence_score_below_preservation_threshold"
 
 
 def test_evidence_preservation_reports_cannot_identify_trimmed_bullet_state() -> None:

@@ -617,6 +617,67 @@ def _clone_model_with_compact_summary_from_bullet(
     )
 
 
+def _clone_model_with_restored_experience_compact_summary(
+    model: ResumeRenderModel,
+    entry_idx: int,
+    cap: int | None,
+) -> ResumeRenderModel | None:
+    if entry_idx < 0 or entry_idx >= len(model.experience):
+        return None
+    entry = model.experience[entry_idx]
+    summary = entry.compact_summary.strip()
+    if not summary:
+        return None
+    bullets = list(entry.bullets)
+    changed = False
+    if summary in bullets:
+        current_idx = bullets.index(summary)
+        if isinstance(cap, int) and cap > 0 and current_idx >= cap:
+            snippet = bullets.pop(current_idx)
+            insert_at = min(max(cap - 1, 0), len(bullets))
+            bullets.insert(insert_at, snippet)
+            changed = True
+    else:
+        if isinstance(cap, int) and cap > 0:
+            insert_at = min(max(cap - 1, 0), len(bullets))
+        else:
+            insert_at = 0
+        bullets.insert(insert_at, summary)
+        changed = True
+    if not changed:
+        return None
+    experience = list(model.experience)
+    updated_entry = ResumeEntry(
+        title=entry.title,
+        subtitle=entry.subtitle,
+        bullets=bullets,
+        compact_summary=entry.compact_summary,
+        company=entry.company,
+        role=entry.role,
+        location=entry.location,
+        technologies=list(entry.technologies),
+        is_contract=entry.is_contract,
+        start_date=entry.start_date,
+        end_date=entry.end_date,
+        dates=entry.dates,
+        metadata=dict(entry.metadata),
+    )
+    experience[entry_idx] = updated_entry
+    return ResumeRenderModel(
+        name=model.name,
+        title=model.title,
+        location=model.location,
+        contact=model.contact,
+        summary=model.summary,
+        skills=list(model.skills),
+        experience=experience,
+        projects=list(model.projects),
+        education=model.education,
+        certifications=model.certifications,
+        render_options=dict(model.render_options),
+    )
+
+
 def _clone_model_with_preserved_project_line(
     model: ResumeRenderModel,
     project_idx: int,
@@ -770,6 +831,7 @@ def _apply_evidence_preservation(
 
         kept = False
         attempted_ops: list[str] = []
+        skipped_due_threshold = False
         candidate_sources = [
             {
                 "source_type": str(item.get("source_type", "")),
@@ -783,10 +845,14 @@ def _apply_evidence_preservation(
             source_path = str(candidate.get("source_path", ""))
             reason_not_rendered = str(candidate.get("reason_not_rendered", "unknown"))
             evidence_score = float(candidate.get("evidence_score", 0.0) or 0.0)
+            candidate_text = str(candidate.get("text", ""))
             parsed = _parse_source_path(source_path)
             operation = "unknown"
             next_model: ResumeRenderModel | None = None
-            if evidence_score < 0.25:
+            score_below_threshold = evidence_score < 0.25
+            has_distinctive_support = bool(candidate_text and claim_supports_distinctive_tokens(claim, candidate_text))
+            if score_below_threshold and not has_distinctive_support:
+                skipped_due_threshold = True
                 continue
             if parsed and parsed[0] == "projects":
                 project_idx = parsed[1]
@@ -798,22 +864,37 @@ def _apply_evidence_preservation(
                         source_path=source_path,
                         claim=claim,
                     )
-            elif parsed and parsed[0] == "experience" and parsed[2] is not None:
+            elif parsed and parsed[0] == "experience":
                 entry_idx, bullet_idx = parsed[1], parsed[2]
-                if reason_not_rendered in {"bullet_trimmed", "not_selected_by_bullet_cap"} and effective_cap is not None:
-                    operation = "restore_trimmed_bullet"
-                    next_model = _clone_model_with_restored_experience_bullet(current_model, entry_idx, bullet_idx, effective_cap)
-                elif reason_not_rendered in {"bullet_trimmed", "not_selected_by_bullet_cap"} and effective_cap is None:
-                    decision["decision"] = "not_attempted"
-                    decision["reason"] = "cannot_identify_trimmed_bullet_retention_state"
-                    decision["attempted_operations"] = []
-                    decision["candidate_sources"] = candidate_sources
-                    preservation_decisions.append(decision)
-                    kept = False
-                    break
-                elif reason_not_rendered in {"earlier_grouped", "role_collapsed"} and earlier_mode == "grouped":
-                    operation = "promote_grouped_support_signal"
-                    next_model = _clone_model_with_compact_summary_from_bullet(current_model, entry_idx, bullet_idx)
+                if bullet_idx is not None:
+                    if reason_not_rendered in {"bullet_trimmed", "not_selected_by_bullet_cap"} and effective_cap is not None:
+                        operation = "restore_trimmed_bullet"
+                        next_model = _clone_model_with_restored_experience_bullet(current_model, entry_idx, bullet_idx, effective_cap)
+                    elif reason_not_rendered in {"bullet_trimmed", "not_selected_by_bullet_cap"} and effective_cap is None:
+                        decision["decision"] = "not_attempted"
+                        decision["reason"] = "cannot_identify_trimmed_bullet_retention_state"
+                        decision["attempted_operations"] = []
+                        decision["candidate_sources"] = candidate_sources
+                        preservation_decisions.append(decision)
+                        kept = False
+                        break
+                    elif reason_not_rendered in {"earlier_grouped", "role_collapsed"} and earlier_mode == "grouped":
+                        operation = "promote_grouped_support_signal"
+                        next_model = _clone_model_with_compact_summary_from_bullet(current_model, entry_idx, bullet_idx)
+                else:
+                    if reason_not_rendered in {
+                        "unknown",
+                        "bullet_trimmed",
+                        "not_selected_by_bullet_cap",
+                        "role_collapsed",
+                        "earlier_grouped",
+                    }:
+                        operation = "restore_experience_compact_summary"
+                        next_model = _clone_model_with_restored_experience_compact_summary(
+                            current_model,
+                            entry_idx,
+                            effective_cap,
+                        )
 
             if next_model is None:
                 continue
@@ -894,11 +975,24 @@ def _apply_evidence_preservation(
                 and not bool(attempt.get("claim_coverage_improved", False))
                 for attempt in preservation_attempts
             )
-            decision["decision"] = "skipped_would_exceed_page_target" if overflow_attempted else "not_attempted"
+            if overflow_attempted:
+                decision["decision"] = "skipped_would_exceed_page_target"
+            elif skipped_due_threshold and not attempted_ops:
+                decision["decision"] = "skipped_low_evidence_score"
+            else:
+                decision["decision"] = "not_attempted"
             decision["reason"] = (
                 "all_candidate_operations_exceeded_page_target"
                 if overflow_attempted
-                else ("no_claim_coverage_improvement_after_render" if no_improvement else "no_supported_preservation_operation_for_candidate_evidence")
+                else (
+                    "no_claim_coverage_improvement_after_render"
+                    if no_improvement
+                    else (
+                        "evidence_score_below_preservation_threshold"
+                        if skipped_due_threshold and not attempted_ops
+                        else "no_supported_preservation_operation_for_candidate_evidence"
+                    )
+                )
             )
             decision["attempted_operations"] = attempted_ops
             decision["candidate_sources"] = candidate_sources

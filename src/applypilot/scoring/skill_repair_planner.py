@@ -666,7 +666,7 @@ class SkillRepairPlanner:
                 for claim in current_planning.get("unsupported_visible_claims", [])
                 if str(claim).strip()
             ]
-            weak_summary_only_targets: list[str] = []
+            weak_targets: list[str] = []
             weak_claim_items = [item for item in current_planning.get("claim_coverage", []) if isinstance(item, dict)]
             weak_lookup = {
                 self._normalize_skill_claim_key(str(item.get("claim", ""))): item for item in weak_claim_items
@@ -676,9 +676,9 @@ class SkillRepairPlanner:
                 if not claim_text:
                     continue
                 item = weak_lookup.get(self._normalize_skill_claim_key(claim_text), {})
-                if str(item.get("coverage_status", "")) == "weak_summary_only":
-                    weak_summary_only_targets.append(claim_text)
-            removal_targets = list(dict.fromkeys([*unsupported_targets, *weak_summary_only_targets]))
+                if str(item.get("coverage_status", "")) in {"weak_summary_only", "weak"}:
+                    weak_targets.append(claim_text)
+            removal_targets = list(dict.fromkeys([*unsupported_targets, *weak_targets]))
             if not removal_targets:
                 break
 
@@ -690,9 +690,9 @@ class SkillRepairPlanner:
                 }
                 coverage_item = claim_coverage_lookup.get(claim_key, {})
                 claim_status = str(coverage_item.get("coverage_status", ""))
-                if claim_status not in {"unsupported", "weak_summary_only"}:
+                if claim_status not in {"unsupported", "weak_summary_only", "weak"}:
                     continue
-                if int(coverage_item.get("primary_supporting_evidence_count", 0) or 0) > 0:
+                if int(coverage_item.get("retained_primary_supporting_evidence_count", 0) or 0) > 0:
                     continue
 
                 supported_candidates_raw, usable_candidates = self.find_usable_supported_replacements_for_claim(
@@ -728,7 +728,11 @@ class SkillRepairPlanner:
                 removal_reason = (
                     "unsupported_visible_claim_no_supported_replacement_no_source_evidence"
                     if claim_status == "unsupported"
-                    else "weak_summary_only_visible_claim_no_supported_replacement_no_primary_evidence"
+                    else (
+                        "weak_summary_only_visible_claim_no_supported_replacement_no_primary_evidence"
+                        if claim_status == "weak_summary_only"
+                        else "weak_visible_claim_no_supported_replacement_no_retained_primary_evidence"
+                    )
                 )
                 removal_record: dict[str, Any] = {
                     "claim": claim,
@@ -737,6 +741,9 @@ class SkillRepairPlanner:
                     "visible_skill_count_before": visible_before,
                     "min_visible_skill_count": min_visible_skill_count,
                     "kept": False,
+                    "operation_kept": False,
+                    "removal_applied": False,
+                    "claim_removed": False,
                 }
                 op = PlanningOperation(
                     step="unsupported_skill_removal",
@@ -750,6 +757,8 @@ class SkillRepairPlanner:
                     removal_record["visible_skill_count_after"] = visible_before
                     removal_record["revert_reason"] = "visible_skill_count_below_minimum"
                     op["kept"] = False
+                    op["operation_kept"] = False
+                    op["removal_applied"] = False
                     op["fit"] = True
                     op["measured_pages"] = current_planning.get("measured_pages_final")
                     op["revert_reason"] = "visible_skill_count_below_minimum"
@@ -773,6 +782,8 @@ class SkillRepairPlanner:
                     removal_record["visible_skill_count_after"] = visible_before
                     removal_record["revert_reason"] = "unable_to_remove_claim"
                     op["kept"] = False
+                    op["operation_kept"] = False
+                    op["removal_applied"] = False
                     op["fit"] = True
                     op["measured_pages"] = current_planning.get("measured_pages_final")
                     op["revert_reason"] = "unable_to_remove_claim"
@@ -794,7 +805,12 @@ class SkillRepairPlanner:
 
                 if fit and visible_after >= min_visible_skill_count:
                     removal_record["kept"] = True
+                    removal_record["operation_kept"] = True
+                    removal_record["removal_applied"] = True
+                    removal_record["claim_removed"] = True
                     op["kept"] = True
+                    op["operation_kept"] = True
+                    op["removal_applied"] = True
                     current_model = next_model
                     current_html = next_html
                     current_prepared = next_prepared
@@ -805,7 +821,11 @@ class SkillRepairPlanner:
                         remove_disposition_reason = (
                             "unsupported_no_replacement_no_source_evidence"
                             if claim_status == "unsupported"
-                            else "weak_summary_only_no_replacement_no_primary_evidence"
+                            else (
+                                "weak_summary_only_no_replacement_no_primary_evidence"
+                                if claim_status == "weak_summary_only"
+                                else "weak_no_replacement_no_retained_primary_evidence"
+                            )
                         )
                         disp.mark_removed(remove_disposition_reason)
                         disp.metadata["replacement_candidates_available"] = max(
@@ -820,7 +840,11 @@ class SkillRepairPlanner:
                         remove_disposition_reason = (
                             "unsupported_no_replacement_no_source_evidence"
                             if claim_status == "unsupported"
-                            else "weak_summary_only_no_replacement_no_primary_evidence"
+                            else (
+                                "weak_summary_only_no_replacement_no_primary_evidence"
+                                if claim_status == "weak_summary_only"
+                                else "weak_no_replacement_no_retained_primary_evidence"
+                            )
                         )
                         new_disp = self.build_disposition(
                             claim=claim,
@@ -844,7 +868,12 @@ class SkillRepairPlanner:
                     break
                 else:
                     op["kept"] = False
+                    op["operation_kept"] = False
+                    op["removal_applied"] = False
                     removal_record["kept"] = False
+                    removal_record["operation_kept"] = False
+                    removal_record["removal_applied"] = False
+                    removal_record["claim_removed"] = False
                     removal_record["revert_reason"] = (
                         "visible_skill_count_below_minimum" if visible_after < min_visible_skill_count else "page_fit_failed"
                     )
