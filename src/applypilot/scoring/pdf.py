@@ -941,13 +941,22 @@ def _apply_evidence_aware_skill_replacements(
     job_description: str,
     skills_selection: dict[str, Any] | None,
     render_planning_service: RenderPlanningService | None = None,
+    skill_repair_helpers: SkillRepairPlanner | None = None,
 ) -> tuple[ResumeRenderModel, str, Any, dict[str, Any]]:
     """Prefer supported visible skills over weak/unsupported claims."""
 
     def _claim_variants_set(claim_text: str) -> set[str]:
+        if skill_repair_helpers is not None:
+            return skill_repair_helpers.claim_variants_set(claim_text)
         return {_normalize_skill_claim_key(item) for item in claim_variants(claim_text)}
 
     def _alias_conflict(candidate: str, visible_claims: list[str], claim_being_replaced: str) -> bool:
+        if skill_repair_helpers is not None:
+            return skill_repair_helpers.alias_conflict(
+                candidate=candidate,
+                visible_claims=visible_claims,
+                claim_being_replaced=claim_being_replaced,
+            )
         candidate_variants = _claim_variants_set(candidate)
         if not candidate_variants:
             return False
@@ -975,6 +984,23 @@ def _apply_evidence_aware_skill_replacements(
         rejection_summary: list[str] | str | None = None,
         remaining_supported_retained_skills_not_visible: list[str] | None = None,
     ) -> SkillDisposition:
+        if skill_repair_helpers is not None:
+            return skill_repair_helpers.build_disposition(
+                claim=claim,
+                coverage_status=coverage_status,
+                final_action=final_action,
+                reason=reason,
+                replacement=replacement,
+                distinctive_tokens_required=distinctive_tokens_required,
+                distinctive_tokens_matched=distinctive_tokens_matched,
+                replacement_search_performed=replacement_search_performed,
+                replacement_candidates_available=replacement_candidates_available,
+                supported_replacement_candidates_available=supported_replacement_candidates_available,
+                supported_replacement_candidates_available_raw=supported_replacement_candidates_available_raw,
+                usable_supported_replacement_candidates_available=usable_supported_replacement_candidates_available,
+                rejection_summary=rejection_summary,
+                remaining_supported_retained_skills_not_visible=remaining_supported_retained_skills_not_visible,
+            )
         payload = SkillDisposition(
             claim=claim,
             coverage_status=coverage_status,
@@ -1044,6 +1070,12 @@ def _apply_evidence_aware_skill_replacements(
         prepared_state: Any,
         planning_state: dict[str, Any],
     ) -> tuple[int, list[str]]:
+        if skill_repair_helpers is not None:
+            return skill_repair_helpers.visible_skill_count_and_names(
+                model=model_state,
+                prepared=prepared_state,
+                planning=planning_state,
+            )
         try:
             names = [claim for claim in extract_visible_skill_claims(model_state, prepared_state) if str(claim).strip()]
             deduped: list[str] = []
