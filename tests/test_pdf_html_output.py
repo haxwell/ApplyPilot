@@ -333,6 +333,41 @@ def test_render_model_to_pdf_with_planning_returns_planning_report(monkeypatch, 
     assert "strong_unused_evidence" in planning
 
 
+def test_render_model_to_pdf_with_planning_does_not_call_legacy_skill_repair_wrapper(
+    monkeypatch, tmp_path: Path
+) -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        title="Senior Engineer",
+        summary="Built and shipped reliable systems.",
+        contact="alex@example.com | 555-111-2222",
+        skills=[SkillSection(category="Core", value="Java, Spring Boot, SQL")],
+        experience=[ResumeEntry(title="Role 1", subtitle="Company 1 | 2022", bullets=["Bullet 1"])],
+    )
+
+    def _fail_if_called(**_kwargs):
+        raise AssertionError("legacy skill repair wrapper should not be used by production path")
+
+    monkeypatch.setattr(pdf_module, "_apply_evidence_aware_skill_replacements", _fail_if_called)
+    monkeypatch.setattr("applypilot.scoring.pdf.measure_html_page_count", lambda _html: 1)
+
+    html_path, planning = render_model_to_pdf_with_planning(
+        model,
+        output_path=tmp_path / "model_direct_repair_path.html",
+        template_name="professional_compact",
+        html_only=True,
+        job_description="Java Spring Boot SQL backend role",
+        skills_selection={"min_count": 1},
+    )
+
+    assert html_path.exists()
+    assert "evidence_aware_skill_adjustments" in planning
+    assert "unsupported_skill_removals" in planning
+    assert "final_weak_or_unsupported_claim_dispositions" in planning
+    assert "unsupported_visible_claims_final" in planning
+    assert "weak_visible_claims_final" in planning
+
+
 def test_evidence_aware_skill_replacement_kept_when_pdf_still_fits(monkeypatch) -> None:
     model = ResumeRenderModel(
         skills=[SkillSection(category="Core", value="PostgreSQL, Java, Spring Boot, Docker, Kubernetes, Messaging, Kafka")],
