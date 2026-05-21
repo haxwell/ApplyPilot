@@ -17,7 +17,6 @@ from applypilot.resume.evidence import (
     build_evidence_mapping_report,
     claim_distinctive_tokens,
     claim_supports_distinctive_tokens,
-    claim_variants,
     extract_all_skill_claims,
     extract_visible_skill_claims,
 )
@@ -944,30 +943,6 @@ def _apply_evidence_aware_skill_replacements(
     skill_repair_helpers: SkillRepairPlanner | None = None,
 ) -> tuple[ResumeRenderModel, str, Any, dict[str, Any]]:
     """Prefer supported visible skills over weak/unsupported claims."""
-
-    def _claim_variants_set(claim_text: str) -> set[str]:
-        if skill_repair_helpers is not None:
-            return skill_repair_helpers.claim_variants_set(claim_text)
-        return {_normalize_skill_claim_key(item) for item in claim_variants(claim_text)}
-
-    def _alias_conflict(candidate: str, visible_claims: list[str], claim_being_replaced: str) -> bool:
-        if skill_repair_helpers is not None:
-            return skill_repair_helpers.alias_conflict(
-                candidate=candidate,
-                visible_claims=visible_claims,
-                claim_being_replaced=claim_being_replaced,
-            )
-        candidate_variants = _claim_variants_set(candidate)
-        if not candidate_variants:
-            return False
-        for visible in visible_claims:
-            if _normalize_skill_claim_key(visible) == _normalize_skill_claim_key(claim_being_replaced):
-                continue
-            if candidate_variants & _claim_variants_set(visible):
-                return True
-        return False
-
-
     adjustments: list[dict[str, Any]] = []
     planning_step_ops: list[dict[str, Any]] = []
     unsupported_skill_removals: list[dict[str, Any]] = []
@@ -999,6 +974,15 @@ def _apply_evidence_aware_skill_replacements(
     render_context = RenderPlanningContext(
         template_name=template_name,
         job_description=job_description,
+    )
+    helpers = skill_repair_helpers or SkillRepairPlanner(
+        apply_skill_repair=lambda **kwargs: (
+            kwargs["model"],
+            kwargs["html"],
+            kwargs["prepared"],
+            kwargs["planning"],
+        ),
+        render_planning_service=render_planning_service,
     )
 
     def _visible_skill_count_and_names(
@@ -1095,7 +1079,11 @@ def _apply_evidence_aware_skill_replacements(
                 candidate.rejection_reasons.append("rejected_already_used")
                 candidates.append(candidate)
                 continue
-            if _alias_conflict(token, visible_claims_state, claim):
+            if helpers.alias_conflict(
+                candidate=token,
+                visible_claims=visible_claims_state,
+                claim_being_replaced=claim,
+            ):
                 candidate.alias_conflict = True
                 candidate.rejection_reasons.append("rejected_alias_conflict")
                 candidates.append(candidate)
@@ -1115,16 +1103,6 @@ def _apply_evidence_aware_skill_replacements(
         all_supported = [item.candidate for item in candidates if item.supported]
         usable = [item.candidate for item in candidates if item.usable]
         return all_supported, usable
-
-    helpers = skill_repair_helpers or SkillRepairPlanner(
-        apply_skill_repair=lambda **kwargs: (
-            kwargs["model"],
-            kwargs["html"],
-            kwargs["prepared"],
-            kwargs["planning"],
-        ),
-        render_planning_service=render_planning_service,
-    )
     replacement_result = helpers.apply_replacements(
         model=current_model,
         html=current_html,
