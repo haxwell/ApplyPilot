@@ -154,3 +154,39 @@ def test_build_disposition_metadata_and_removed_serialization() -> None:
     )
     kept_payload = kept.to_report_dict()
     assert "user_action" in kept_payload
+
+
+def test_apply_replacements_replaces_unsupported_claim() -> None:
+    planner = SkillRepairPlanner(
+        apply_skill_repair=lambda **kwargs: (kwargs["model"], kwargs["html"], kwargs["prepared"], kwargs["planning"]),
+    )
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="PostgreSQL, Kafka")],
+    )
+    result = planner.apply_replacements(
+        model=model,
+        html="<html/>",
+        prepared=object(),
+        planning={"claim_coverage": [{"claim": "PostgreSQL", "coverage_status": "unsupported"}]},
+        context=SkillRepairContext(template_name="professional_compact"),
+        score_map={"postgresql": 90.0, "kafka": 88.0},
+        build_claim_coverage_for_claims_fn=lambda **_kwargs: [
+            SimpleNamespace(claim="Kafka", coverage_status="supported")
+        ],
+        extract_all_skill_claims_fn=lambda _model: ["PostgreSQL", "Kafka"],
+        clone_model_with_swapped_skills_fn=lambda _model, _from, _to: ResumeRenderModel(
+            skills=[SkillSection(category="Core", value="Kafka, PostgreSQL")]
+        ),
+        measured_fit_fn=lambda _planning: (2, True),
+        build_html_and_prepared_fn=lambda *_args, **_kwargs: ("<html-swapped/>", object()),
+        build_planning_with_evidence_fn=lambda **_kwargs: {
+            "claim_coverage": [{"claim": "Kafka", "coverage_status": "supported"}],
+            "unsupported_visible_claims": [],
+            "weak_visible_claims": [],
+            "measured_pages_final": 2,
+            "allowed_physical_pages": 2,
+        },
+    )
+
+    assert any(item.get("claim") == "PostgreSQL" and item.get("final_action") == "replaced" for item in [d.to_report_dict() for d in result.dispositions])
+    assert result.adjustments and result.adjustments[0]["step"] == "evidence_aware_skill_replacement"

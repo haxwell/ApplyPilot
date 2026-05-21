@@ -39,7 +39,7 @@ from applypilot.scoring.render_planning_service import (
     RenderPlanningContext,
     RenderPlanningService,
 )
-from applypilot.scoring.skill_repair_planner import SkillRepairPlanner
+from applypilot.scoring.skill_repair_planner import SkillRepairContext, SkillRepairPlanner
 from applypilot.scoring.pdf_templates.registry import get_template
 
 log = logging.getLogger(__name__)
@@ -1053,7 +1053,6 @@ def _apply_evidence_aware_skill_replacements(
     weak_before = list(planning.get("weak_visible_claims_before_preservation", []))
     used_candidates: set[str] = set()
     replaced_claim_keys: set[str] = set()
-    replacement_priority = ["unsupported", "weak_summary_only", "weak"]
     min_visible_skill_count = 12
     if isinstance(skills_selection, dict):
         try:
@@ -1187,272 +1186,54 @@ def _apply_evidence_aware_skill_replacements(
             return result
         return "no_supported_retained_replacement_available"
 
-    for target_status in replacement_priority:
-        claim_coverage_items = [
-            item for item in current_planning.get("claim_coverage", []) if isinstance(item, dict)
-        ]
-        claim_coverage_lookup = {
-            _normalize_skill_claim_key(str(item.get("claim", ""))): item for item in claim_coverage_items
-        }
-        target_claims = [
-            str(item.get("claim", ""))
-            for item in claim_coverage_items
-            if str(item.get("coverage_status", "")) == target_status and str(item.get("claim", "")).strip()
-        ]
-        target_claims = list(dict.fromkeys(target_claims))
-        for claim in target_claims:
-            claim_key = _normalize_skill_claim_key(claim)
-            if claim_key in replaced_claim_keys:
-                continue
-
-            all_claims = extract_all_skill_claims(current_model)
-            visible_claims = [str(item.get("claim", "")) for item in claim_coverage_items if isinstance(item, dict)]
-            visible_set = {_normalize_skill_claim_key(value) for value in visible_claims if value.strip()}
-            hidden_claims = [token for token in all_claims if _normalize_skill_claim_key(token) not in visible_set]
-            rejection_codes: list[str] = []
-            retained_skills_count = len(all_claims)
-            visible_skills_count = len([claim_token for claim_token in visible_claims if claim_token.strip()])
-            search_summary: dict[str, Any] = {
-                "claim": claim,
-                "coverage_status": target_status,
-                "retained_skills_count": retained_skills_count,
-                "visible_skills_count": visible_skills_count,
-                "non_visible_retained_candidates_count": len(hidden_claims),
-                "supported_non_visible_candidates_count": 0,
-                "result": "no_supported_retained_replacement_available",
-            }
-            # Report that the search sees visible candidates but cannot use them.
-            visible_rejections_recorded = 0
-            for token in all_claims:
-                token_key = _normalize_skill_claim_key(token)
-                if token_key in visible_set and token_key != claim_key and visible_rejections_recorded < 3:
-                    candidates_considered.append(
-                        {
-                            "claim": claim,
-                            "claim_status": target_status,
-                            "candidate": token,
-                            "candidate_score": score_map.get(token_key),
-                            "candidate_coverage_status": "visible",
-                            "decision": "rejected_already_visible",
-                        }
-                    )
-                    visible_rejections_recorded += 1
-                    rejection_codes.append("rejected_already_visible")
-            if not hidden_claims:
-                candidate_search_summaries.append(search_summary)
-                candidate_search_lookup[claim_key] = search_summary
-                dispositions.append(
-                    _build_disposition(
-                        claim=claim,
-                        coverage_status=target_status,
-                        final_action="kept",
-                        reason="no_supported_retained_replacement_available",
-                        distinctive_tokens_required=list(claim_coverage_lookup.get(claim_key, {}).get("distinctive_tokens_required", [])),
-                        distinctive_tokens_matched=list(claim_coverage_lookup.get(claim_key, {}).get("distinctive_tokens_matched", [])),
-                        replacement_search_performed=True,
-                        replacement_candidates_available=0,
-                        supported_replacement_candidates_available=0,
-                        supported_replacement_candidates_available_raw=0,
-                        usable_supported_replacement_candidates_available=0,
-                        rejection_summary=sorted(dict.fromkeys(rejection_codes)) or [
-                            "All supported retained skills were already visible or no supported retained skills remained."
-                        ],
-                        remaining_supported_retained_skills_not_visible=[],
-                    )
-                )
-                continue
-
-            hidden_coverage = build_claim_coverage_for_claims(
-                claims=hidden_claims,
-                model=current_model,
-                prepared=current_prepared,
-            )
-            hidden_lookup = {_normalize_skill_claim_key(item.claim): item for item in hidden_coverage}
-            supported_hidden_candidates = [
-                token
-                for token in hidden_claims
-                if (hidden_lookup.get(_normalize_skill_claim_key(token)) is not None)
-                and hidden_lookup[_normalize_skill_claim_key(token)].coverage_status == "supported"
-            ]
-            search_summary["supported_non_visible_candidates_count"] = len(supported_hidden_candidates)
-            source_score = score_map.get(claim_key)
-            ranked_hidden = sorted(
-                hidden_claims,
-                key=lambda token: (
-                    score_map.get(_normalize_skill_claim_key(token), float("-inf")),
-                    -all_claims.index(token),
-                ),
-                reverse=True,
-            )
-            replacement: str | None = None
-            replacement_reject_reason = "no_supported_retained_replacement_available"
-            for token in ranked_hidden:
-                token_key = _normalize_skill_claim_key(token)
-                coverage = hidden_lookup.get(token_key)
-                candidate_score = score_map.get(token_key)
-                decision = {
-                    "claim": claim,
-                    "claim_status": target_status,
-                    "candidate": token,
-                    "candidate_score": candidate_score,
-                    "candidate_coverage_status": coverage.coverage_status if coverage else "missing",
-                    "decision": "considered",
-                }
-                if token_key in used_candidates:
-                    decision["decision"] = "rejected_already_used"
-                    candidates_considered.append(decision)
-                    rejection_codes.append("rejected_already_used")
-                    continue
-                if coverage is None or coverage.coverage_status != "supported":
-                    decision["decision"] = "rejected_not_supported"
-                    candidates_considered.append(decision)
-                    rejection_codes.append("rejected_not_supported")
-                    continue
-                if _alias_conflict(token, visible_claims, claim):
-                    decision["decision"] = "rejected_alias_conflict"
-                    replacement_reject_reason = "replacement_duplicate_or_alias_conflict"
-                    candidates_considered.append(decision)
-                    rejection_codes.append("rejected_alias_conflict")
-                    continue
-                if target_status == "weak" and source_score is not None and candidate_score is not None:
-                    if candidate_score + 6.0 < source_score:
-                        decision["decision"] = "rejected_lower_relevance"
-                        candidates_considered.append(decision)
-                        rejection_codes.append("rejected_lower_relevance")
-                        continue
-                decision["decision"] = "selected"
-                candidates_considered.append(decision)
-                replacement = token
-                break
-
-            if not replacement:
-                search_summary["result"] = replacement_reject_reason
-                candidate_search_summaries.append(search_summary)
-                candidate_search_lookup[claim_key] = search_summary
-                dispositions.append(
-                    _build_disposition(
-                        claim=claim,
-                        coverage_status=target_status,
-                        final_action="kept",
-                        reason=replacement_reject_reason,
-                        distinctive_tokens_required=list(claim_coverage_lookup.get(claim_key, {}).get("distinctive_tokens_required", [])),
-                        distinctive_tokens_matched=list(claim_coverage_lookup.get(claim_key, {}).get("distinctive_tokens_matched", [])),
-                        replacement_search_performed=True,
-                        replacement_candidates_available=len(hidden_claims),
-                        supported_replacement_candidates_available=len(supported_hidden_candidates),
-                        supported_replacement_candidates_available_raw=len(supported_hidden_candidates),
-                        usable_supported_replacement_candidates_available=len(supported_hidden_candidates),
-                        rejection_summary=sorted(dict.fromkeys(rejection_codes)) or [
-                            "All supported retained skills were already visible or no supported retained skills remained."
-                        ],
-                        remaining_supported_retained_skills_not_visible=supported_hidden_candidates,
-                    )
-                )
-                continue
-
-            swapped_model = _clone_model_with_swapped_skills(current_model, claim, replacement)
-            if swapped_model is None:
-                dispositions.append(
-                    _build_disposition(
-                        claim=claim,
-                        coverage_status=target_status,
-                        final_action="kept",
-                        reason="replacement_duplicate_or_alias_conflict",
-                        distinctive_tokens_required=list(claim_coverage_lookup.get(claim_key, {}).get("distinctive_tokens_required", [])),
-                        distinctive_tokens_matched=list(claim_coverage_lookup.get(claim_key, {}).get("distinctive_tokens_matched", [])),
-                        replacement_search_performed=True,
-                        replacement_candidates_available=len(hidden_claims),
-                        supported_replacement_candidates_available=len(supported_hidden_candidates),
-                        supported_replacement_candidates_available_raw=len(supported_hidden_candidates),
-                        usable_supported_replacement_candidates_available=len(supported_hidden_candidates),
-                        rejection_summary=sorted(dict.fromkeys(rejection_codes + ["rejected_alias_conflict"])),
-                        remaining_supported_retained_skills_not_visible=supported_hidden_candidates,
-                    )
-                )
-                continue
-            if render_planning_service is not None:
-                swapped_state = render_planning_service.rebuild_state(
-                    model=swapped_model,
-                    context=render_context,
-                )
-                swapped_html = swapped_state.html
-                swapped_prepared = swapped_state.prepared
-                swapped_planning = swapped_state.planning
-                measured_pages, fit = render_planning_service.measured_fit(swapped_state)
-            else:
-                swapped_html, swapped_prepared = _build_html_and_prepared_for_resume(swapped_model, template_name=template_name)
-                swapped_planning = _build_planning_with_evidence(
-                    model=swapped_model,
-                    prepared=swapped_prepared,
-                    template_name=template_name,
-                    job_description=job_description,
-                )
-                measured_pages, fit = _measured_fit(swapped_planning)
-            op = PlanningOperation(
-                step="evidence_aware_skill_replacement",
-                claim=claim,
-                replacement=replacement,
-                reason="weak_or_unsupported_claim_replaced_by_supported_retained_skill",
-                fit=fit,
-                metadata={
-                    "from": claim,
-                    "to": replacement,
-                    "measured_pages": measured_pages,
-                    "kept": bool(fit),
-                },
-            ).to_report_dict()
-            adjustments.append(op)
-            planning_step_ops.append(op)
-            if fit:
-                search_summary["result"] = "replaced_by_supported_retained_skill"
-                candidate_search_summaries.append(search_summary)
-                candidate_search_lookup[claim_key] = search_summary
-                current_model = swapped_model
-                current_html = swapped_html
-                current_prepared = swapped_prepared
-                current_planning = swapped_planning
-                used_candidates.add(_normalize_skill_claim_key(replacement))
-                replaced_claim_keys.add(claim_key)
-                dispositions.append(
-                    _build_disposition(
-                        claim=claim,
-                        coverage_status=target_status,
-                        final_action="replaced",
-                        reason="replaced_by_supported_retained_skill",
-                        replacement=replacement,
-                        distinctive_tokens_required=list(claim_coverage_lookup.get(claim_key, {}).get("distinctive_tokens_required", [])),
-                        distinctive_tokens_matched=list(claim_coverage_lookup.get(claim_key, {}).get("distinctive_tokens_matched", [])),
-                        replacement_search_performed=True,
-                        replacement_candidates_available=len(hidden_claims),
-                        supported_replacement_candidates_available=len(supported_hidden_candidates),
-                        supported_replacement_candidates_available_raw=len(supported_hidden_candidates),
-                        usable_supported_replacement_candidates_available=len(supported_hidden_candidates),
-                        rejection_summary=sorted(dict.fromkeys(rejection_codes)),
-                        remaining_supported_retained_skills_not_visible=supported_hidden_candidates,
-                    )
-                )
-            else:
-                rejection_codes.append("rejected_page_overflow")
-                search_summary["result"] = "replacement_would_overflow_page_target"
-                candidate_search_summaries.append(search_summary)
-                candidate_search_lookup[claim_key] = search_summary
-                dispositions.append(
-                    _build_disposition(
-                        claim=claim,
-                        coverage_status=target_status,
-                        final_action="kept",
-                        reason="replacement_would_overflow_page_target",
-                        distinctive_tokens_required=list(claim_coverage_lookup.get(claim_key, {}).get("distinctive_tokens_required", [])),
-                        distinctive_tokens_matched=list(claim_coverage_lookup.get(claim_key, {}).get("distinctive_tokens_matched", [])),
-                        replacement_search_performed=True,
-                        replacement_candidates_available=len(hidden_claims),
-                        supported_replacement_candidates_available=len(supported_hidden_candidates),
-                        supported_replacement_candidates_available_raw=len(supported_hidden_candidates),
-                        usable_supported_replacement_candidates_available=len(supported_hidden_candidates),
-                        rejection_summary=sorted(dict.fromkeys(rejection_codes)),
-                        remaining_supported_retained_skills_not_visible=supported_hidden_candidates,
-                    )
-                )
+    helpers = skill_repair_helpers or SkillRepairPlanner(
+        apply_skill_repair=lambda **kwargs: (
+            kwargs["model"],
+            kwargs["html"],
+            kwargs["prepared"],
+            kwargs["planning"],
+        ),
+        render_planning_service=render_planning_service,
+    )
+    replacement_result = helpers.apply_replacements(
+        model=current_model,
+        html=current_html,
+        prepared=current_prepared,
+        planning=current_planning,
+        context=SkillRepairContext(
+            template_name=template_name,
+            job_description=job_description,
+            skills_selection=skills_selection,
+            render_planning_service=render_planning_service,
+        ),
+        score_map=score_map,
+        used_candidates=used_candidates,
+        replaced_claim_keys=replaced_claim_keys,
+        adjustments=adjustments,
+        planning_step_ops=planning_step_ops,
+        dispositions=dispositions,
+        candidates_considered=candidates_considered,
+        candidate_search_summaries=candidate_search_summaries,
+        candidate_search_lookup=candidate_search_lookup,
+        build_claim_coverage_for_claims_fn=build_claim_coverage_for_claims,
+        extract_all_skill_claims_fn=extract_all_skill_claims,
+        clone_model_with_swapped_skills_fn=_clone_model_with_swapped_skills,
+        measured_fit_fn=_measured_fit,
+        build_html_and_prepared_fn=_build_html_and_prepared_for_resume,
+        build_planning_with_evidence_fn=_build_planning_with_evidence,
+    )
+    current_model = replacement_result.model
+    current_html = replacement_result.html
+    current_prepared = replacement_result.prepared
+    current_planning = replacement_result.planning
+    adjustments = replacement_result.adjustments
+    planning_step_ops = replacement_result.planning_step_ops
+    dispositions = replacement_result.dispositions
+    candidates_considered = replacement_result.candidates_considered
+    candidate_search_summaries = replacement_result.candidate_search_summaries
+    candidate_search_lookup = replacement_result.candidate_search_lookup
+    used_candidates = replacement_result.used_candidates
+    replaced_claim_keys = replacement_result.replaced_claim_keys
 
     # Remove remaining unsupported visible skills to a fixed point.
     # Weak/summary-only claims are intentionally preserved in this milestone.
