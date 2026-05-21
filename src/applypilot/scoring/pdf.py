@@ -970,10 +970,6 @@ def _apply_evidence_aware_skill_replacements(
             min_visible_skill_count = max(1, int(skills_selection.get("min_count", min_visible_skill_count)))
         except (TypeError, ValueError):
             min_visible_skill_count = 12
-    render_context = RenderPlanningContext(
-        template_name=template_name,
-        job_description=job_description,
-    )
     helpers = skill_repair_helpers or SkillRepairPlanner(
         apply_skill_repair=lambda **kwargs: (
             kwargs["model"],
@@ -983,33 +979,6 @@ def _apply_evidence_aware_skill_replacements(
         ),
         render_planning_service=render_planning_service,
     )
-
-    def _visible_skill_count_and_names(
-        model_state: ResumeRenderModel,
-        prepared_state: Any,
-        planning_state: dict[str, Any],
-    ) -> tuple[int, list[str]]:
-        if skill_repair_helpers is not None:
-            return skill_repair_helpers.visible_skill_count_and_names(
-                model=model_state,
-                prepared=prepared_state,
-                planning=planning_state,
-            )
-        try:
-            names = [claim for claim in extract_visible_skill_claims(model_state, prepared_state) if str(claim).strip()]
-            deduped: list[str] = []
-            seen: set[str] = set()
-            for claim in names:
-                key = _normalize_skill_claim_key(claim)
-                if key in seen:
-                    continue
-                seen.add(key)
-                deduped.append(str(claim).strip())
-            return len(deduped), deduped
-        except Exception:
-            claim_items = [item for item in planning_state.get("claim_coverage", []) if isinstance(item, dict)]
-            names = [str(item.get("claim", "")).strip() for item in claim_items if str(item.get("claim", "")).strip()]
-            return len(names), names
 
     replacement_result = helpers.apply_replacements(
         model=current_model,
