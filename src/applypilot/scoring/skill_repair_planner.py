@@ -284,6 +284,20 @@ class SkillRepairPlanner:
         updated_skills = list(model.skills)
         changed = False
 
+        def _claim_supported(claim: str) -> bool:
+            coverage = build_claim_coverage_for_claims_fn(
+                claims=[claim],
+                model=model,
+                prepared=prepared,
+            )
+            item = coverage[0] if coverage else None
+            if item is None:
+                return False
+            return (
+                str(getattr(item, "coverage_status", "")) == "supported"
+                and int(getattr(item, "retained_primary_supporting_evidence_count", 0) or 0) > 0
+            )
+
         for idx, section in enumerate(updated_skills):
             tokens = self._split_skill_tokens_preserving_parentheses(str(section.value))
             if not tokens:
@@ -345,6 +359,104 @@ class SkillRepairPlanner:
                     next_tokens[token_idx] = rewritten
                     changed = True
                 unresolved.extend(f"{parent}: {subclaim}" for subclaim in unsupported_subclaims)
+
+            if next_tokens != tokens:
+                updated_skills[idx] = type(section)(
+                    category=section.category,
+                    value=", ".join(next_tokens),
+                )
+
+        # Infer grouped skills from repeated-prefix flat skills, preserving
+        # readable grouped output while removing unsupported subclaims.
+        for idx, section in enumerate(updated_skills):
+            tokens = self._split_skill_tokens_preserving_parentheses(str(section.value))
+            if len(tokens) < 2:
+                continue
+            next_tokens = list(tokens)
+            token_positions: dict[str, list[int]] = {}
+            for pos, token in enumerate(tokens):
+                token_positions.setdefault(token, []).append(pos)
+
+            parent_groups: dict[str, list[tuple[int, str, str]]] = {}
+            for pos, token in enumerate(tokens):
+                if "(" in token or ")" in token:
+                    continue
+                parts = [part for part in token.strip().split() if part]
+                if len(parts) < 2:
+                    continue
+                parent = " ".join(parts[:-1]).strip()
+                subclaim = parts[-1].strip()
+                if not parent or not subclaim:
+                    continue
+                parent_groups.setdefault(parent, []).append((pos, subclaim, token))
+
+            if not parent_groups:
+                continue
+
+            for parent, entries in parent_groups.items():
+                # Only infer when there is meaningful grouping signal.
+                if len(entries) < 2:
+                    continue
+                ordered_supported: list[str] = []
+                removed_for_parent: list[str] = []
+                remove_positions: set[int] = set()
+                for pos, subclaim, original_token in sorted(entries, key=lambda item: item[0]):
+                    remove_positions.add(pos)
+                    if _claim_supported(original_token):
+                        if subclaim not in ordered_supported:
+                            ordered_supported.append(subclaim)
+                    else:
+                        removed_for_parent.append(subclaim)
+
+                # Add related standalone subclaims when they are supported in
+                # parent context (e.g., Route53 with AWS EC2/AWS Lambda).
+                for pos, token in enumerate(tokens):
+                    if pos in remove_positions:
+                        continue
+                    if "(" in token or ")" in token:
+                        continue
+                    if " " in token.strip():
+                        continue
+                    combined_claim = f"{parent} {token.strip()}"
+                    if _claim_supported(combined_claim):
+                        remove_positions.add(pos)
+                        if token.strip() not in ordered_supported:
+                            ordered_supported.append(token.strip())
+
+                parent_supported = _claim_supported(parent)
+                rewritten: str | None = None
+                if len(ordered_supported) >= 2:
+                    rewritten = f"{parent} ({', '.join(ordered_supported)})"
+                elif len(ordered_supported) == 1:
+                    rewritten = f"{parent} {ordered_supported[0]}"
+                elif parent_supported:
+                    rewritten = parent
+
+                if rewritten is None:
+                    unresolved.extend(f"{parent}: {subclaim}" for subclaim in removed_for_parent)
+                    continue
+
+                first_pos = min(remove_positions) if remove_positions else -1
+                if first_pos < 0:
+                    continue
+                original_group = [tokens[pos] for pos in sorted(remove_positions)]
+                for pos in sorted(remove_positions, reverse=True):
+                    del next_tokens[pos]
+                next_tokens.insert(first_pos, rewritten)
+                if next_tokens != tokens:
+                    changed = True
+                    repairs.append(
+                        {
+                            "original_skill": ", ".join(original_group),
+                            "rewritten_skill": rewritten,
+                            "removed_subclaims": removed_for_parent,
+                            "kept_subclaims": ordered_supported,
+                            "inferred_parent": parent,
+                            "candidate_subclaims": [entry[1] for entry in sorted(entries, key=lambda item: item[0])],
+                            "reason": "unsupported_compound_subclaims_removed",
+                        }
+                    )
+                    removed_subclaims.extend(removed_for_parent)
 
             if next_tokens != tokens:
                 updated_skills[idx] = type(section)(
@@ -1427,6 +1539,7 @@ class SkillRepairPlanner:
         current_planning["removed_or_rewritten_summary_claims"] = list(dict.fromkeys(removed_or_rewritten_summary_claims))
         current_planning["summary_claims_final_unresolved"] = list(dict.fromkeys(summary_claims_final_unresolved))
         current_planning["compound_skill_repairs"] = list(compound_skill_repairs)
+        current_planning["grouped_skill_repairs"] = list(compound_skill_repairs)
         current_planning["unsupported_compound_subclaims_removed"] = list(
             dict.fromkeys(unsupported_compound_subclaims_removed)
         )
