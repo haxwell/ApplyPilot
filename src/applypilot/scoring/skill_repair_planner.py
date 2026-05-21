@@ -353,6 +353,78 @@ class SkillRepairPlanner:
                 return []
             return list(getattr(item, "top_supporting_evidence", [])[:2])
 
+        def _evidence_source_parts(evidence: str) -> tuple[str, str]:
+            raw = str(evidence or "").strip()
+            if ": " in raw:
+                left, right = raw.split(": ", 1)
+                return left.strip().lower(), right.strip().lower()
+            return "", raw.lower()
+
+        def _contains_token(text: str, token: str) -> bool:
+            escaped = re.escape(str(token).strip())
+            if not escaped:
+                return False
+            escaped = escaped.replace(r"\ ", r"\s+")
+            return bool(re.search(rf"\b{escaped}\b", text, flags=re.IGNORECASE))
+
+        def _subclaim_supported_in_parent_evidence_span(parent: str, subclaim: str) -> bool:
+            parent_sources = _claim_evidence_sources(parent)
+            sub_sources = _claim_evidence_sources(subclaim)
+            if not parent_sources or not sub_sources:
+                return False
+            parent_parts = [_evidence_source_parts(item) for item in parent_sources]
+            sub_parts = [_evidence_source_parts(item) for item in sub_sources]
+            for p_label, p_text in parent_parts:
+                for s_label, s_text in sub_parts:
+                    if p_label and s_label and p_label != s_label:
+                        continue
+                    span = s_text if len(s_text) >= len(p_text) else p_text
+                    if _contains_token(span, parent) and _contains_token(span, subclaim):
+                        return True
+                    if p_text and s_text and p_text == s_text:
+                        return True
+            return False
+
+        def _subclaim_listed_with_parent_in_evidence_span(parent: str, subclaim: str) -> bool:
+            parent_sources = _claim_evidence_sources(parent)
+            sub_sources = _claim_evidence_sources(subclaim)
+            if not parent_sources or not sub_sources:
+                return False
+            parent_parts = [_evidence_source_parts(item) for item in parent_sources]
+            sub_parts = [_evidence_source_parts(item) for item in sub_sources]
+
+            def _span_lists_token(span_text: str, parent_text: str, token_text: str) -> bool:
+                match = re.search(rf"\b{re.escape(parent_text.strip())}\b", span_text, flags=re.IGNORECASE)
+                if not match:
+                    return False
+                tail = span_text[match.end() :]
+                sentence_end = re.search(r"[.;:\n]", tail)
+                if sentence_end:
+                    tail = tail[: sentence_end.start()]
+                if "," not in tail and not re.search(r"\band\b", tail, flags=re.IGNORECASE):
+                    return False
+                normalized_tail = re.sub(r"\band\b", ",", tail, flags=re.IGNORECASE)
+                items = [item.strip(" ()-") for item in normalized_tail.split(",") if item.strip(" ()-")]
+                if len(items) < 2:
+                    return False
+                token_norm = self._normalize_skill_claim_key(token_text)
+                for item in items:
+                    item_norm = self._normalize_skill_claim_key(item)
+                    if item_norm == token_norm:
+                        return True
+                    if _contains_token(item, token_text):
+                        return True
+                return False
+
+            for p_label, p_text in parent_parts:
+                for s_label, s_text in sub_parts:
+                    if p_label and s_label and p_label != s_label:
+                        continue
+                    span = s_text if len(s_text) >= len(p_text) else p_text
+                    if _span_lists_token(span, parent, subclaim):
+                        return True
+            return False
+
         for idx, section in enumerate(updated_skills):
             tokens = self._split_skill_tokens_preserving_parentheses(str(section.value))
             if not tokens:
@@ -438,12 +510,17 @@ class SkillRepairPlanner:
             for pos, token in enumerate(tokens):
                 token_positions.setdefault(token, []).append(pos)
 
-            parent_groups: dict[str, list[tuple[int, str, str]]] = {}
+            parent_groups: dict[str, list[tuple[int, str, str, str]]] = {}
             pool_tokens = list(tokens)
             if candidate_skill_pool:
                 pool_tokens.extend([token for token in candidate_skill_pool if str(token).strip()])
             for pos, token in enumerate(pool_tokens):
-                if "(" in token or ")" in token:
+                parsed_group = self._parse_compound_skill_token(token)
+                if parsed_group is not None:
+                    parent, group_subclaims = parsed_group
+                    relation = "existing_parenthetical" if pos < len(tokens) else "pool_parenthetical"
+                    for subclaim in group_subclaims:
+                        parent_groups.setdefault(parent, []).append((pos, subclaim, token, relation))
                     continue
                 parts = [part for part in token.strip().split() if part]
                 if len(parts) < 2:
@@ -452,17 +529,26 @@ class SkillRepairPlanner:
                 subclaim = parts[-1].strip()
                 if not parent or not subclaim:
                     continue
-                parent_groups.setdefault(parent, []).append((pos, subclaim, token))
+                relation = "repeated_prefix" if pos < len(tokens) else "pool_prefix"
+                parent_groups.setdefault(parent, []).append((pos, subclaim, token, relation))
 
             if not parent_groups:
                 continue
 
             for parent, entries in parent_groups.items():
                 # Only infer when there is meaningful grouping signal.
-                unique_by_subclaim: dict[str, tuple[int, str, str]] = {}
-                for entry in sorted(entries, key=lambda item: item[0]):
+                unique_by_subclaim: dict[str, tuple[int, str, str, str]] = {}
+                relation_rank = {
+                    "existing_parenthetical": 0,
+                    "repeated_prefix": 1,
+                    "pool_parenthetical": 2,
+                    "pool_prefix": 3,
+                }
+                for entry in sorted(entries, key=lambda item: (item[0], relation_rank.get(item[3], 9))):
                     subclaim_key = self._normalize_skill_claim_key(entry[1])
-                    unique_by_subclaim.setdefault(subclaim_key, entry)
+                    current = unique_by_subclaim.get(subclaim_key)
+                    if current is None or relation_rank.get(entry[3], 9) < relation_rank.get(current[3], 9):
+                        unique_by_subclaim[subclaim_key] = entry
                 entries = list(unique_by_subclaim.values())
                 if len(entries) < 2:
                     continue
@@ -470,18 +556,35 @@ class SkillRepairPlanner:
                 removed_for_parent: list[str] = []
                 retained_evidence_sources: dict[str, list[str]] = {}
                 remove_positions: set[int] = set()
-                for pos, subclaim, original_token in sorted(entries, key=lambda item: item[0]):
+                eligible_subclaims: list[str] = []
+                ineligible_subclaims: list[str] = []
+                for pos, subclaim, original_token, relation in sorted(entries, key=lambda item: item[0]):
                     if pos < len(tokens):
                         remove_positions.add(pos)
-                    if _claim_supported(original_token):
+                    is_eligible = relation in {
+                        "existing_parenthetical",
+                        "repeated_prefix",
+                        "pool_parenthetical",
+                        "pool_prefix",
+                    }
+                    if is_eligible and subclaim not in eligible_subclaims:
+                        eligible_subclaims.append(subclaim)
+                    if not is_eligible and subclaim not in ineligible_subclaims:
+                        ineligible_subclaims.append(subclaim)
+                    parent_subclaim_supported = _claim_supported(f"{parent} {subclaim}")
+                    standalone_supported = _claim_supported(subclaim)
+                    if is_eligible and (parent_subclaim_supported or standalone_supported):
                         if subclaim not in ordered_supported:
                             ordered_supported.append(subclaim)
-                            retained_evidence_sources[subclaim] = _claim_evidence_sources(original_token)
+                            retained_evidence_sources[subclaim] = (
+                                _claim_evidence_sources(f"{parent} {subclaim}") or _claim_evidence_sources(subclaim)
+                            )
                     else:
                         removed_for_parent.append(subclaim)
 
-                # Add related standalone subclaims when they are supported in
-                # parent context (e.g., Route53 with AWS EC2/AWS Lambda).
+                # Add related standalone subclaims only when they are supported
+                # and appear in a coherent retained parent-child evidence list.
+                standalone_candidates: list[tuple[int | None, str]] = []
                 for pos, token in enumerate(tokens):
                     if pos in remove_positions:
                         continue
@@ -489,12 +592,33 @@ class SkillRepairPlanner:
                         continue
                     if " " in token.strip():
                         continue
-                    combined_claim = f"{parent} {token.strip()}"
-                    if _claim_supported(combined_claim):
-                        remove_positions.add(pos)
-                        if token.strip() not in ordered_supported:
-                            ordered_supported.append(token.strip())
-                            retained_evidence_sources[token.strip()] = _claim_evidence_sources(combined_claim)
+                    standalone_candidates.append((pos, token.strip()))
+                if candidate_skill_pool:
+                    for pool_token in candidate_skill_pool:
+                        if "(" in pool_token or ")" in pool_token:
+                            continue
+                        if " " in pool_token.strip():
+                            continue
+                        standalone_candidates.append((None, pool_token.strip()))
+
+                seen_standalone_candidates: set[str] = set()
+                for pos, standalone in standalone_candidates:
+                    standalone_key = self._normalize_skill_claim_key(standalone)
+                    if not standalone_key or standalone_key in seen_standalone_candidates:
+                        continue
+                    seen_standalone_candidates.add(standalone_key)
+                    if (
+                        _claim_supported(standalone)
+                        and _subclaim_supported_in_parent_evidence_span(parent, standalone)
+                        and _subclaim_listed_with_parent_in_evidence_span(parent, standalone)
+                    ):
+                        if pos is not None:
+                            remove_positions.add(pos)
+                        if standalone not in ordered_supported:
+                            ordered_supported.append(standalone)
+                            retained_evidence_sources[standalone] = _claim_evidence_sources(standalone)
+                            if standalone not in eligible_subclaims:
+                                eligible_subclaims.append(standalone)
 
                 parent_supported = _claim_supported(parent)
                 rewritten: str | None = None
@@ -526,6 +650,8 @@ class SkillRepairPlanner:
                             "kept_subclaims": ordered_supported,
                             "inferred_parent": parent,
                             "candidate_subclaims": [entry[1] for entry in sorted(entries, key=lambda item: item[0])],
+                            "eligible_subclaims": eligible_subclaims,
+                            "ineligible_subclaims_rejected": ineligible_subclaims,
                             "retained_subclaim_evidence_sources": retained_evidence_sources,
                             "family_cap_group_recovery": any(entry[0] >= len(tokens) for entry in entries),
                             "reason": "unsupported_compound_subclaims_removed",
