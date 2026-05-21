@@ -7,6 +7,7 @@ from applypilot.scoring.pdf_render_model import SkillSection
 from applypilot.scoring.pdf_render_model import ResumeRenderModel
 from applypilot.scoring.render_planning_service import RenderPlanningService
 from applypilot.scoring.skill_repair_planner import (
+    SkillRepairDependencies,
     SkillRepairContext,
     SkillRepairPlanner,
     SkillRepairResult,
@@ -20,7 +21,7 @@ def test_skill_repair_planner_can_be_constructed_without_apply_callback() -> Non
 
 def test_skill_repair_planner_repair_raises_without_apply_callback() -> None:
     planner = SkillRepairPlanner()
-    with pytest.raises(NotImplementedError, match="requires apply_skill_repair"):
+    with pytest.raises(NotImplementedError, match="requires direct dependencies or apply_skill_repair"):
         planner.repair(
             model=ResumeRenderModel(name="Alex"),
             html="<html>",
@@ -28,6 +29,52 @@ def test_skill_repair_planner_repair_raises_without_apply_callback() -> None:
             planning={},
             context=SkillRepairContext(template_name="professional_compact"),
         )
+
+
+def test_skill_repair_planner_repair_direct_orchestration_with_dependencies() -> None:
+    def _unexpected_callback(**_kwargs):
+        raise AssertionError("legacy callback should not be used when direct dependencies are provided")
+
+    dependencies = SkillRepairDependencies(
+        skill_score_map_from_selection_fn=lambda _sel: {},
+        build_claim_coverage_for_claims_fn=lambda **_kwargs: [],
+        extract_all_skill_claims_fn=lambda _model: [],
+        clone_model_with_swapped_skills_fn=lambda model, _from, _to: model,
+        clone_model_without_skill_fn=lambda model, _claim: model,
+        measured_fit_fn=lambda _planning: (2, True),
+        build_html_and_prepared_fn=lambda *_args, **_kwargs: ("<html/>", object()),
+        build_planning_with_evidence_fn=lambda **_kwargs: {
+            "claim_coverage": [],
+            "unsupported_visible_claims": [],
+            "weak_visible_claims": [],
+            "planning_operations": [],
+            "measured_pages_final": 2,
+            "allowed_physical_pages": 2,
+        },
+    )
+    planner = SkillRepairPlanner(
+        apply_skill_repair=_unexpected_callback,
+        dependencies=dependencies,
+    )
+    base_planning = {
+        "claim_coverage": [],
+        "unsupported_visible_claims": [],
+        "weak_visible_claims": [],
+    }
+    result = planner.repair(
+        model=ResumeRenderModel(name="Alex"),
+        html="<html>",
+        prepared=SimpleNamespace(),
+        planning=base_planning,
+        context=SkillRepairContext(template_name="professional_compact"),
+    )
+
+    assert isinstance(result, SkillRepairResult)
+    assert result.html == "<html>"
+    assert result.planning["evidence_aware_skill_adjustments"] == []
+    assert result.planning["unsupported_skill_removals"] == []
+    assert result.planning["unsupported_visible_claims_final"] == []
+    assert result.planning["weak_visible_claims_final"] == []
 
 
 def test_skill_repair_planner_calls_injected_repair_fn() -> None:

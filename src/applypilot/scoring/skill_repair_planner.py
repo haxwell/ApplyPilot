@@ -36,6 +36,18 @@ SkillRepairFn = Callable[
 
 
 @dataclass
+class SkillRepairDependencies:
+    skill_score_map_from_selection_fn: Callable[[dict[str, Any] | None], dict[str, float]]
+    build_claim_coverage_for_claims_fn: Callable[..., list[Any]]
+    extract_all_skill_claims_fn: Callable[[ResumeRenderModel], list[str]]
+    clone_model_with_swapped_skills_fn: Callable[[ResumeRenderModel, str, str], ResumeRenderModel | None]
+    clone_model_without_skill_fn: Callable[[ResumeRenderModel, str], ResumeRenderModel | None]
+    measured_fit_fn: Callable[[dict[str, Any]], tuple[int | None, bool]]
+    build_html_and_prepared_fn: Callable[..., tuple[str, Any]]
+    build_planning_with_evidence_fn: Callable[..., dict[str, Any]]
+
+
+@dataclass
 class SkillReplacementPassResult:
     model: ResumeRenderModel
     html: str
@@ -72,10 +84,12 @@ class SkillRepairPlanner:
         apply_skill_repair: SkillRepairFn | None = None,
         render_planning_service: RenderPlanningService | None = None,
         extract_visible_skill_claims_fn: Callable[[ResumeRenderModel, Any], list[str]] | None = None,
+        dependencies: SkillRepairDependencies | None = None,
     ) -> None:
         self._apply_skill_repair = apply_skill_repair
         self._render_planning_service = render_planning_service
         self._extract_visible_skill_claims = extract_visible_skill_claims_fn or extract_visible_skill_claims
+        self._dependencies = dependencies
 
     def claim_variants_set(self, claim_text: str) -> set[str]:
         return {self._normalize_skill_claim_key(item) for item in claim_variants(claim_text)}
@@ -997,21 +1011,150 @@ class SkillRepairPlanner:
         planning: dict[str, Any],
         context: SkillRepairContext,
     ) -> SkillRepairResult:
-        if self._apply_skill_repair is None:
-            raise NotImplementedError(
-                "SkillRepairPlanner.repair requires apply_skill_repair until direct orchestration is implemented."
+        deps = self._dependencies
+        if deps is not None:
+            adjustments: list[dict[str, Any]] = []
+            planning_step_ops: list[dict[str, Any]] = []
+            unsupported_skill_removals: list[dict[str, Any]] = []
+            dispositions: list[SkillDisposition] = []
+            candidates_considered: list[dict[str, Any]] = []
+            candidate_search_summaries: list[dict[str, Any]] = []
+            candidate_search_lookup: dict[str, dict[str, Any]] = {}
+            score_map = deps.skill_score_map_from_selection_fn(context.skills_selection)
+            current_model = model
+            current_html = html
+            current_prepared = prepared
+            current_planning = planning
+            preserved_attempts = list(planning.get("evidence_preservation_attempts", [])) if isinstance(
+                planning.get("evidence_preservation_attempts"), list
+            ) else []
+            preserved_decisions = list(planning.get("evidence_preservation_decisions", [])) if isinstance(
+                planning.get("evidence_preservation_decisions"), list
+            ) else []
+            unsupported_before = list(planning.get("unsupported_visible_claims_before_preservation", []))
+            weak_before = list(planning.get("weak_visible_claims_before_preservation", []))
+            used_candidates: set[str] = set()
+            replaced_claim_keys: set[str] = set()
+            min_visible_skill_count = 12
+            if isinstance(context.skills_selection, dict):
+                try:
+                    min_visible_skill_count = max(1, int(context.skills_selection.get("min_count", min_visible_skill_count)))
+                except (TypeError, ValueError):
+                    min_visible_skill_count = 12
+
+            replacement_result = self.apply_replacements(
+                model=current_model,
+                html=current_html,
+                prepared=current_prepared,
+                planning=current_planning,
+                context=SkillRepairContext(
+                    template_name=context.template_name,
+                    job_description=context.job_description,
+                    skills_selection=context.skills_selection,
+                    render_planning_service=context.render_planning_service or self._render_planning_service,
+                ),
+                score_map=score_map,
+                used_candidates=used_candidates,
+                replaced_claim_keys=replaced_claim_keys,
+                adjustments=adjustments,
+                planning_step_ops=planning_step_ops,
+                dispositions=dispositions,
+                candidates_considered=candidates_considered,
+                candidate_search_summaries=candidate_search_summaries,
+                candidate_search_lookup=candidate_search_lookup,
+                build_claim_coverage_for_claims_fn=deps.build_claim_coverage_for_claims_fn,
+                extract_all_skill_claims_fn=deps.extract_all_skill_claims_fn,
+                clone_model_with_swapped_skills_fn=deps.clone_model_with_swapped_skills_fn,
+                measured_fit_fn=deps.measured_fit_fn,
+                build_html_and_prepared_fn=deps.build_html_and_prepared_fn,
+                build_planning_with_evidence_fn=deps.build_planning_with_evidence_fn,
             )
-        model, html, prepared, planning = self._apply_skill_repair(
-            model=model,
-            html=html,
-            prepared=prepared,
-            planning=planning,
-            template_name=context.template_name,
-            job_description=context.job_description,
-            skills_selection=context.skills_selection,
-            render_planning_service=context.render_planning_service or self._render_planning_service,
-            skill_repair_helpers=self,
-        )
+            current_model = replacement_result.model
+            current_html = replacement_result.html
+            current_prepared = replacement_result.prepared
+            current_planning = replacement_result.planning
+            adjustments = replacement_result.adjustments
+            planning_step_ops = replacement_result.planning_step_ops
+            dispositions = replacement_result.dispositions
+            candidates_considered = replacement_result.candidates_considered
+            candidate_search_summaries = replacement_result.candidate_search_summaries
+            candidate_search_lookup = replacement_result.candidate_search_lookup
+            used_candidates = replacement_result.used_candidates
+            replaced_claim_keys = replacement_result.replaced_claim_keys
+
+            removal_result = self.remove_unsupported_claims_until_stable(
+                model=current_model,
+                html=current_html,
+                prepared=current_prepared,
+                planning=current_planning,
+                context=SkillRepairContext(
+                    template_name=context.template_name,
+                    job_description=context.job_description,
+                    skills_selection=context.skills_selection,
+                    render_planning_service=context.render_planning_service or self._render_planning_service,
+                ),
+                min_visible_skill_count=min_visible_skill_count,
+                dispositions=dispositions,
+                candidate_search_lookup=candidate_search_lookup,
+                used_candidates=used_candidates,
+                replaced_claim_keys=replaced_claim_keys,
+                planning_step_ops=planning_step_ops,
+                unsupported_skill_removals=unsupported_skill_removals,
+                score_map=score_map,
+                adjustments=adjustments,
+                build_claim_coverage_for_claims_fn=deps.build_claim_coverage_for_claims_fn,
+                extract_all_skill_claims_fn=deps.extract_all_skill_claims_fn,
+                clone_model_without_skill_fn=deps.clone_model_without_skill_fn,
+                measured_fit_fn=deps.measured_fit_fn,
+                build_html_and_prepared_fn=deps.build_html_and_prepared_fn,
+                build_planning_with_evidence_fn=deps.build_planning_with_evidence_fn,
+            )
+            current_model = removal_result.model
+            current_html = removal_result.html
+            current_prepared = removal_result.prepared
+            current_planning = removal_result.planning
+            unsupported_skill_removals = removal_result.unsupported_skill_removals
+            planning_step_ops = removal_result.planning_step_ops
+            dispositions = removal_result.dispositions
+            removed_claim_keys = removal_result.removed_claim_keys
+            current_planning = self.finalize_repair_report(
+                planning=current_planning,
+                planning_step_ops=planning_step_ops,
+                preserved_attempts=preserved_attempts,
+                preserved_decisions=preserved_decisions,
+                unsupported_before=unsupported_before,
+                weak_before=weak_before,
+                adjustments=adjustments,
+                unsupported_skill_removals=unsupported_skill_removals,
+                candidates_considered=candidates_considered,
+                candidate_search_summaries=candidate_search_summaries,
+                candidate_search_lookup=candidate_search_lookup,
+                dispositions=dispositions,
+                replaced_claim_keys=replaced_claim_keys,
+                removed_claim_keys=removed_claim_keys,
+            )
+            model, html, prepared, planning = (
+                current_model,
+                current_html,
+                current_prepared,
+                current_planning,
+            )
+        elif self._apply_skill_repair is not None:
+            model, html, prepared, planning = self._apply_skill_repair(
+                model=model,
+                html=html,
+                prepared=prepared,
+                planning=planning,
+                template_name=context.template_name,
+                job_description=context.job_description,
+                skills_selection=context.skills_selection,
+                render_planning_service=context.render_planning_service or self._render_planning_service,
+                skill_repair_helpers=self,
+            )
+        else:
+            raise NotImplementedError(
+                "SkillRepairPlanner.repair requires direct dependencies or apply_skill_repair."
+            )
         return SkillRepairResult(
             model=model,
             html=html,

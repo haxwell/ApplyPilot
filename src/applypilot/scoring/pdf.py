@@ -37,7 +37,7 @@ from applypilot.scoring.render_planning_service import (
     RenderPlanningContext,
     RenderPlanningService,
 )
-from applypilot.scoring.skill_repair_planner import SkillRepairContext, SkillRepairPlanner
+from applypilot.scoring.skill_repair_planner import SkillRepairContext, SkillRepairDependencies, SkillRepairPlanner
 from applypilot.scoring.pdf_templates.registry import get_template
 
 log = logging.getLogger(__name__)
@@ -1149,6 +1149,16 @@ def render_model_to_pdf_with_planning(
         skill_repair_planner=SkillRepairPlanner(
             apply_skill_repair=_apply_evidence_aware_skill_replacements,
             render_planning_service=render_service,
+            dependencies=SkillRepairDependencies(
+                skill_score_map_from_selection_fn=_skill_score_map_from_selection,
+                build_claim_coverage_for_claims_fn=build_claim_coverage_for_claims,
+                extract_all_skill_claims_fn=extract_all_skill_claims,
+                clone_model_with_swapped_skills_fn=_clone_model_with_swapped_skills,
+                clone_model_without_skill_fn=_clone_model_without_skill,
+                measured_fit_fn=_measured_fit,
+                build_html_and_prepared_fn=_build_html_and_prepared_for_resume,
+                build_planning_with_evidence_fn=_build_planning_with_evidence,
+            ),
         ),
     )
     planning_result = planner.plan(
