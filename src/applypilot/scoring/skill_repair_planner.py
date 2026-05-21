@@ -294,6 +294,17 @@ class SkillRepairPlanner:
                 if not parsed:
                     continue
                 parent, subclaims = parsed
+                parent_coverage = build_claim_coverage_for_claims_fn(
+                    claims=[parent],
+                    model=model,
+                    prepared=prepared,
+                )
+                parent_item = parent_coverage[0] if parent_coverage else None
+                parent_supported = bool(
+                    parent_item is not None
+                    and str(getattr(parent_item, "coverage_status", "")) == "supported"
+                    and int(getattr(parent_item, "retained_primary_supporting_evidence_count", 0) or 0) > 0
+                )
                 coverage = build_claim_coverage_for_claims_fn(
                     claims=subclaims,
                     model=model,
@@ -313,10 +324,14 @@ class SkillRepairPlanner:
                 if not unsupported_subclaims:
                     continue
                 removed_subclaims.extend(unsupported_subclaims)
-                if supported_subclaims:
+                if len(supported_subclaims) >= 2:
                     rewritten = f"{parent} ({', '.join(supported_subclaims)})"
-                else:
+                elif len(supported_subclaims) == 1:
+                    rewritten = f"{parent} {supported_subclaims[0]}"
+                elif parent_supported:
                     rewritten = parent
+                else:
+                    rewritten = token
                 if rewritten.strip() != token.strip():
                     repairs.append(
                         {
@@ -696,6 +711,8 @@ class SkillRepairPlanner:
             ]
             target_claims = list(dict.fromkeys(target_claims))
             for claim in target_claims:
+                if self._parse_compound_skill_token(claim) is not None:
+                    continue
                 claim_key = self._normalize_skill_claim_key(claim)
                 if claim_key in replaced_claim_keys:
                     continue

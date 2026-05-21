@@ -1658,12 +1658,85 @@ def test_compound_skill_removes_unsupported_subclaims(monkeypatch) -> None:
 
     rendered_claims = extract_all_skill_claims(new_model)
     assert "AWS (EC2, Lambda, Route53)" in rendered_claims
+    assert "AWS EC2" not in rendered_claims
+    assert "AWS Lambda" not in rendered_claims
+    assert any("Route53" in claim for claim in rendered_claims)
     assert all("S3" not in claim for claim in rendered_claims)
     assert updated.get("compound_skill_repairs")
     assert "S3" in updated.get("unsupported_compound_subclaims_removed", [])
     assert updated.get("compound_skill_claims_final_unresolved", []) == []
     assert updated.get("unsupported_visible_claims_final", []) == []
     assert updated.get("weak_visible_claims_final", []) == []
+
+
+def test_compound_skill_with_one_supported_subclaim_becomes_parent_plus_subclaim(monkeypatch) -> None:
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="AWS (S3, Lambda), Java")],
+        experience=[ResumeEntry(title="Engineer", subtitle="Acme", bullets=["Built AWS Lambda automation workflows."])],
+    )
+    planning = {
+        "allowed_physical_pages": 2,
+        "measured_pages_final": 2,
+        "claim_coverage": [{"claim": "AWS (S3, Lambda)", "coverage_status": "weak"}],
+        "unsupported_visible_claims": [],
+        "weak_visible_claims": [],
+    }
+
+    def _coverage_for_claims(*, claims, **_kwargs):
+        out = []
+        for claim in claims:
+            key = str(claim).lower().strip()
+            if key in {"lambda", "aws"}:
+                status = "supported"
+                retained = 1
+            else:
+                status = "unsupported"
+                retained = 0
+            out.append(
+                ClaimCoverage(
+                    claim=str(claim),
+                    claim_type="skill",
+                    is_visible=False,
+                    supporting_evidence_count=retained,
+                    retained_supporting_evidence_count=retained,
+                    primary_supporting_evidence_count=retained,
+                    retained_primary_supporting_evidence_count=retained,
+                    secondary_supporting_evidence_count=0,
+                    coverage_status=status,
+                    top_supporting_evidence=[],
+                )
+            )
+        return out
+
+    monkeypatch.setattr(pdf_module, "_build_html_and_prepared_for_resume", lambda *_args, **_kwargs: ("<html/>", SimpleNamespace()))
+    monkeypatch.setattr(
+        pdf_module,
+        "_build_planning_with_evidence",
+        lambda **kwargs: {
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [{"claim": claim, "coverage_status": "supported", "retained_primary_supporting_evidence_count": 1} for claim in extract_all_skill_claims(kwargs["model"])],
+            "unsupported_visible_claims": [],
+            "weak_visible_claims": [],
+        },
+    )
+    monkeypatch.setattr(pdf_module, "build_claim_coverage_for_claims", _coverage_for_claims)
+
+    new_model, _html, _prepared, updated = _apply_evidence_aware_skill_replacements(
+        model=model,
+        html="<html/>",
+        prepared=SimpleNamespace(),
+        planning=planning,
+        template_name="professional_compact",
+        job_description="AWS platform role.",
+        skills_selection={"retained_skills": [{"skill": "AWS (S3, Lambda)", "score": 95.0}, {"skill": "Java", "score": 90.0}], "min_count": 1},
+    )
+
+    claims = extract_all_skill_claims(new_model)
+    assert "AWS Lambda" in claims
+    assert "AWS (S3, Lambda)" not in claims
+    assert "S3" in updated.get("unsupported_compound_subclaims_removed", [])
+    assert updated.get("compound_skill_claims_final_unresolved", []) == []
 
 
 def test_compound_skill_collapses_to_parent_when_all_subclaims_unsupported(monkeypatch) -> None:
