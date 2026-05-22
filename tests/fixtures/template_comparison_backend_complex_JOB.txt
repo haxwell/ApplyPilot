@@ -1,0 +1,16 @@
+Senior Backend Platform Engineer
+
+We are building a cloud compute platform that powers critical customer workflows. This role focuses on distributed backend systems, deployment automation, cloud infrastructure reliability, CI/CD pipelines, and developer tooling.
+
+Responsibilities:
+- Design and implement resilient backend services and APIs.
+- Improve deployment automation and release reliability.
+- Build and maintain CI/CD pipelines and operational tooling.
+- Support on-call operations and incident response improvements.
+- Partner cross-functionally with product, SRE, and platform teams.
+
+Preferred experience:
+- Java / Spring Boot, event-driven systems, messaging.
+- AWS cloud services and operational reliability.
+- Kubernetes, Docker, Linux, and infrastructure automation.
+- Strong debugging, observability, and systems thinking.

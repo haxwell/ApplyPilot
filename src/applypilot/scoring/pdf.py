@@ -1077,22 +1077,30 @@ def _apply_evidence_aware_skill_replacements(
 
 
 def resolve_pdf_template_name(profile: dict, explicit_template: str | None = None) -> str:
-    """Resolve PDF template name from explicit value or profile config."""
+    """Resolve ApplyPilot planned-PDF template from explicit value or profile.tailoring_config."""
 
     if explicit_template and str(explicit_template).strip():
-        return str(explicit_template).strip()
-
-    render = profile.get("render", {}) if isinstance(profile, dict) else {}
-    if isinstance(render, dict):
-        theme = render.get("theme", "")
-        if str(theme).strip():
-            return str(theme).strip()
+        candidate = str(explicit_template).strip()
+        if candidate.startswith("jsonresume-theme-"):
+            raise ValueError(
+                "JSON Resume themes are not ApplyPilot PDF templates. "
+                "Use profile.render.jsonresume_theme for JSON Resume rendering, "
+                "and profile.tailoring_config.pdf_template for ApplyPilot PDF templates."
+            )
+        return candidate
 
     tailoring_config = profile.get("tailoring_config", {}) if isinstance(profile, dict) else {}
     if isinstance(tailoring_config, dict):
         template_name = tailoring_config.get("pdf_template", "")
         if str(template_name).strip():
-            return str(template_name).strip()
+            candidate = str(template_name).strip()
+            if candidate.startswith("jsonresume-theme-"):
+                raise ValueError(
+                    "JSON Resume themes are not ApplyPilot PDF templates. "
+                    "Use profile.render.jsonresume_theme for JSON Resume rendering, "
+                    "and profile.tailoring_config.pdf_template for ApplyPilot PDF templates."
+                )
+            return candidate
 
     return DEFAULT_PDF_TEMPLATE
 

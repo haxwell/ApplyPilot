@@ -1,0 +1,29 @@
+{
+  "title": "Senior Backend Engineer",
+  "site": "ExampleCo",
+  "full_description": "Build distributed backend systems and cloud deployment automation.",
+  "skills_selection": {
+    "before_count": 6,
+    "after_count": 4
+  },
+  "tailored_json": {
+    "title": "Senior Backend Engineer",
+    "summary": "Built backend services and delivery automation.",
+    "skills": {
+      "Core": "Java 17-21, Spring Boot 3.x, AWS EC2, AWS Lambda, Route53, GitHub Actions"
+    },
+    "experience": [
+      {
+        "header": "Backend Engineer",
+        "subtitle": "ExampleCo | 2020-2024",
+        "bullets": [
+          "Built APIs with Java and Spring Boot.",
+          "Implemented deployment automation with AWS EC2, Lambda, Route53, and GitHub Actions."
+        ]
+      }
+    ],
+    "projects": [],
+    "education": "BS Computer Science",
+    "certifications": "AWS Certified Developer Associate"
+  }
+}

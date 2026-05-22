@@ -10,6 +10,7 @@ from applypilot.resume_json import (
     get_profile_verified_metrics,
     load_resume_json_from_path,
     normalize_profile_from_resume_json,
+    resolve_jsonresume_theme,
     resolve_render_theme,
     validate_resume_json,
 )
@@ -101,6 +102,7 @@ def test_normalize_profile_from_resume_json_maps_internal_contract() -> None:
     assert profile["experience"]["target_role"] == "Staff Software Engineer"
     assert profile["work"][0]["company"] == "Watson Creative"
     assert profile["work"][0]["is_contract"] is True
+    assert profile["render"]["jsonresume_theme"] == "jsonresume-theme-even"
     assert get_profile_verified_metrics(profile) == [
         "99.9% uptime",
         "50% faster delivery",
@@ -170,10 +172,21 @@ def test_build_resume_text_from_json_education_without_metadata_preserves_existi
     assert "Lincoln Land Community College | Associate Liberal Arts | 2000" in rendered
 
 
-def test_resolve_render_theme_prefers_applypilot_then_meta() -> None:
+def test_resolve_render_theme_backfills_from_resume_meta_for_compatibility() -> None:
     data = sample_resume_json()
     assert resolve_render_theme(data) == "jsonresume-theme-even"
     assert resolve_render_theme(data, explicit_theme="jsonresume-theme-professional") == "jsonresume-theme-professional"
+
+
+def test_resolve_jsonresume_theme_prefers_profile_render_settings() -> None:
+    profile = {"render": {"jsonresume_theme": "jsonresume-theme-even"}}
+    assert resolve_jsonresume_theme(profile) == "jsonresume-theme-even"
+    assert resolve_jsonresume_theme(profile, explicit_theme="jsonresume-theme-stackoverflow") == "jsonresume-theme-stackoverflow"
+
+
+def test_resolve_jsonresume_theme_maps_legacy_render_theme_key() -> None:
+    profile = {"render": {"theme": "jsonresume-theme-even"}}
+    assert resolve_jsonresume_theme(profile) == "jsonresume-theme-even"
 
 
 def test_normalize_profile_uses_first_role_from_multi_role_label_when_target_role_missing() -> None:

@@ -86,6 +86,7 @@ _APPLYPILOT_META_SCHEMA: dict = {
         "render": {
             "type": "object",
             "properties": {
+                "jsonresume_theme": {"type": "string"},
                 "theme": {"type": "string"},
             },
             "additionalProperties": True,
@@ -587,6 +588,7 @@ def normalize_profile_settings(profile: dict) -> dict:
         "availability": copy.deepcopy(source.get("availability", {})),
         "eeo_voluntary": copy.deepcopy(source.get("eeo_voluntary", {})),
         "tailoring_config": copy.deepcopy(source.get("tailoring_config", {})),
+        "render": copy.deepcopy(source.get("render", {})),
         "files": copy.deepcopy(source.get("files", {})),
     }
 
@@ -594,8 +596,12 @@ def normalize_profile_settings(profile: dict) -> dict:
     compensation = normalized["compensation"]
     availability = normalized["availability"]
     eeo = normalized["eeo_voluntary"]
+    render = normalized["render"]
     if not isinstance(normalized["tailoring_config"], dict):
         normalized["tailoring_config"] = {}
+    if not isinstance(render, dict):
+        render = {}
+        normalized["render"] = render
     if not isinstance(normalized["files"], dict):
         normalized["files"] = {}
 
@@ -624,6 +630,10 @@ def normalize_profile_settings(profile: dict) -> dict:
     eeo.setdefault("veteran_status", "Decline to self-identify")
     eeo.setdefault("disability_status", "Decline to self-identify")
 
+    # runtime render settings live in profile.json under render.jsonresume_theme.
+    jsonresume_theme = _coerce_str(render.get("jsonresume_theme")) or _coerce_str(render.get("theme"))
+    normalized["render"] = {"jsonresume_theme": jsonresume_theme or DEFAULT_RENDER_THEME}
+
     return normalized
 
 
@@ -632,7 +642,17 @@ def settings_from_resume_json(data: dict) -> dict:
 
     meta = data.get("meta", {}) if isinstance(data.get("meta"), dict) else {}
     applypilot = meta.get("applypilot", {}) if isinstance(meta.get("applypilot"), dict) else {}
-    return normalize_profile_settings(applypilot)
+    settings = normalize_profile_settings(applypilot)
+    render = settings.get("render", {}) if isinstance(settings.get("render"), dict) else {}
+    jsonresume_theme = _coerce_str(render.get("jsonresume_theme"))
+    if not jsonresume_theme:
+        render_cfg = applypilot.get("render", {}) if isinstance(applypilot.get("render"), dict) else {}
+        jsonresume_theme = _coerce_str(render_cfg.get("jsonresume_theme")) or _coerce_str(render_cfg.get("theme"))
+    if not jsonresume_theme:
+        jsonresume_theme = _coerce_str(meta.get("theme"))
+    render["jsonresume_theme"] = jsonresume_theme or DEFAULT_RENDER_THEME
+    settings["render"] = render
+    return settings
 
 
 def normalize_profile_from_resume_json(data: dict, settings: dict | None = None) -> dict:
@@ -686,6 +706,7 @@ def normalize_profile_from_resume_json(data: dict, settings: dict | None = None)
         "certifications": certifications,
         "eeo_voluntary": profile_settings["eeo_voluntary"],
         "tailoring_config": profile_settings["tailoring_config"],
+        "render": profile_settings["render"],
         "files": profile_settings["files"],
     }
 
@@ -761,6 +782,7 @@ def normalize_legacy_profile(profile: dict) -> dict:
         "certifications": certifications,
         "eeo_voluntary": settings["eeo_voluntary"],
         "tailoring_config": settings["tailoring_config"],
+        "render": settings["render"],
         "files": settings["files"],
     }
 
@@ -1095,15 +1117,24 @@ def build_resume_text_from_json(data: dict) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
-def resolve_render_theme(data: dict, explicit_theme: str | None = None) -> str:
-    """Resolve the preferred render theme from CLI and metadata."""
+def resolve_jsonresume_theme(profile: dict | None, explicit_theme: str | None = None) -> str:
+    """Resolve JSON Resume npm theme from CLI override or profile.render settings."""
 
     if explicit_theme and explicit_theme.strip():
         return explicit_theme.strip()
-    meta = data.get("meta", {}) if isinstance(data.get("meta"), dict) else {}
-    applypilot = meta.get("applypilot", {}) if isinstance(meta.get("applypilot"), dict) else {}
-    render_cfg = applypilot.get("render", {}) if isinstance(applypilot.get("render"), dict) else {}
-    return _coerce_str(render_cfg.get("theme")) or _coerce_str(meta.get("theme")) or DEFAULT_RENDER_THEME
+    payload = profile if isinstance(profile, dict) else {}
+    render_cfg = payload.get("render", {}) if isinstance(payload.get("render"), dict) else {}
+    theme = _coerce_str(render_cfg.get("jsonresume_theme")) or _coerce_str(render_cfg.get("theme"))
+    return theme or DEFAULT_RENDER_THEME
+
+
+def resolve_render_theme(data: dict, explicit_theme: str | None = None) -> str:
+    """Backward-compatible wrapper for JSON Resume theme resolution."""
+
+    if explicit_theme and explicit_theme.strip():
+        return explicit_theme.strip()
+    settings = settings_from_resume_json(data if isinstance(data, dict) else {})
+    return resolve_jsonresume_theme(settings)
 
 
 @dataclass(frozen=True)

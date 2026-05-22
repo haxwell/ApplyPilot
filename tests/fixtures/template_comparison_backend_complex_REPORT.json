@@ -1,0 +1,102 @@
+{
+  "title": "Senior Software Engineer - Backend Platform",
+  "site": "Acme Cloud Systems",
+  "full_description": "Build distributed backend systems, deployment automation, cloud infrastructure reliability, CI/CD tooling, and operational resilience for a compute platform.",
+  "skills_selection": {
+    "before_count": 30,
+    "after_count": 17
+  },
+  "tailored_json": {
+    "title": "Senior Software Engineer - Backend Platform",
+    "summary": "Senior backend engineer focused on distributed systems, platform reliability, deployment automation, and developer tooling across cloud environments.",
+    "skills": {
+      "Backend Engineering": "Java 17-21, Spring Boot 3.x, REST APIs, Microservices, Distributed Systems, SQL, MySQL, PostgreSQL",
+      "Event-Driven Systems": "Kafka, Event-Driven Architecture, Messaging",
+      "Cloud and Delivery": "AWS EC2, AWS S3, AWS Lambda, Route53, GitHub Actions, CI/CD Automation, Docker, Kubernetes, Helm, CloudFoundry, GitLab CI, Jenkins CI, Linux, DNS Automation",
+      "Testing and Quality": "JUnit, Mockito, Cucumber, Integration Testing, End-to-End Testing",
+      "Developer Tooling": "Python, Bash, TypeScript"
+    },
+    "experience": [
+      {
+        "header": "Software Engineer",
+        "subtitle": "Charles Schwab | Denver, CO | 2025-2026",
+        "compact_summary": "CI/CD and test automation for cloud deployments.",
+        "bullets": [
+          "Built a configurable end-to-end integration testing platform using Cucumber, GitHub Actions, and CloudFoundry.",
+          "Implemented reusable workflow components for monolithic and modular deployment pipelines.",
+          "Improved deployment confidence through stronger automated validation and repeatable release workflows."
+        ]
+      },
+      {
+        "header": "Lead Engineer / Founder",
+        "subtitle": "Savvato Software | Aurora, CO | 2022-Present",
+        "compact_summary": "Platform architecture, cloud delivery, and engineering leadership.",
+        "bullets": [
+          "Architected and built backend services using Spring Boot, MySQL, REST APIs, and AWS.",
+          "Built automated deployment workflows for production and staging using AWS EC2, Lambda, Route53, GitHub Actions, Linux, and DNS automation.",
+          "Mentored engineers, reviewed pull requests, and improved delivery standards through repeatable engineering practices."
+        ]
+      },
+      {
+        "header": "Backend Engineer",
+        "subtitle": "Coinme | Remote | 2021-2022",
+        "compact_summary": "Event-driven backend engineering for retail crypto transactions.",
+        "bullets": [
+          "Built event-driven microservices using Java, Spring Boot, Kafka, and Axon.",
+          "Developed distributed services producing and consuming events across transactional workflows.",
+          "Contributed GitLab CI/CD scripting and deployment automation across environments."
+        ]
+      },
+      {
+        "header": "Software Engineer",
+        "subtitle": "SquareTrade | Remote | 2020-2021",
+        "compact_summary": "Claims workflow backend and frontend integration.",
+        "bullets": [
+          "Implemented REST API integrations across services to advance insurance claim workflows.",
+          "Created internal tooling that reduced manual release preparation from days to hours.",
+          "Improved maintainability with testable service integration and deployment automation."
+        ]
+      },
+      {
+        "header": "Senior Software Engineer",
+        "subtitle": "Charter Communications | Denver, CO | 2017-2020",
+        "compact_summary": "Operational backend systems and reliability improvements.",
+        "bullets": [
+          "Built backend APIs for service orchestration and subscriber operations.",
+          "Improved on-call reliability through instrumentation and triage tooling.",
+          "Reduced incident recovery time by standardizing deployment and rollback procedures."
+        ]
+      },
+      {
+        "header": "Software Engineer",
+        "subtitle": "IHS Markit | Boulder, CO | 2014-2017",
+        "compact_summary": "Data and reporting platform development.",
+        "bullets": [
+          "Implemented backend data services and integration pipelines.",
+          "Improved operational workflows through automation and documentation."
+        ]
+      }
+    ],
+    "projects": [
+      {
+        "header": "TribeApp Platform",
+        "subtitle": "Backend platform modernization | 2023-Present",
+        "bullets": [
+          "Built Spring Boot APIs for multi-tenant content workflows.",
+          "Implemented scalable MySQL data model updates and operational telemetry.",
+          "Integrated AWS service-to-service authentication for mobile backend services."
+        ]
+      },
+      {
+        "header": "AI Pipeline Assistant",
+        "subtitle": "Workflow tooling | 2024-Present",
+        "bullets": [
+          "Built validator feedback loops and retry orchestration for structured content generation.",
+          "Added artifact-level diagnostics for quality gates and production review."
+        ]
+      }
+    ],
+    "education": "BS, Computer Science | University of Colorado",
+    "certifications": "AWS Certified Developer Associate\nOracle Certified Professional, Java"
+  }
+}

@@ -1356,6 +1356,137 @@ def test_run_tailoring_invalid_configured_template_falls_back_to_default(
     assert "Falling back to 'professional_compact'" in caplog.text
 
 
+def test_run_tailoring_uses_profile_pdf_template_and_reports_runtime_render_settings(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    conn = _FakeConnection()
+    job = _make_job()
+    captured_template = {"value": None}
+
+    report = _approved_report()
+    report["tailored_json"] = {
+        "title": "Staff Software Engineer - AI II",
+        "summary": "Summary",
+        "skills": {"Languages": "Python"},
+        "experience": [{"header": "Engineer", "subtitle": "Example | 2020-2024", "bullets": ["Built APIs"]}],
+        "projects": [],
+        "education": "BS",
+    }
+
+    monkeypatch.setattr(tailor, "TAILORED_DIR", tmp_path)
+    monkeypatch.setattr(
+        tailor,
+        "load_profile",
+        lambda: {
+            "personal": {"full_name": "Alex Example"},
+            "tailoring_config": {"pdf_template": "editorial_timeline"},
+            "render": {"jsonresume_theme": "jsonresume-theme-even"},
+        },
+    )
+    monkeypatch.setattr(tailor, "load_resume_text", lambda: "base resume")
+    monkeypatch.setattr(tailor, "get_connection", lambda: conn)
+    monkeypatch.setattr(tailor, "get_jobs_by_stage", lambda **_: [job])
+    monkeypatch.setattr(tailor, "tailor_resume", lambda *args, **kwargs: ("tailored resume", report))
+
+    def _fake_render_model_to_pdf_with_planning(
+        model,
+        output_path: Path,
+        template_name: str = "professional_compact",
+        html_only: bool = False,
+        **_kwargs,
+    ) -> tuple[Path, dict]:
+        del model, html_only
+        captured_template["value"] = template_name
+        out = Path(output_path)
+        out.write_bytes(b"%PDF-1.4 fake\n")
+        return out, {"template_used": template_name}
+
+    monkeypatch.setattr(
+        "applypilot.scoring.pdf.render_model_to_pdf_with_planning",
+        _fake_render_model_to_pdf_with_planning,
+    )
+    monkeypatch.setattr(
+        "applypilot.scoring.pdf.convert_to_pdf",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("fallback text renderer should not run")),
+    )
+
+    result = tailor.run_tailoring(min_score=7, limit=1, validation_mode="normal")
+
+    assert result["approved"] == 1
+    assert captured_template["value"] == "editorial_timeline"
+    report_paths = list(tmp_path.glob("*_REPORT.json"))
+    assert len(report_paths) == 1
+    report_data = json.loads(report_paths[0].read_text(encoding="utf-8"))
+    assert report_data["pdf_template"] == "editorial_timeline"
+    assert report_data["resolved_pdf_template_name"] == "editorial_timeline"
+    assert report_data["pdf_render_planning"]["template_used"] == "editorial_timeline"
+    assert report_data["jsonresume_theme"] == "jsonresume-theme-even"
+    assert report_data["jsonresume_theme_scope"] == "JSON Resume renderer only"
+    assert report_data["active_profile_path"].endswith("profile.json")
+
+
+def test_run_tailoring_does_not_use_profile_jsonresume_theme_as_pdf_template(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    conn = _FakeConnection()
+    job = _make_job()
+    captured_template = {"value": None}
+
+    report = _approved_report()
+    report["tailored_json"] = {
+        "title": "Staff Software Engineer - AI II",
+        "summary": "Summary",
+        "skills": {"Languages": "Python"},
+        "experience": [{"header": "Engineer", "subtitle": "Example | 2020-2024", "bullets": ["Built APIs"]}],
+        "projects": [],
+        "education": "BS",
+    }
+
+    monkeypatch.setattr(tailor, "TAILORED_DIR", tmp_path)
+    monkeypatch.setattr(
+        tailor,
+        "load_profile",
+        lambda: {
+            "personal": {"full_name": "Alex Example"},
+            "tailoring_config": {},
+            "render": {"jsonresume_theme": "jsonresume-theme-even"},
+        },
+    )
+    monkeypatch.setattr(tailor, "load_resume_text", lambda: "base resume")
+    monkeypatch.setattr(tailor, "get_connection", lambda: conn)
+    monkeypatch.setattr(tailor, "get_jobs_by_stage", lambda **_: [job])
+    monkeypatch.setattr(tailor, "tailor_resume", lambda *args, **kwargs: ("tailored resume", report))
+
+    def _fake_render_model_to_pdf_with_planning(
+        model,
+        output_path: Path,
+        template_name: str = "professional_compact",
+        html_only: bool = False,
+        **_kwargs,
+    ) -> tuple[Path, dict]:
+        del model, html_only
+        captured_template["value"] = template_name
+        out = Path(output_path)
+        out.write_bytes(b"%PDF-1.4 fake\n")
+        return out, {"template_used": template_name}
+
+    monkeypatch.setattr(
+        "applypilot.scoring.pdf.render_model_to_pdf_with_planning",
+        _fake_render_model_to_pdf_with_planning,
+    )
+    monkeypatch.setattr(
+        "applypilot.scoring.pdf.convert_to_pdf",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("fallback text renderer should not run")),
+    )
+
+    result = tailor.run_tailoring(min_score=7, limit=1, validation_mode="normal")
+
+    assert result["approved"] == 1
+    assert captured_template["value"] == "professional_compact"
+
+
 def test_tailor_resume_includes_tailored_json_on_success(monkeypatch) -> None:
     class _FakeClient:
         def chat(self, _messages, max_output_tokens: int = 16000):  # noqa: ARG002

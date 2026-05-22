@@ -20,7 +20,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from applypilot.config import TAILORED_DIR, load_profile, load_resume_text
+from applypilot.config import PROFILE_PATH, TAILORED_DIR, load_profile, load_resume_text
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
 from applypilot.resume_json import (
@@ -30,6 +30,7 @@ from applypilot.resume_json import (
     get_profile_skill_keywords,
     get_profile_skill_sections,
     get_profile_verified_metrics,
+    resolve_jsonresume_theme,
 )
 from applypilot.scoring.artifact_naming import build_artifact_prefix
 from applypilot.scoring.validator import (
@@ -2303,7 +2304,20 @@ def run_tailoring(
     from applypilot.scoring.pdf import DEFAULT_PDF_TEMPLATE, resolve_pdf_template_name
     from applypilot.scoring.pdf_templates.registry import get_template, get_template_input_preferences
 
-    pdf_template_name = resolve_pdf_template_name(profile)
+    configured_pdf_template = ""
+    tailoring_config = profile.get("tailoring_config", {}) if isinstance(profile.get("tailoring_config"), dict) else {}
+    if isinstance(tailoring_config, dict):
+        configured_pdf_template = str(tailoring_config.get("pdf_template", "")).strip()
+    try:
+        pdf_template_name = resolve_pdf_template_name(profile)
+    except ValueError as exc:
+        log.warning(
+            "Configured PDF template '%s' is invalid (%s). Falling back to '%s'.",
+            configured_pdf_template or "<empty>",
+            exc,
+            DEFAULT_PDF_TEMPLATE,
+        )
+        pdf_template_name = DEFAULT_PDF_TEMPLATE
     try:
         get_template(pdf_template_name)
     except ValueError as exc:
@@ -2314,6 +2328,14 @@ def run_tailoring(
             DEFAULT_PDF_TEMPLATE,
         )
         pdf_template_name = DEFAULT_PDF_TEMPLATE
+    configured_jsonresume_theme = resolve_jsonresume_theme(profile)
+    log.info(
+        "Runtime config: profile=%s | configured_pdf_template=%s | resolved_pdf_template=%s | jsonresume_theme=%s (JSON Resume renderer only)",
+        PROFILE_PATH,
+        configured_pdf_template or "<empty>",
+        pdf_template_name,
+        configured_jsonresume_theme,
+    )
     try:
         pdf_template_input_preferences = get_template_input_preferences(pdf_template_name)
     except Exception as exc:  # pragma: no cover - defensive guard for metadata lookup
@@ -2343,7 +2365,12 @@ def run_tailoring(
                 content_preparation_context=content_preparation_context,
             )
             report["pdf_template"] = pdf_template_name
+            report["configured_pdf_template"] = configured_pdf_template
             report["pdf_template_input_preferences"] = pdf_template_input_preferences
+            report["resolved_pdf_template_name"] = pdf_template_name
+            report["active_profile_path"] = str(PROFILE_PATH)
+            report["jsonresume_theme"] = configured_jsonresume_theme
+            report["jsonresume_theme_scope"] = "JSON Resume renderer only"
             report["content_preparation_context"] = dict(content_preparation_context)
             profile_education_rendered = _build_education_block(profile.get("education", []))
             if profile_education_rendered != "N/A":

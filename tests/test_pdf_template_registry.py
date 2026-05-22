@@ -168,3 +168,14 @@ def test_resolve_pdf_template_name_explicit_overrides_config() -> None:
 def test_resolve_pdf_template_name_uses_tailoring_config_template() -> None:
     profile = {"tailoring_config": {"pdf_template": "compact"}}
     assert resolve_pdf_template_name(profile, None) == "compact"
+
+
+def test_resolve_pdf_template_name_rejects_jsonresume_theme_value() -> None:
+    profile = {"tailoring_config": {"pdf_template": "jsonresume-theme-even"}}
+    with pytest.raises(ValueError, match="JSON Resume themes are not ApplyPilot PDF templates"):
+        resolve_pdf_template_name(profile, None)
+
+
+def test_resolve_pdf_template_name_rejects_explicit_jsonresume_theme_value() -> None:
+    with pytest.raises(ValueError, match="JSON Resume themes are not ApplyPilot PDF templates"):
+        resolve_pdf_template_name({}, "jsonresume-theme-even")

@@ -6,12 +6,19 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from applypilot.config import RESUME_JSON_PATH
-from applypilot.resume_json import DEFAULT_RENDER_THEME, load_resume_json_from_path, resolve_render_theme
+from applypilot.config import RESUME_JSON_PATH, load_profile
+from applypilot.resume_json import DEFAULT_RENDER_THEME, load_resume_json_from_path, resolve_jsonresume_theme
 from applypilot.scoring.pdf import render_pdf
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_RESUMED = PROJECT_ROOT / "node_modules" / ".bin" / "resumed"
+_KNOWN_APPLYPILOT_PDF_TEMPLATES = {
+    "professional_compact",
+    "editorial_timeline",
+    "classic",
+    "compact",
+    "default",
+}
 
 
 def _resumed_command() -> list[str]:
@@ -30,8 +37,18 @@ def render_resume_html(
     """Render resume.json to HTML using the local resumed CLI."""
 
     source = Path(resume_path) if resume_path is not None else RESUME_JSON_PATH
-    data = load_resume_json_from_path(source)
-    resolved_theme = resolve_render_theme(data, explicit_theme=theme) or DEFAULT_RENDER_THEME
+    load_resume_json_from_path(source)
+    try:
+        profile = load_profile()
+    except Exception:
+        profile = {}
+    resolved_theme = resolve_jsonresume_theme(profile, explicit_theme=theme) or DEFAULT_RENDER_THEME
+    if resolved_theme in _KNOWN_APPLYPILOT_PDF_TEMPLATES:
+        raise ValueError(
+            "ApplyPilot PDF template names are not JSON Resume themes. "
+            "Use profile.render.jsonresume_theme for JSON Resume rendering "
+            "and profile.tailoring_config.pdf_template for ApplyPilot planned PDFs."
+        )
     destination = Path(output_path) if output_path is not None else source.with_suffix(".html")
 
     command = _resumed_command() + [

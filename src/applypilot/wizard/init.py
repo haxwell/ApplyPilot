@@ -291,7 +291,7 @@ def _legacy_profile_to_resume_json(profile: dict, resume_text: str = "") -> dict
         "eeo_voluntary": profile.get("eeo_voluntary", {}),
         "tailoring_config": profile.get("tailoring_config", {}),
         "files": profile.get("files", {}),
-        "render": {"theme": DEFAULT_RENDER_THEME},
+        "render": {"jsonresume_theme": DEFAULT_RENDER_THEME},
     }
 
     return {
@@ -339,7 +339,7 @@ def _create_resume_json_scaffold() -> dict:
             "canonical": "https://jsonresume.org/schema",
             "version": "v1.0.0",
             "applypilot": {
-                "render": {"theme": DEFAULT_RENDER_THEME},
+                "render": {"jsonresume_theme": DEFAULT_RENDER_THEME},
             },
         },
     }
@@ -461,7 +461,7 @@ def _prompt_missing_applypilot_fields(resume_data: dict) -> dict:
     if "tailoring_config" not in applypilot or not isinstance(applypilot.get("tailoring_config"), dict):
         applypilot["tailoring_config"] = _setup_tailoring_config(str(applypilot.get("target_role", "")))
 
-    applypilot.setdefault("render", {"theme": DEFAULT_RENDER_THEME})
+    applypilot.setdefault("render", {"jsonresume_theme": DEFAULT_RENDER_THEME})
     return resume_data
 
 
