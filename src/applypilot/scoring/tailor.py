@@ -17,6 +17,7 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from applypilot.config import TAILORED_DIR, load_profile, load_resume_text
@@ -1090,6 +1091,18 @@ def _apply_final_render_quality_status(report: dict) -> None:
         )
         report["compound_skill_claims_final_unresolved"] = compound_unresolved
 
+    rendered_validator_warnings = report.get("validator_warnings_rendered_resume", [])
+    if isinstance(rendered_validator_warnings, list):
+        rendered_validator_warnings = [str(item).strip() for item in rendered_validator_warnings if str(item).strip()]
+    else:
+        rendered_validator_warnings = []
+    if rendered_validator_warnings and str(report.get("status", "")) == "approved":
+        report["status"] = "approved_with_warnings"
+        if not report.get("quality_warning"):
+            report["quality_warning"] = (
+                "Rendered resume validator warnings are present; review recommended."
+            )
+
 
 def _normalize_for_provenance_match(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]+", " ", str(text).lower())).strip()
@@ -1111,8 +1124,42 @@ def _attach_claim_support_provenance(report: dict, *, source_resume_text: str) -
     coverage = planning.get("claim_coverage", [])
     if not isinstance(coverage, list):
         return
+    source_claims: list[str] = []
+    source_coverage_lookup: dict[str, Any] = {}
+    try:
+        from applypilot.scoring.pdf import build_render_model, parse_resume
+        from applypilot.resume.evidence import build_claim_coverage_for_claims, claim_variants, extract_all_skill_claims
+
+        parsed_source = parse_resume(source_resume_text)
+        source_model = build_render_model(parsed_source)
+        source_claims = extract_all_skill_claims(source_model)
+        target_claims = [str(item.get("claim", "")).strip() for item in coverage if isinstance(item, dict) and str(item.get("claim", "")).strip()]
+        source_cov = build_claim_coverage_for_claims(
+            claims=target_claims,
+            model=source_model,
+            prepared=SimpleNamespace(),
+        )
+        source_coverage_lookup = {
+            _normalize_for_provenance_match(str(getattr(item, "claim", ""))): item
+            for item in source_cov
+        }
+    except Exception:
+        claim_variants = lambda text: [str(text)]  # type: ignore[assignment]
     base_norm = _normalize_for_provenance_match(source_resume_text)
+
+    def _source_keyword_support_count(claim: str) -> int:
+        if not source_claims:
+            return 0
+        claim_variant_keys = {_normalize_for_provenance_match(v) for v in claim_variants(claim)}
+        count = 0
+        for source_claim in source_claims:
+            source_variant_keys = {_normalize_for_provenance_match(v) for v in claim_variants(source_claim)}
+            if claim_variant_keys & source_variant_keys:
+                count += 1
+        return count
+
     provenance_rows: list[dict[str, Any]] = []
+    provenance_by_claim_key: dict[str, dict[str, Any]] = {}
     provenance_risks: list[dict[str, Any]] = []
     for item in coverage:
         if not isinstance(item, dict):
@@ -1137,30 +1184,105 @@ def _attach_claim_support_provenance(report: dict, *, source_resume_text: str) -
                 source_matches += 1
             else:
                 non_source_matches += 1
+        claim_key = _normalize_for_provenance_match(claim)
+        source_cov_item = source_coverage_lookup.get(claim_key)
+        source_primary_support_count = int(getattr(source_cov_item, "primary_supporting_evidence_count", 0) or 0)
+        rendered_primary_support_count = int(item.get("retained_primary_supporting_evidence_count", 0) or 0)
+        tailored_primary_support_count = max(0, int(item.get("primary_supporting_evidence_count", 0) or 0) - source_primary_support_count)
+        source_resume_keyword_support_count = _source_keyword_support_count(claim)
+        coverage_status = str(item.get("coverage_status", ""))
+
+        if coverage_status == "supported" and source_primary_support_count > 0 and rendered_primary_support_count > 0:
+            support_provenance_status = "source_primary_and_rendered"
+        elif coverage_status == "supported" and source_resume_keyword_support_count > 0 and rendered_primary_support_count > 0:
+            support_provenance_status = "source_keyword_and_rendered"
+        elif coverage_status == "supported" and rendered_primary_support_count > 0 and source_primary_support_count == 0 and source_resume_keyword_support_count == 0 and tailored_primary_support_count > 0:
+            support_provenance_status = "tailored_only_primary"
+        elif coverage_status == "supported" and rendered_primary_support_count > 0 and source_primary_support_count == 0 and source_resume_keyword_support_count == 0:
+            support_provenance_status = "rendered_only_untraced"
+        elif coverage_status == "weak_summary_only":
+            support_provenance_status = "summary_only"
+        elif coverage_status == "unsupported":
+            support_provenance_status = "unsupported"
+        else:
+            support_provenance_status = coverage_status or "unsupported"
+
+        item["source_resume_keyword_support_count"] = source_resume_keyword_support_count
+        item["source_resume_primary_support_count"] = source_primary_support_count
+        item["tailored_primary_support_count"] = tailored_primary_support_count
+        item["rendered_primary_support_count"] = rendered_primary_support_count
+        item["support_provenance_status"] = support_provenance_status
+
         row = {
             "claim": claim,
-            "coverage_status": str(item.get("coverage_status", "")),
-            "retained_primary_supporting_evidence_count": int(item.get("retained_primary_supporting_evidence_count", 0) or 0),
+            "coverage_status": coverage_status,
+            "source_resume_keyword_support_count": source_resume_keyword_support_count,
+            "source_resume_primary_support_count": source_primary_support_count,
+            "tailored_primary_support_count": tailored_primary_support_count,
+            "rendered_primary_support_count": rendered_primary_support_count,
+            "support_provenance_status": support_provenance_status,
             "source_resume_support_count": source_matches,
             "tailored_or_generated_support_count": non_source_matches,
         }
         provenance_rows.append(row)
+        provenance_by_claim_key[_normalize_for_provenance_match(claim)] = row
         if (
             row["coverage_status"] == "supported"
-            and row["retained_primary_supporting_evidence_count"] > 0
+            and row["rendered_primary_support_count"] > 0
             and _is_high_specificity_claim(claim)
-            and source_matches == 0
-            and non_source_matches > 0
+            and row["source_resume_primary_support_count"] == 0
+            and row["source_resume_keyword_support_count"] == 0
+            and row["support_provenance_status"] in {"tailored_only_primary", "rendered_only_untraced"}
         ):
             provenance_risks.append(
                 {
                     "claim": claim,
-                    "reason": "supported_only_by_tailored_or_generated_evidence_not_traced_to_source_resume",
-                    "tailored_or_generated_support_count": non_source_matches,
+                    "reason": "high_specificity_claim_not_traced_to_source_resume",
+                    "support_provenance_status": row["support_provenance_status"],
                 }
             )
     planning["claim_support_provenance"] = provenance_rows
     planning["high_specificity_claim_provenance_risks"] = provenance_risks
+
+    # Refine removed-claim disposition reason labels using provenance context.
+    dispositions = planning.get("final_weak_or_unsupported_claim_dispositions", [])
+    if isinstance(dispositions, list):
+        for disp in dispositions:
+            if not isinstance(disp, dict):
+                continue
+            if str(disp.get("final_action", "")) != "removed":
+                continue
+            claim = str(disp.get("claim", "")).strip()
+            if not claim:
+                continue
+            row = provenance_by_claim_key.get(_normalize_for_provenance_match(claim))
+            if not row:
+                # If claim was removed and is no longer in final claim_coverage,
+                # still compute coarse source support from source resume.
+                fallback_row = {
+                    "source_resume_keyword_support_count": _source_keyword_support_count(claim),
+                    "source_resume_primary_support_count": int(
+                        getattr(source_coverage_lookup.get(_normalize_for_provenance_match(claim)), "primary_supporting_evidence_count", 0)
+                        or 0
+                    ),
+                    "rendered_primary_support_count": 0,
+                    "support_provenance_status": "unsupported",
+                }
+                row = fallback_row
+            source_kw = int(row.get("source_resume_keyword_support_count", 0) or 0)
+            source_primary = int(row.get("source_resume_primary_support_count", 0) or 0)
+            rendered_primary = int(row.get("rendered_primary_support_count", 0) or 0)
+            prov_status = str(row.get("support_provenance_status", "unsupported"))
+
+            if source_primary > 0 and rendered_primary == 0:
+                disp["reason"] = "source_primary_available_but_not_rendered"
+            elif source_kw > 0 and rendered_primary == 0:
+                disp["reason"] = "source_keyword_only_no_rendered_primary_evidence"
+            elif prov_status in {"tailored_only_primary", "rendered_only_untraced"}:
+                disp["reason"] = "tailored_only_or_untraced_evidence"
+            elif source_kw == 0 and source_primary == 0:
+                disp["reason"] = "no_source_evidence"
+
     if provenance_risks:
         status = str(report.get("status", ""))
         if status in {"approved", "approved_with_judge_warning"}:

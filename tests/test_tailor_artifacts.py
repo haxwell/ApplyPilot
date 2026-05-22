@@ -494,6 +494,314 @@ def test_run_tailoring_flags_high_specificity_claim_provenance_risk(
     assert any(item.get("claim") == "Kubernetes" for item in risks)
 
 
+def test_run_tailoring_marks_docker_as_source_keyword_and_rendered(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    conn = _FakeConnection()
+    job = _make_job()
+    report = _approved_report()
+    report["tailored_json"] = {
+        "title": "Senior Engineer",
+        "summary": "Summary",
+        "skills": {"Core": "Docker, Java"},
+        "experience": [{"header": "Engineer", "subtitle": "Example | 2020-2024", "bullets": ["Built APIs"]}],
+        "projects": [],
+        "education": "BS",
+    }
+
+    source_resume = (
+        "Alex Example\n"
+        "Senior Engineer\n"
+        "SUMMARY\n"
+        "Built reliable backend services.\n"
+        "TECHNICAL SKILLS\n"
+        "Core: Docker, Java\n"
+        "EXPERIENCE\n"
+        "Engineer\n"
+        "Example | 2020-2024\n"
+        "- Built Java services.\n"
+    )
+
+    monkeypatch.setattr(tailor, "TAILORED_DIR", tmp_path)
+    monkeypatch.setattr(tailor, "load_profile", lambda: {"personal": {"full_name": "Alex Example"}})
+    monkeypatch.setattr(tailor, "load_resume_text", lambda: source_resume)
+    monkeypatch.setattr(tailor, "get_connection", lambda: conn)
+    monkeypatch.setattr(tailor, "get_jobs_by_stage", lambda **_: [job])
+    monkeypatch.setattr(tailor, "tailor_resume", lambda *args, **kwargs: ("tailored resume", report))
+
+    def _fake_render_model_to_pdf_with_planning(
+        model,
+        output_path: Path,
+        template_name: str = "professional_compact",
+        html_only: bool = False,
+        **_kwargs,
+    ) -> tuple[Path, dict]:
+        del model, template_name, html_only
+        out = Path(output_path)
+        out.write_bytes(b"%PDF-1.4 fake\n")
+        return out, {
+            "template_used": "professional_compact",
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [
+                {
+                    "claim": "Docker",
+                    "coverage_status": "supported",
+                    "primary_supporting_evidence_count": 1,
+                    "retained_primary_supporting_evidence_count": 1,
+                    "supporting_evidence_match_reasons": [
+                        {
+                            "source_label": "Savvato",
+                            "source_path": "experience[0].bullets[0]",
+                            "reason": "direct_phrase_match",
+                            "text": "Implemented deployment automation with Docker and AWS tooling.",
+                        }
+                    ],
+                }
+            ],
+            "unsupported_visible_claims_final": [],
+            "weak_visible_claims_final": [],
+        }
+
+    monkeypatch.setattr(
+        "applypilot.scoring.pdf.render_model_to_pdf_with_planning",
+        _fake_render_model_to_pdf_with_planning,
+    )
+
+    result = tailor.run_tailoring(min_score=7, limit=1, validation_mode="normal")
+    assert result["approved"] == 1
+
+    report_paths = list(tmp_path.glob("*_REPORT.json"))
+    report_data = json.loads(report_paths[0].read_text(encoding="utf-8"))
+    planning = report_data["pdf_render_planning"]
+    docker = next(item for item in planning["claim_coverage"] if item["claim"] == "Docker")
+    assert docker["support_provenance_status"] == "source_keyword_and_rendered"
+    assert docker["source_resume_keyword_support_count"] >= 1
+    assert docker["rendered_primary_support_count"] >= 1
+
+
+def test_run_tailoring_marks_aws_subclaim_as_source_primary_and_rendered(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    conn = _FakeConnection()
+    job = _make_job()
+    report = _approved_report()
+    report["tailored_json"] = {
+        "title": "Senior Engineer",
+        "summary": "Summary",
+        "skills": {"Core": "AWS EC2, AWS Lambda, Route53"},
+        "experience": [{"header": "Engineer", "subtitle": "Example | 2020-2024", "bullets": ["Built APIs"]}],
+        "projects": [],
+        "education": "BS",
+    }
+
+    source_resume = (
+        "Alex Example\n"
+        "Senior Engineer\n"
+        "SUMMARY\n"
+        "Built reliable backend services.\n"
+        "TECHNICAL SKILLS\n"
+        "Core: AWS EC2, AWS Lambda, Route53\n"
+        "EXPERIENCE\n"
+        "Engineer\n"
+        "Savvato | 2020-2024\n"
+        "- Built automated deployment workflows using AWS EC2, Lambda, Route53, and DNS automation.\n"
+    )
+
+    monkeypatch.setattr(tailor, "TAILORED_DIR", tmp_path)
+    monkeypatch.setattr(tailor, "load_profile", lambda: {"personal": {"full_name": "Alex Example"}})
+    monkeypatch.setattr(tailor, "load_resume_text", lambda: source_resume)
+    monkeypatch.setattr(tailor, "get_connection", lambda: conn)
+    monkeypatch.setattr(tailor, "get_jobs_by_stage", lambda **_: [job])
+    monkeypatch.setattr(tailor, "tailor_resume", lambda *args, **kwargs: ("tailored resume", report))
+
+    def _fake_render_model_to_pdf_with_planning(
+        model,
+        output_path: Path,
+        template_name: str = "professional_compact",
+        html_only: bool = False,
+        **_kwargs,
+    ) -> tuple[Path, dict]:
+        del model, template_name, html_only
+        out = Path(output_path)
+        out.write_bytes(b"%PDF-1.4 fake\n")
+        return out, {
+            "template_used": "professional_compact",
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [
+                {
+                    "claim": "AWS Route53",
+                    "coverage_status": "supported",
+                    "primary_supporting_evidence_count": 1,
+                    "retained_primary_supporting_evidence_count": 1,
+                    "supporting_evidence_match_reasons": [
+                        {
+                            "source_label": "Savvato",
+                            "source_path": "experience[0].bullets[0]",
+                            "reason": "direct_phrase_match",
+                            "text": "Built automated deployment workflows using AWS EC2, Lambda, Route53, and DNS automation.",
+                        }
+                    ],
+                }
+            ],
+            "unsupported_visible_claims_final": [],
+            "weak_visible_claims_final": [],
+        }
+
+    monkeypatch.setattr(
+        "applypilot.scoring.pdf.render_model_to_pdf_with_planning",
+        _fake_render_model_to_pdf_with_planning,
+    )
+
+    result = tailor.run_tailoring(min_score=7, limit=1, validation_mode="normal")
+    assert result["approved"] == 1
+
+    report_paths = list(tmp_path.glob("*_REPORT.json"))
+    report_data = json.loads(report_paths[0].read_text(encoding="utf-8"))
+    planning = report_data["pdf_render_planning"]
+    claim = next(item for item in planning["claim_coverage"] if item["claim"] == "AWS Route53")
+    assert claim["support_provenance_status"] == "source_primary_and_rendered"
+    assert claim["source_resume_primary_support_count"] >= 1
+    assert claim["rendered_primary_support_count"] >= 1
+
+
+def test_run_tailoring_relabels_removed_claim_reason_when_source_keyword_exists(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    conn = _FakeConnection()
+    job = _make_job()
+    report = _approved_report()
+    report["tailored_json"] = {
+        "title": "Senior Engineer",
+        "summary": "Summary",
+        "skills": {"Core": "Java"},
+        "experience": [{"header": "Engineer", "subtitle": "Example | 2020-2024", "bullets": ["Built APIs"]}],
+        "projects": [],
+        "education": "BS",
+    }
+    source_resume = (
+        "Alex Example\n"
+        "Senior Engineer\n"
+        "SUMMARY\n"
+        "Built backend systems.\n"
+        "TECHNICAL SKILLS\n"
+        "Core: Docker, Java\n"
+        "EXPERIENCE\n"
+        "Engineer\n"
+        "Example | 2020-2024\n"
+        "- Built Java services.\n"
+    )
+
+    monkeypatch.setattr(tailor, "TAILORED_DIR", tmp_path)
+    monkeypatch.setattr(tailor, "load_profile", lambda: {"personal": {"full_name": "Alex Example"}})
+    monkeypatch.setattr(tailor, "load_resume_text", lambda: source_resume)
+    monkeypatch.setattr(tailor, "get_connection", lambda: conn)
+    monkeypatch.setattr(tailor, "get_jobs_by_stage", lambda **_: [job])
+    monkeypatch.setattr(tailor, "tailor_resume", lambda *args, **kwargs: ("tailored resume", report))
+
+    def _fake_render_model_to_pdf_with_planning(
+        model,
+        output_path: Path,
+        template_name: str = "professional_compact",
+        html_only: bool = False,
+        **_kwargs,
+    ) -> tuple[Path, dict]:
+        del model, template_name, html_only
+        out = Path(output_path)
+        out.write_bytes(b"%PDF-1.4 fake\n")
+        return out, {
+            "template_used": "professional_compact",
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [{"claim": "Java", "coverage_status": "supported", "retained_primary_supporting_evidence_count": 1}],
+            "unsupported_visible_claims_final": [],
+            "weak_visible_claims_final": [],
+            "final_weak_or_unsupported_claim_dispositions": [
+                {
+                    "claim": "Docker",
+                    "coverage_status": "unsupported",
+                    "final_action": "removed",
+                    "reason": "unsupported_no_replacement_no_source_evidence",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "applypilot.scoring.pdf.render_model_to_pdf_with_planning",
+        _fake_render_model_to_pdf_with_planning,
+    )
+
+    result = tailor.run_tailoring(min_score=7, limit=1, validation_mode="normal")
+    assert result["approved"] == 1
+    report_paths = list(tmp_path.glob("*_REPORT.json"))
+    report_data = json.loads(report_paths[0].read_text(encoding="utf-8"))
+    dispositions = report_data["pdf_render_planning"]["final_weak_or_unsupported_claim_dispositions"]
+    docker = next(item for item in dispositions if item.get("claim") == "Docker")
+    assert docker["reason"] == "source_keyword_only_no_rendered_primary_evidence"
+
+
+def test_run_tailoring_marks_approved_with_warnings_when_rendered_validator_warnings_exist(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    conn = _FakeConnection()
+    job = _make_job()
+    report = _approved_report()
+    report["validator"]["warnings"] = ["Rendered layout warning: possible overlap in skills row"]
+    report["tailored_json"] = {
+        "title": "Senior Engineer",
+        "summary": "Summary",
+        "skills": {"Core": "Java, Spring Boot, Kafka, Redis, Docker, AWS, GCP, Azure, Linux, Terraform, Ansible, RabbitMQ, PostgreSQL, MySQL, MongoDB, Cassandra, Elasticsearch, Kubernetes, Helm, Prometheus, Grafana, Jenkins, GitLab CI, CircleCI, ArgoCD, Nginx, HAProxy, OpenAPI, REST, gRPC"},
+        "experience": [{"header": "Engineer", "subtitle": "Example | 2020-2024", "bullets": ["Built APIs"]}],
+        "projects": [],
+        "education": "BS",
+    }
+
+    monkeypatch.setattr(tailor, "TAILORED_DIR", tmp_path)
+    monkeypatch.setattr(tailor, "load_profile", lambda: {"personal": {"full_name": "Alex Example"}})
+    monkeypatch.setattr(tailor, "load_resume_text", lambda: "base resume with Java services")
+    monkeypatch.setattr(tailor, "get_connection", lambda: conn)
+    monkeypatch.setattr(tailor, "get_jobs_by_stage", lambda **_: [job])
+    monkeypatch.setattr(tailor, "tailor_resume", lambda *args, **kwargs: ("tailored resume", report))
+
+    def _fake_render_model_to_pdf_with_planning(
+        model,
+        output_path: Path,
+        template_name: str = "professional_compact",
+        html_only: bool = False,
+        **_kwargs,
+    ) -> tuple[Path, dict]:
+        del model, template_name, html_only
+        out = Path(output_path)
+        out.write_bytes(b"%PDF-1.4 fake\n")
+        return out, {
+            "template_used": "professional_compact",
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [
+                {"claim": "Java", "coverage_status": "supported", "retained_primary_supporting_evidence_count": 1},
+                {"claim": "Spring Boot", "coverage_status": "supported", "retained_primary_supporting_evidence_count": 1},
+            ],
+            "unsupported_visible_claims_final": [],
+            "weak_visible_claims_final": [],
+        }
+
+    monkeypatch.setattr(
+        "applypilot.scoring.pdf.render_model_to_pdf_with_planning",
+        _fake_render_model_to_pdf_with_planning,
+    )
+
+    tailor.run_tailoring(min_score=7, limit=1, validation_mode="normal")
+    report_paths = list(tmp_path.glob("*_REPORT.json"))
+    report_data = json.loads(report_paths[0].read_text(encoding="utf-8"))
+    assert report_data["validator_warnings_rendered_resume"]
+    assert report_data["status"] == "approved_with_warnings"
+
+
 def test_run_tailoring_scopes_banned_phrase_warning_to_tailored_json_only(
     monkeypatch,
     tmp_path: Path,
