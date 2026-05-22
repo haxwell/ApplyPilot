@@ -13,10 +13,10 @@ from applypilot.scoring.render_planning_service import (
 )
 
 GROUPED_SKILL_TAXONOMY: dict[str, set[str]] = {
-    "aws": {"ec2", "lambda", "route53", "s3", "cloudfront", "rds"},
-    "adobe": {"photoshop", "illustrator", "indesign"},
-    "adobe creative suite": {"photoshop", "illustrator", "indesign"},
-    "healthcare coding": {"icd-10", "cpt", "snomed"},
+    "aws": {"EC2", "Lambda", "Route53", "S3", "CloudFront", "RDS"},
+    "adobe": {"Photoshop", "Illustrator", "InDesign"},
+    "adobe creative suite": {"Photoshop", "Illustrator", "InDesign"},
+    "healthcare coding": {"ICD-10", "CPT", "SNOMED"},
 }
 
 
@@ -238,10 +238,29 @@ class SkillRepairPlanner:
         text = re.sub(r"\b(\w+)\s*-\s*driven\b", r"\1-driven", text, flags=re.IGNORECASE)
         text = re.sub(r"\b(\w+)-\s*-\s*(based|driven)\b", r"\1-\2", text, flags=re.IGNORECASE)
         text = re.sub(r"\(\s*\)", "", text)
+
+        # Light grammar polish: "using A, B, C" -> "using A, B, and C"
+        def _oxford_for_using(match: re.Match[str]) -> str:
+            prefix = match.group(1)
+            segment = match.group(2)
+            if re.search(r"\band\b", segment, flags=re.IGNORECASE):
+                return match.group(0)
+            parts = [part.strip() for part in segment.split(",") if part.strip()]
+            if len(parts) < 3:
+                return match.group(0)
+            return f"{prefix}{parts[0]}, {parts[1]}, and {parts[2]}"
+
+        text = re.sub(
+            r"\b((?:using|with|including)\s+)([^.;:]+)",
+            _oxford_for_using,
+            text,
+            flags=re.IGNORECASE,
+        )
         return text.strip()
 
-    def _taxonomy_children(self, parent: str) -> set[str]:
-        return set(GROUPED_SKILL_TAXONOMY.get(self._normalize_skill_claim_key(parent), set()))
+    def _taxonomy_children(self, parent: str) -> dict[str, str]:
+        values = GROUPED_SKILL_TAXONOMY.get(self._normalize_skill_claim_key(parent), set())
+        return {self._normalize_skill_claim_key(value): value for value in values}
 
     def _is_parent_child_subclaim(
         self,
@@ -255,11 +274,22 @@ class SkillRepairPlanner:
         parent_key = self._normalize_skill_claim_key(parent)
         sub_key = self._normalize_skill_claim_key(subclaim)
         taxonomy_children = self._taxonomy_children(parent)
-        if taxonomy_children and sub_key not in taxonomy_children:
+        if taxonomy_children and sub_key not in taxonomy_children.keys():
             return False
 
         explicit_relations = {"existing_parenthetical", "repeated_prefix", "pool_parenthetical"}
         if relation in explicit_relations:
+            return True
+
+        if relation == "taxonomy_evidence":
+            if not taxonomy_children or sub_key not in taxonomy_children.keys():
+                return False
+            if not evidence_span.strip():
+                return False
+            if not re.search(rf"\b{re.escape(parent.strip())}\b", evidence_span, flags=re.IGNORECASE):
+                return False
+            if not re.search(rf"\b{re.escape(subclaim.strip())}\b", evidence_span, flags=re.IGNORECASE):
+                return False
             return True
 
         if relation == "pool_prefix":
@@ -280,7 +310,7 @@ class SkillRepairPlanner:
         # Standalone in-span attachment is high risk for false grouping; allow
         # only for taxonomy-backed parents.
         if relation == "standalone_span":
-            return bool(taxonomy_children and sub_key in taxonomy_children)
+            return bool(taxonomy_children and sub_key in taxonomy_children.keys())
 
         return False
 
@@ -616,13 +646,41 @@ class SkillRepairPlanner:
                 continue
 
             for parent, entries in parent_groups.items():
+                taxonomy_children = self._taxonomy_children(parent)
+                if taxonomy_children:
+                    synthetic_pos = len(pool_tokens) + 10_000
+                    for child_key in sorted(taxonomy_children.keys()):
+                        child = str(taxonomy_children.get(child_key, child_key)).strip()
+                        child_already_present = any(
+                            self._normalize_skill_claim_key(entry[1]) == child_key
+                            for entry in entries
+                        )
+                        if child_already_present:
+                            continue
+                        if self._parent_subclaim_removed_unsupported(
+                            parent=parent,
+                            subclaim=child,
+                            removed_unsupported_claim_keys=removed_unsupported_claim_keys,
+                        ):
+                            continue
+                        parent_child_claim = f"{parent} {child}"
+                        if not _claim_supported(parent_child_claim):
+                            continue
+                        if not _subclaim_supported_in_parent_evidence_span(parent, child):
+                            continue
+                        if not _subclaim_listed_with_parent_in_evidence_span(parent, child):
+                            continue
+                        entries.append((synthetic_pos, child, parent_child_claim, "taxonomy_evidence"))
+                        synthetic_pos += 1
+
                 # Only infer when there is meaningful grouping signal.
                 unique_by_subclaim: dict[str, tuple[int, str, str, str]] = {}
                 relation_rank = {
                     "existing_parenthetical": 0,
                     "repeated_prefix": 1,
-                    "pool_parenthetical": 2,
-                    "pool_prefix": 3,
+                    "taxonomy_evidence": 2,
+                    "pool_parenthetical": 3,
+                    "pool_prefix": 4,
                 }
                 for entry in sorted(entries, key=lambda item: (item[0], relation_rank.get(item[3], 9))):
                     subclaim_key = self._normalize_skill_claim_key(entry[1])
@@ -644,6 +702,7 @@ class SkillRepairPlanner:
                     is_eligible = relation in {
                         "existing_parenthetical",
                         "repeated_prefix",
+                        "taxonomy_evidence",
                         "pool_parenthetical",
                         "pool_prefix",
                     }
@@ -2109,6 +2168,19 @@ class SkillRepairPlanner:
         current_planning["compound_skill_claims_final_unresolved"] = list(
             dict.fromkeys(compound_skill_claims_final_unresolved)
         )
+        rendered_visible_skill_names: list[str] = []
+        seen_rendered: set[str] = set()
+        for item in final_claim_coverage:
+            claim = str(item.get("claim", "")).strip()
+            if not claim:
+                continue
+            key = self._normalize_skill_claim_key(claim)
+            if key in seen_rendered:
+                continue
+            seen_rendered.add(key)
+            rendered_visible_skill_names.append(claim)
+        current_planning["rendered_visible_skill_names"] = rendered_visible_skill_names
+        current_planning["rendered_visible_skill_count"] = len(rendered_visible_skill_names)
         current_planning["unsupported_visible_claims_without_source_evidence"] = [
             {"claim": item.get("claim"), "reason": "no_primary_source_evidence_found"}
             for item in current_planning.get("claim_coverage", [])
