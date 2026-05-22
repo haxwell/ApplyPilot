@@ -59,6 +59,10 @@ _BANNED_PHRASE_CLEANUP_RULES: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ("proven record", re.compile(r"\bproven record of\b", flags=re.IGNORECASE), "built"),
     ("proven record", re.compile(r"\bproven record\b", flags=re.IGNORECASE), "record"),
 )
+_PREPOSITION_COMMA_ARTIFACT_RE = re.compile(
+    r"\b(on|in|with|for|to|across|using)\s*,\s+(?=[A-Za-z0-9])",
+    flags=re.IGNORECASE,
+)
 
 
 # ── Prompt Builders (profile-driven) ──────────────────────────────────────
@@ -797,6 +801,76 @@ def _cleanup_banned_phrases_text(text: str) -> tuple[str, list[str]]:
             cleaned = next_cleaned
     cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
     return cleaned, applied
+
+
+def _cleanup_text_artifacts_text(text: str) -> tuple[str, list[str]]:
+    cleaned = text
+    applied: list[str] = []
+
+    next_cleaned = _PREPOSITION_COMMA_ARTIFACT_RE.sub(lambda m: f"{m.group(1)} ", cleaned)
+    if next_cleaned != cleaned:
+        cleaned = next_cleaned
+        applied.append("preposition_comma_artifact")
+
+    next_cleaned = re.sub(r"\s+,", ",", cleaned)
+    if next_cleaned != cleaned:
+        cleaned = next_cleaned
+        applied.append("space_before_comma")
+
+    next_cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+    if next_cleaned != cleaned:
+        cleaned = next_cleaned
+        applied.append("extra_whitespace")
+
+    return cleaned, applied
+
+
+def _apply_text_artifact_cleanup_to_tailored_json(data: dict) -> list[dict[str, str]]:
+    """Apply deterministic punctuation/spacing cleanup to tailored JSON text fields."""
+
+    replacements: list[dict[str, str]] = []
+
+    def _apply(path: str, text: str) -> str:
+        cleaned, applied = _cleanup_text_artifacts_text(text)
+        if cleaned != text:
+            for rule in applied:
+                replacements.append(
+                    {
+                        "field_path": path,
+                        "rule": rule,
+                        "from": text[:200],
+                        "to": cleaned[:200],
+                    }
+                )
+        return cleaned
+
+    summary = data.get("summary")
+    if isinstance(summary, str):
+        data["summary"] = _apply("summary", summary)
+
+    def _cleanup_entries(entries: Any, base_path: str) -> None:
+        if not isinstance(entries, list):
+            return
+        for idx, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                continue
+            for key in ("compact_summary", "summary", "short_summary", "description"):
+                value = entry.get(key)
+                if isinstance(value, str):
+                    entry[key] = _apply(f"{base_path}[{idx}].{key}", value)
+            bullets = entry.get("bullets")
+            if isinstance(bullets, list):
+                cleaned_bullets: list[Any] = []
+                for bidx, bullet in enumerate(bullets):
+                    if isinstance(bullet, str):
+                        cleaned_bullets.append(_apply(f"{base_path}[{idx}].bullets[{bidx}]", bullet))
+                    else:
+                        cleaned_bullets.append(bullet)
+                entry["bullets"] = cleaned_bullets
+
+    _cleanup_entries(data.get("experience"), "experience")
+    _cleanup_entries(data.get("projects"), "projects")
+    return replacements
 
 
 def _apply_banned_phrase_cleanup_to_tailored_json(data: dict) -> list[dict[str, str]]:
@@ -2104,6 +2178,8 @@ def tailor_resume(
             log.info("Attempt %d applied profile work authority overrides: %s", attempt + 1, "; ".join(work_overrides))
             report["profile_work_authority_overrides"] = work_overrides
 
+        text_artifact_replacements = _apply_text_artifact_cleanup_to_tailored_json(data)
+
         # Layer 1: Validate JSON fields, with one deterministic cleanup pass
         # for banned/generic phrase warnings before proceeding.
         validation_before_cleanup = validate_json_fields(data, profile, mode=validation_mode)
@@ -2122,6 +2198,8 @@ def tailor_resume(
 
         attempt_record: dict[str, Any] = {
             "attempt": attempt + 1,
+            "text_artifact_cleanup_applied": bool(text_artifact_replacements),
+            "text_artifact_replacements": text_artifact_replacements,
             "validator_passed_before_cleanup": validator_passed_before_cleanup,
             "validator_warnings_before_cleanup": validator_warnings_before_cleanup,
             "banned_phrase_cleanup_attempted": cleanup_attempted,
@@ -2139,6 +2217,8 @@ def tailor_resume(
         # Keep top-level telemetry aligned to the current/final attempt for compatibility.
         report["banned_phrase_cleanup_applied"] = bool(banned_phrase_replacements)
         report["banned_phrase_replacements"] = banned_phrase_replacements
+        report["text_artifact_cleanup_applied"] = bool(text_artifact_replacements)
+        report["text_artifact_replacements"] = text_artifact_replacements
         report["validator_warnings_before_cleanup"] = validator_warnings_before_cleanup
         report["validator_warnings_after_cleanup"] = validator_warnings_after_cleanup
 

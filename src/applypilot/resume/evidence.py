@@ -59,6 +59,12 @@ _THEME_GENERIC_TERMS = {
     "ability",
     "responsible",
     "responsibilities",
+    "role",
+    "team",
+    "values",
+    "mission",
+    "culture",
+    "definition",
 }
 
 _THEME_NOISE_TOKENS = {
@@ -107,6 +113,19 @@ _THEME_BOILERPLATE_TERMS = {
     "location",
     "office",
     "offices",
+    "bonus",
+    "healthcare",
+    "hiring",
+    "entities",
+    "guidelines",
+    "statement",
+    "statements",
+    "apply",
+    "teammates",
+    "labor",
+    "local",
+    "country",
+    "region",
 }
 
 _THEME_BOILERPLATE_PHRASES = {
@@ -119,6 +138,210 @@ _THEME_BOILERPLATE_PHRASES = {
     "base pay",
     "time off",
     "flexible spending",
+    "passionate about",
+    "this role",
+    "all affirm",
+    "based spain",
+    "equal employment opportunity",
+}
+
+_THEME_CONNECTOR_TERMS = {
+    "this",
+    "that",
+    "these",
+    "those",
+    "through",
+    "about",
+    "across",
+    "around",
+    "within",
+    "including",
+    "using",
+    "via",
+    "all",
+    "any",
+    "other",
+    "more",
+    "most",
+    "such",
+    "passionate",
+    "based",
+}
+
+_THEME_BOUNDARY_WEAK_TERMS = _GENERIC_STOPWORDS | _THEME_CONNECTOR_TERMS | _THEME_GENERIC_TERMS | {
+    "work",
+    "works",
+    "working",
+    "company",
+    "organizations",
+    "organization",
+}
+
+_THEME_SIGNAL_TERMS = {
+    # Cross-profession responsibility/domain signals.
+    "ownership",
+    "reliability",
+    "resilience",
+    "automation",
+    "deployment",
+    "ci/cd",
+    "pipeline",
+    "pipelines",
+    "platform",
+    "infrastructure",
+    "cloud",
+    "backend",
+    "distributed",
+    "compute",
+    "scalability",
+    "tooling",
+    "on-call",
+    "compliance",
+    "audit",
+    "reconciliation",
+    "reporting",
+    "financial",
+    "month-end",
+    "close",
+    "accounts",
+    "payable",
+    "receivable",
+    "case",
+    "management",
+    "advocacy",
+    "client",
+    "crisis",
+    "intervention",
+    "community",
+    "resources",
+    "care",
+    "coordination",
+    "patient",
+    "appointment",
+    "scheduling",
+    "coordinator",
+    "education",
+    "classroom",
+    "curriculum",
+    "assessment",
+    "operations",
+    "operational",
+    "logistics",
+    "safety",
+    "quality",
+    "governance",
+    "support",
+    "service",
+    "services",
+    "workflow",
+    "workflows",
+    "regulated",
+    "measurable",
+    "improvement",
+    "improvements",
+    "multi-site",
+    "product",
+    "engineering",
+}
+
+_THEME_QUALIFIER_TERMS = {
+    "improve",
+    "improved",
+    "improving",
+    "improvements",
+    "lead",
+    "build",
+    "built",
+    "support",
+    "supports",
+    "supporting",
+    "deliver",
+    "delivers",
+    "delivering",
+    "work",
+    "works",
+    "working",
+    "partner",
+    "partners",
+    "own",
+    "prepare",
+    "provide",
+    "resolve",
+    "ownership",
+    "outcomes",
+}
+
+_THEME_WEAK_HEAD_TERMS = {
+    "account",
+    "distributed",
+    "operational",
+    "improvements",
+    "packages",
+    "support",
+    "families",
+    "referrals",
+    "agency",
+    "plans",
+    "operations",
+    "multiple",
+    "entities",
+    "client",
+    "care",
+    "community",
+    "crisis",
+    "procurement",
+}
+
+_THEME_WEAK_LEAD_TERMS = {
+    "families",
+    "referrals",
+    "management",
+    "intervention",
+    "preparation",
+    "payable",
+}
+
+_THEME_HEAD_ACTIVITY_TERMS = {
+    "automation",
+    "reporting",
+    "management",
+    "advocacy",
+    "intervention",
+    "coordination",
+    "reliability",
+    "scalability",
+    "preparation",
+    "reconciliation",
+    "engineering",
+    "tooling",
+    "rotation",
+    "controls",
+    "resources",
+    "systems",
+    "infrastructure",
+    "platform",
+    "compliance",
+}
+
+_THEME_DOMAIN_MODIFIER_TERMS = {
+    "client",
+    "case",
+    "financial",
+    "account",
+    "accounts",
+    "audit",
+    "care",
+    "community",
+    "cloud",
+    "service",
+    "compute",
+    "backend",
+    "distributed",
+    "deployment",
+    "ci/cd",
+    "on-call",
+    "month-end",
+    "procurement",
 }
 
 _GENERIC_CLAIM_TERMS = {
@@ -396,16 +619,116 @@ def clean_job_description_text(text: str) -> str:
     return cleaned
 
 
+def _canonicalize_theme_label(label: str, job_description: str) -> str:
+    tokens = [tok for tok in re.findall(r"[a-z0-9][a-z0-9\-/\+]*", str(label).lower()) if tok]
+    if len(tokens) != 2:
+        return " ".join(tokens).strip()
+
+    left, right = tokens[0], tokens[1]
+    original = f"{left} {right}"
+    flipped = f"{right} {left}"
+
+    jd_norm = normalize_phrase_for_matching(job_description)
+    original_norm = normalize_phrase_for_matching(original)
+    flipped_norm = normalize_phrase_for_matching(flipped)
+
+    def _contains_phrase(text: str, phrase: str) -> bool:
+        if not text or not phrase:
+            return False
+        pattern = r"\s+".join(re.escape(part) for part in phrase.split())
+        return bool(re.search(rf"(?<![a-z0-9]){pattern}(?![a-z0-9])", text))
+
+    original_in_jd = _contains_phrase(jd_norm, original_norm)
+    flipped_in_jd = _contains_phrase(jd_norm, flipped_norm)
+    if original_in_jd and not flipped_in_jd:
+        return original
+    if flipped_in_jd and not original_in_jd:
+        return flipped
+
+    def _looks_domain_modifier(token: str) -> bool:
+        return (
+            token in _THEME_DOMAIN_MODIFIER_TERMS
+            or "/" in token
+            or "-" in token
+            or (len(token) <= 4 and token.isalpha())
+        )
+
+    left_is_head = left in _THEME_HEAD_ACTIVITY_TERMS
+    right_is_head = right in _THEME_HEAD_ACTIVITY_TERMS
+    right_is_domain = _looks_domain_modifier(right)
+    left_is_domain = _looks_domain_modifier(left)
+
+    if left_is_head and right_is_domain and not right_is_head:
+        return flipped
+    if right_is_head and left_is_domain:
+        return original
+    return original
+
+
 def derive_job_themes(job_description: str, *, max_themes: int = 8) -> list[JobTheme]:
-    sentences = _split_sentences(clean_job_description_text(job_description))
+    cleaned_jd = clean_job_description_text(job_description)
+    sentences = _split_sentences(cleaned_jd)
     if not sentences:
         return []
 
     phrase_scores: dict[str, float] = {}
     phrase_terms: dict[str, set[str]] = {}
     phrase_labels: dict[str, str] = {}
+
+    def _token_is_weak_boundary(token: str) -> bool:
+        return token in _THEME_BOUNDARY_WEAK_TERMS or token in _THEME_BOILERPLATE_TERMS
+
+    def _has_meaningful_signal(gram: list[str]) -> tuple[int, int]:
+        signal_hits = sum(1 for token in gram if token in _THEME_SIGNAL_TERMS)
+        non_weak_hits = sum(
+            1
+            for token in gram
+            if token not in _THEME_BOUNDARY_WEAK_TERMS
+            and token not in _THEME_BOILERPLATE_TERMS
+            and token not in _THEME_NOISE_TOKENS
+        )
+        return signal_hits, non_weak_hits
+
+    def _compact_label_tokens(tokens: list[str]) -> list[str]:
+        if len(tokens) < 2:
+            return []
+        candidates: list[tuple[float, int, int, list[str]]] = []
+        upper = min(2, len(tokens))
+        for length in (2,):
+            if length > upper:
+                continue
+            for start in range(0, len(tokens) - length + 1):
+                window = tokens[start : start + length]
+                if _token_is_weak_boundary(window[0]) or _token_is_weak_boundary(window[-1]):
+                    continue
+                if window[0] in _THEME_WEAK_LEAD_TERMS:
+                    continue
+                if any(token in _THEME_QUALIFIER_TERMS for token in window):
+                    # Keep qualifiers out of compact labels to avoid sliding chains like
+                    # "pipeline improvements on-call" and "packages support audit".
+                    continue
+                if window[-1] in _THEME_WEAK_HEAD_TERMS:
+                    continue
+                signal_hits, non_weak_hits = _has_meaningful_signal(window)
+                if signal_hits == 0 or non_weak_hits < 2:
+                    continue
+                connector_hits = sum(1 for token in window if token in _THEME_CONNECTOR_TERMS)
+                boilerplate_hits = sum(1 for token in window if token in _THEME_BOILERPLATE_TERMS)
+                score = (
+                    (signal_hits * 3.0)
+                    + (non_weak_hits * 1.15)
+                    - (connector_hits * 2.0)
+                    - (boilerplate_hits * 3.0)
+                    - (abs(length - 2) * 1.2)
+                )
+                candidates.append((score, length, start, window))
+        if not candidates:
+            return []
+        candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
+        return list(candidates[0][3])
+
     for idx, sentence in enumerate(sentences):
-        tokens = re.findall(r"[a-z0-9][a-z0-9\-/\+\.]*", sentence.lower())
+        tokens = [token.strip(".,;:()") for token in re.findall(r"[a-z0-9][a-z0-9\-/\+\.]*", sentence.lower())]
         tokens = [tok for tok in tokens if tok not in _GENERIC_STOPWORDS]
         if not tokens:
             continue
@@ -415,47 +738,89 @@ def derive_job_themes(job_description: str, *, max_themes: int = 8) -> list[JobT
         if idx < 5:
             boost += 0.2
 
-        # 2-gram and 3-gram phrases are more theme-like than single terms.
-        for n in (3, 2):
+        # 2-gram through 4-gram phrases are theme-like planning signals.
+        for n in (4, 3, 2):
             for i in range(0, max(0, len(tokens) - n + 1)):
                 gram = tokens[i : i + n]
                 if len(set(gram)) == 1:
                     continue
                 if any(token in _THEME_NOISE_TOKENS or (len(token) == 1 and token.isalpha()) for token in gram):
                     continue
+                if _token_is_weak_boundary(gram[0]) or _token_is_weak_boundary(gram[-1]):
+                    continue
                 phrase = " ".join(gram)
                 generic_ratio = sum(1 for token in gram if token in _THEME_GENERIC_TERMS) / max(1, len(gram))
                 if generic_ratio >= 0.67:
                     continue
+                connector_ratio = sum(1 for token in gram if token in _THEME_CONNECTOR_TERMS) / max(1, len(gram))
+                if connector_ratio >= 0.5:
+                    continue
                 boilerplate_token_ratio = sum(1 for token in gram if token in _THEME_BOILERPLATE_TERMS) / max(1, len(gram))
-                if boilerplate_token_ratio >= 0.5:
+                if boilerplate_token_ratio >= 0.34:
                     continue
                 if any(noise_phrase in phrase for noise_phrase in _THEME_BOILERPLATE_PHRASES):
                     continue
-                phrase_scores[phrase] = phrase_scores.get(phrase, 0.0) + boost
+                signal_hits, non_weak_hits = _has_meaningful_signal(gram)
+                if signal_hits == 0:
+                    continue
+                if non_weak_hits < 2:
+                    continue
+                weighted_boost = boost + (signal_hits * 0.45) + (0.08 * n)
+                phrase_scores[phrase] = phrase_scores.get(phrase, 0.0) + weighted_boost
                 phrase_terms.setdefault(phrase, set()).update(gram)
                 phrase_labels.setdefault(phrase, " ".join(gram))
 
     ranked = sorted(phrase_scores.items(), key=lambda item: item[1], reverse=True)
     themes: list[JobTheme] = []
     used_terms: list[set[str]] = []
+    seen_labels: set[str] = set()
     for phrase, score in ranked:
         terms = phrase_terms.get(phrase, set())
         if not terms:
             continue
-        # Keep dynamic themes distinct.
-        if any((len(terms & existing) / max(1, len(terms | existing))) > 0.65 for existing in used_terms):
+        raw_label = phrase_labels.get(phrase, phrase).strip()
+        raw_tokens = [tok for tok in re.findall(r"[a-z0-9][a-z0-9\-/\+\.]*", raw_label.lower()) if tok]
+        label_tokens = _compact_label_tokens(raw_tokens)
+        if not label_tokens:
             continue
-        used_terms.append(terms)
+        label = " ".join(label_tokens).strip()
+        label = _canonicalize_theme_label(label, cleaned_jd)
+        label_tokens = [tok for tok in re.findall(r"[a-z0-9][a-z0-9\-/\+\.]*", label.lower()) if tok]
+        if not label_tokens:
+            continue
+        if any(noise_phrase in label for noise_phrase in _THEME_BOILERPLATE_PHRASES):
+            continue
+        label_key = " ".join(label.split())
+        if label_key in seen_labels:
+            continue
+        if (sum(1 for token in label_tokens if token in _THEME_BOILERPLATE_TERMS) / max(1, len(label_tokens))) >= 0.34:
+            continue
+        compact_terms = set(label_tokens)
+        # Keep dynamic themes distinct.
+        # Reject overlap-chain labels unless they introduce genuinely new signal content.
+        overlap_rejected = False
+        for existing in used_terms:
+            shared = compact_terms & existing
+            overlap_ratio = len(shared) / max(1, len(compact_terms | existing))
+            if len(shared) >= 2 or overlap_ratio > 0.5:
+                new_signal = {
+                    token for token in compact_terms - existing if token in _THEME_SIGNAL_TERMS
+                }
+                if not new_signal:
+                    overlap_rejected = True
+                    break
+        if overlap_rejected:
+            continue
+        used_terms.append(compact_terms)
+        seen_labels.add(label_key)
         idx = len(themes) + 1
-        label = phrase_labels.get(phrase, phrase)
         themes.append(
             JobTheme(
                 id=f"theme_{idx}",
                 label=label,
                 description=f"Derived from recurring job-description language around '{label}'.",
                 importance=round(min(1.0, score / max(1.0, ranked[0][1])), 3),
-                source_terms=sorted(terms),
+                source_terms=sorted(compact_terms),
             )
         )
         if len(themes) >= max_themes:

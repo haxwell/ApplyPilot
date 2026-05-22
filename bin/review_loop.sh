@@ -132,3 +132,8 @@ rm -f "$ZIP_PATH"
 
 echo "Review bundle created:"
 echo "  ${ZIP_PATH}"
+
+if command -v notify-send >/dev/null 2>&1; then
+  notify-send "ApplyPilot review loop finished" "The latest resume review run is complete."
+fi
+

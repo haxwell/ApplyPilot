@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from applypilot.resume.evidence import (
     SkillAliasProvider,
     TokenOverlapSimilarityProvider,
+    _canonicalize_theme_label,
     build_evidence_mapping_report,
     claim_variants,
     clean_job_description_text,
@@ -16,6 +17,114 @@ from applypilot.resume.evidence import (
     extract_evidence_items,
 )
 from applypilot.scoring.pdf_render_model import ResumeEntry, ResumeRenderModel, SkillSection
+
+
+_WEAK_THEME_BOUNDARY_TERMS = {
+    "a",
+    "an",
+    "and",
+    "all",
+    "any",
+    "about",
+    "around",
+    "through",
+    "this",
+    "that",
+    "these",
+    "those",
+    "the",
+    "to",
+    "for",
+    "of",
+    "in",
+    "on",
+    "by",
+    "with",
+    "from",
+    "role",
+    "team",
+    "based",
+    "definition",
+    "passionate",
+}
+
+_THEME_BOILERPLATE_NOISE = {
+    "benefits",
+    "compensation",
+    "salary",
+    "equity",
+    "location",
+    "remote",
+    "hybrid",
+    "onsite",
+    "privacy",
+    "policy",
+    "equal",
+    "employment",
+    "opportunity",
+    "eeo",
+    "accommodation",
+    "accommodations",
+}
+
+_THEME_MEANINGFUL_TOKENS = {
+    "cloud",
+    "infrastructure",
+    "distributed",
+    "backend",
+    "deployment",
+    "automation",
+    "ci/cd",
+    "pipeline",
+    "pipelines",
+    "on-call",
+    "reliability",
+    "compute",
+    "platform",
+    "scalability",
+    "tooling",
+    "ownership",
+    "operational",
+    "resilience",
+    "month-end",
+    "close",
+    "reconciliation",
+    "financial",
+    "reporting",
+    "audit",
+    "accounts",
+    "payable",
+    "compliance",
+    "case",
+    "management",
+    "client",
+    "advocacy",
+    "crisis",
+    "intervention",
+    "community",
+    "resources",
+    "care",
+    "coordination",
+}
+
+
+def _theme_labels(themes: list) -> list[str]:
+    return [str(theme.label).strip().lower() for theme in themes]
+
+
+def _assert_theme_shape_invariants(labels: list[str]) -> None:
+    assert labels
+    for label in labels:
+        assert label
+        tokens = [tok for tok in re.findall(r"[a-z0-9][a-z0-9\-/\+]*", label) if tok]
+        assert tokens
+        assert tokens[0] not in _WEAK_THEME_BOUNDARY_TERMS
+        assert tokens[-1] not in _WEAK_THEME_BOUNDARY_TERMS
+        weak_ratio = sum(1 for token in tokens if token in _WEAK_THEME_BOUNDARY_TERMS) / max(1, len(tokens))
+        boilerplate_ratio = sum(1 for token in tokens if token in _THEME_BOILERPLATE_NOISE) / max(1, len(tokens))
+        assert weak_ratio < 0.67
+        assert boilerplate_ratio < 0.5
+        assert any(token in _THEME_MEANINGFUL_TOKENS for token in tokens)
 
 
 def _sample_model() -> ResumeRenderModel:
@@ -102,6 +211,272 @@ def test_dynamic_job_themes_do_not_include_markup_garbage() -> None:
     assert "lt" not in joined
     assert "gt" not in joined
     assert "/li" not in joined
+
+
+def test_derive_job_themes_filters_affirm_like_boilerplate_and_keeps_planning_signals() -> None:
+    jd = """
+    This role on the Compute Platform team owns cloud infrastructure reliability for distributed backend systems.
+    You will lead deployment automation, CI/CD pipeline improvements, and on-call rotation ownership.
+    Build developer tooling to improve service scalability and operational resilience.
+    Work cross-functionally with product and security teams to deliver platform engineering outcomes.
+
+    Through definition of team values, all Affirm teammates are expected to be passionate about mission alignment.
+    Team through collaboration, based Spain hiring entities, and this role follows local labor guidelines.
+    Benefits include base pay, equity, flexible spending wallets, medical, dental, and vision.
+    Equal employment opportunity, privacy policy, and accommodations statements apply.
+    """
+    themes = derive_job_themes(jd, max_themes=10)
+    labels = _theme_labels(themes)
+    joined = " ".join(labels)
+
+    for bad in [
+        "this role",
+        "through definition",
+        "all affirm",
+        "based spain",
+        "passionate about",
+        "team through",
+        "ownership team",
+    ]:
+        assert bad not in labels
+        assert bad not in joined
+
+    signal_words = {
+        "cloud",
+        "infrastructure",
+        "distributed",
+        "backend",
+        "deployment",
+        "automation",
+        "ci/cd",
+        "pipeline",
+        "on-call",
+        "reliability",
+        "compute",
+        "platform",
+        "scalability",
+        "tooling",
+        "ownership",
+    }
+    assert sum(1 for token in signal_words if token in joined) >= 6
+    _assert_theme_shape_invariants(labels)
+
+
+def test_derive_job_themes_accountant_role_keeps_finance_signals_not_boilerplate() -> None:
+    jd = """
+    Own month-end close and account reconciliation for multiple entities.
+    Prepare financial reporting packages and support audit preparation and compliance controls.
+    Partner with accounts payable and procurement to resolve invoice discrepancies.
+    This role requires cross-functional communication with finance and operations.
+
+    We are passionate about our mission and team culture.
+    Compensation includes base pay, bonus, healthcare, and retirement benefits.
+    Equal employment opportunity and privacy policy statements apply.
+    """
+    themes = derive_job_themes(jd, max_themes=10)
+    labels = _theme_labels(themes)
+    joined = " ".join(labels)
+
+    assert any("month-end close" in label or ("month-end" in label and "close" in label) for label in labels)
+    assert "reconciliation" in joined
+    assert "financial" in joined
+    assert "reporting" in joined
+    assert "audit" in joined
+    assert any("accounts payable" in label or ("accounts" in label and "payable" in label) for label in labels)
+    assert "compliance" in joined
+    assert "passionate about" not in joined
+    assert "base pay" not in joined
+    assert "equal employment" not in joined
+    _assert_theme_shape_invariants(labels)
+
+
+def test_derive_job_themes_social_worker_role_keeps_casework_signals_not_boilerplate() -> None:
+    jd = """
+    Provide case management and client advocacy for families in crisis.
+    Deliver crisis intervention, care coordination, and referrals to community resources.
+    Collaborate with schools, healthcare providers, and housing partners on service plans.
+    Maintain documentation standards and compliance with agency policies.
+
+    Our team is passionate about purpose and values.
+    Benefits include PTO, healthcare, and flexible spending accounts.
+    Equal employment opportunity and accommodations statements apply.
+    """
+    themes = derive_job_themes(jd, max_themes=10)
+    labels = _theme_labels(themes)
+    joined = " ".join(labels)
+
+    assert any("case management" in label for label in labels)
+    assert "client" in joined
+    assert "advocacy" in joined
+    assert any("crisis intervention" in label or ("crisis" in label and "intervention" in label) for label in labels)
+    assert any("community resources" in label or ("community" in label and "resources" in label) for label in labels)
+    assert any("care coordination" in label or ("care" in label and "coordination" in label) for label in labels)
+    assert "passionate about" not in joined
+    assert "equal employment" not in joined
+    _assert_theme_shape_invariants(labels)
+
+
+def test_derive_job_themes_prefers_compact_labels_and_avoids_sliding_windows() -> None:
+    affirm_like_jd = """
+    This role on the Compute Platform team owns cloud infrastructure reliability for distributed backend systems.
+    You will lead deployment automation, CI/CD pipeline improvements, and on-call rotation ownership.
+    Build developer tooling to improve service scalability and operational resilience.
+    Work cross-functionally with product and security teams to deliver platform engineering outcomes.
+
+    Through definition of team values, all Affirm teammates are expected to be passionate about mission alignment.
+    Team through collaboration, based Spain hiring entities, and this role follows local labor guidelines.
+    Benefits include base pay, equity, flexible spending wallets, medical, dental, and vision.
+    Equal employment opportunity, privacy policy, and accommodations statements apply.
+    """
+    themes = derive_job_themes(affirm_like_jd, max_themes=10)
+    labels = _theme_labels(themes)
+    assert labels
+
+    tokenized = [re.findall(r"[a-z0-9][a-z0-9\-/\+]*", label) for label in labels]
+    token_counts = [len(tokens) for tokens in tokenized]
+    assert all(2 <= count <= 4 for count in token_counts)
+    assert sum(1 for count in token_counts if count <= 3) >= max(4, len(token_counts) // 2)
+
+    # Avoid adjacent-concept window artifacts.
+    joined = " ".join(labels)
+    forbidden = {
+        "infrastructure reliability distributed",
+        "automation ci/cd pipeline",
+        "ci/cd pipeline improvements",
+        "pipeline improvements on-call",
+        "improvements on-call rotation",
+    }
+    assert all(bad not in labels for bad in forbidden)
+    assert all(bad not in joined for bad in forbidden)
+
+    # Avoid excessive overlap among selected labels.
+    high_overlap_pairs = 0
+    for idx in range(len(tokenized)):
+        left = set(tokenized[idx])
+        for jdx in range(idx + 1, len(tokenized)):
+            right = set(tokenized[jdx])
+            overlap = len(left & right) / max(1, len(left | right))
+            if overlap > 0.6:
+                high_overlap_pairs += 1
+    assert high_overlap_pairs <= 2
+
+    preferred_compact = {
+        "cloud infrastructure reliability",
+        "distributed backend systems",
+        "deployment automation",
+        "ci/cd pipelines",
+        "on-call rotation",
+        "compute platform engineering",
+        "service scalability",
+        "developer tooling",
+    }
+    compact_hits = sum(
+        1 for phrase in preferred_compact if any(phrase in label or label in phrase for label in labels)
+    )
+    assert compact_hits >= 4
+    _assert_theme_shape_invariants(labels)
+
+
+def test_derive_job_themes_compact_labels_for_accounting_and_social_work() -> None:
+    accountant_jd = """
+    Own month-end close and account reconciliation for multiple entities.
+    Prepare financial reporting packages and support audit preparation and compliance controls.
+    Partner with accounts payable and procurement to resolve invoice discrepancies.
+    """
+    social_work_jd = """
+    Provide case management and client advocacy for families in crisis.
+    Deliver crisis intervention, care coordination, and referrals to community resources.
+    Collaborate with schools, healthcare providers, and housing partners on service plans.
+    """
+
+    accountant_labels = _theme_labels(derive_job_themes(accountant_jd, max_themes=10))
+    social_labels = _theme_labels(derive_job_themes(social_work_jd, max_themes=10))
+
+    for labels in (accountant_labels, social_labels):
+        assert labels
+        counts = [len(re.findall(r"[a-z0-9][a-z0-9\-/\+]*", label)) for label in labels]
+        assert all(2 <= count <= 4 for count in counts)
+        assert sum(1 for count in counts if count <= 3) >= max(3, len(counts) // 2)
+        _assert_theme_shape_invariants(labels)
+
+    accountant_expected = {
+        "month-end close",
+        "account reconciliation",
+        "financial reporting",
+        "audit preparation",
+        "accounts payable",
+        "regulatory compliance",
+    }
+    social_expected = {
+        "case management",
+        "client advocacy",
+        "crisis intervention",
+        "community resources",
+        "care coordination",
+    }
+    accountant_hits = sum(
+        1 for phrase in accountant_expected if any(phrase in label or label in phrase for label in accountant_labels)
+    )
+    social_hits = sum(
+        1 for phrase in social_expected if any(phrase in label or label in phrase for label in social_labels)
+    )
+    accountant_forbidden = {
+        "month-end close account",
+        "reporting packages support",
+        "packages support audit",
+        "support audit preparation",
+    }
+    social_forbidden = {
+        "case management client",
+        "management client advocacy",
+        "advocacy families crisis",
+        "coordination referrals community",
+    }
+    assert all(bad not in accountant_labels for bad in accountant_forbidden)
+    assert all(bad not in social_labels for bad in social_forbidden)
+    assert accountant_hits >= 4
+    assert social_hits >= 4
+
+
+def test_theme_label_canonicalization_flips_automation_ci_cd() -> None:
+    jd = "Own CI/CD automation and deployment automation for services."
+    assert _canonicalize_theme_label("automation ci/cd", jd) == "ci/cd automation"
+
+
+def test_theme_label_canonicalization_keeps_good_labels_unchanged() -> None:
+    jd = (
+        "case management financial reporting cloud infrastructure audit preparation "
+        "care coordination account reconciliation deployment automation service scalability compute platform"
+    )
+    labels = [
+        "case management",
+        "financial reporting",
+        "cloud infrastructure",
+        "audit preparation",
+        "care coordination",
+        "account reconciliation",
+        "deployment automation",
+        "service scalability",
+        "compute platform",
+    ]
+    assert [_canonicalize_theme_label(label, jd) for label in labels] == labels
+
+
+def test_theme_label_canonicalization_preserves_original_when_jd_has_original_order() -> None:
+    jd = "This role emphasizes automation ci/cd for release quality."
+    assert _canonicalize_theme_label("automation ci/cd", jd) == "automation ci/cd"
+
+
+def test_theme_label_canonicalization_prefers_flipped_when_jd_has_flipped_order() -> None:
+    jd = "This role emphasizes ci/cd automation for release quality."
+    assert _canonicalize_theme_label("automation ci/cd", jd) == "ci/cd automation"
+
+
+def test_theme_label_canonicalization_is_deterministic() -> None:
+    jd = "Own ci/cd automation and cloud infrastructure reliability."
+    first = _canonicalize_theme_label("automation ci/cd", jd)
+    second = _canonicalize_theme_label("automation ci/cd", jd)
+    assert first == second
 
 
 def test_extract_evidence_items_includes_bullets_and_compact_summary_with_retention() -> None:

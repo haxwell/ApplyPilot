@@ -1637,6 +1637,54 @@ def test_tailor_resume_skips_cleanup_when_no_banned_phrase_warning(monkeypatch) 
     assert report["tailored_json"]["title"] == "Senior Software Engineer"
 
 
+def test_tailor_resume_applies_text_artifact_cleanup_for_preposition_comma(monkeypatch) -> None:
+    class _FakeClient:
+        def chat(self, _messages, max_output_tokens: int = 16000):  # noqa: ARG002
+            return (
+                "{"
+                '"title":"Senior Software Engineer",'
+                '"summary":"Built automated deployment workflows on, AWS, Docker, and CloudFoundry.",'
+                '"skills":{"Languages":"Python, Java"},'
+                '"experience":[{"header":"Engineer","subtitle":"Acme | 2020-2024","bullets":["Improved delivery with, CI/CD pipelines."]}],'
+                '"projects":[],'
+                '"education":"State University | BS Computer Science"'
+                "}"
+            )
+
+    validate_calls = {"count": 0}
+
+    def _fake_validate_json_fields(data, _profile, mode="normal"):  # noqa: ARG001
+        validate_calls["count"] += 1
+        summary = str(data.get("summary", ""))
+        assert "on, AWS" not in summary
+        return {"passed": True, "errors": [], "warnings": []}
+
+    monkeypatch.setattr(tailor, "get_client", lambda: _FakeClient())
+    monkeypatch.setattr(tailor, "validate_json_fields", _fake_validate_json_fields)
+    monkeypatch.setattr(
+        tailor,
+        "judge_tailored_resume",
+        lambda *_args, **_kwargs: {"passed": True, "verdict": "PASS", "issues": "none"},
+    )
+
+    _, report = tailor.tailor_resume(
+        "Base resume text",
+        {"title": "Senior Software Engineer", "site": "Example", "location": "Remote", "full_description": "Build APIs"},
+        {"personal": {}},
+        max_retries=0,
+        validation_mode="normal",
+    )
+
+    assert report["status"] == "approved"
+    assert report["text_artifact_cleanup_applied"] is True
+    assert report["text_artifact_replacements"]
+    assert report["validation_attempts"][0]["text_artifact_cleanup_applied"] is True
+    assert "on, AWS" not in report["tailored_json"]["summary"]
+    assert "workflows on AWS, Docker, and CloudFoundry" in report["tailored_json"]["summary"]
+    assert "with, CI/CD" not in report["tailored_json"]["experience"][0]["bullets"][0]
+    assert validate_calls["count"] == 1
+
+
 def test_tailor_resume_later_generation_attempt_telemetry(monkeypatch) -> None:
     class _FakeClient:
         def __init__(self) -> None:
