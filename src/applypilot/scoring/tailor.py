@@ -1316,6 +1316,7 @@ def _attach_claim_support_provenance(report: dict, *, source_resume_text: str) -
                         action_item["reason"] = normalized_reason
 
     unsupported_skill_removals = planning.get("unsupported_skill_removals", [])
+    removal_coverage_status_by_claim: dict[str, str] = {}
     if isinstance(unsupported_skill_removals, list):
         for removal in unsupported_skill_removals:
             if not isinstance(removal, dict):
@@ -1327,6 +1328,8 @@ def _attach_claim_support_provenance(report: dict, *, source_resume_text: str) -
             if not row:
                 row = _fallback_provenance_row(claim)
             coverage_status = str(removal.get("coverage_status", row.get("coverage_status", "")) or "")
+            if coverage_status:
+                removal_coverage_status_by_claim[_normalize_for_provenance_match(claim)] = coverage_status
             removal["reason"] = _provenance_reason_label(row, coverage_status=coverage_status)
             removal["source_keyword_support_count"] = int(row.get("source_resume_keyword_support_count", 0) or 0)
             removal["source_primary_support_count"] = int(row.get("source_resume_primary_support_count", 0) or 0)
@@ -1343,10 +1346,15 @@ def _attach_claim_support_provenance(report: dict, *, source_resume_text: str) -
             claim = str(operation.get("claim", "")).strip()
             if not claim:
                 continue
-            row = provenance_by_claim_key.get(_normalize_for_provenance_match(claim))
+            claim_key = _normalize_for_provenance_match(claim)
+            row = provenance_by_claim_key.get(claim_key)
             if not row:
                 row = _fallback_provenance_row(claim)
-            coverage_status = str(operation.get("coverage_status", row.get("coverage_status", "")) or "")
+            coverage_status = str(
+                operation.get("coverage_status")
+                or removal_coverage_status_by_claim.get(claim_key, "")
+                or row.get("coverage_status", "")
+            )
             operation["reason"] = _provenance_reason_label(row, coverage_status=coverage_status)
 
     if provenance_risks:
