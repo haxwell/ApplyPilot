@@ -929,6 +929,102 @@ def test_removed_source_keyword_claim_uses_provenance_reason_in_planning_operati
     assert "no_source_evidence" not in str(op.get("reason", ""))
 
 
+def test_removed_source_keyword_claim_uses_provenance_reason_in_action_history(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    conn = _FakeConnection()
+    job = _make_job()
+    report = _approved_report()
+    report["tailored_json"] = {
+        "title": "Senior Engineer",
+        "summary": "Summary",
+        "skills": {"Core": "Java"},
+        "experience": [{"header": "Engineer", "subtitle": "Example | 2020-2024", "bullets": ["Built APIs"]}],
+        "projects": [],
+        "education": "BS",
+    }
+    source_resume = (
+        "Alex Example\n"
+        "Senior Engineer\n"
+        "TECHNICAL SKILLS\n"
+        "Core: Docker, Java\n"
+        "EXPERIENCE\n"
+        "Engineer\n"
+        "Example | 2020-2024\n"
+        "- Built Java services.\n"
+    )
+
+    monkeypatch.setattr(tailor, "TAILORED_DIR", tmp_path)
+    monkeypatch.setattr(tailor, "load_profile", lambda: {"personal": {"full_name": "Alex Example"}})
+    monkeypatch.setattr(tailor, "load_resume_text", lambda: source_resume)
+    monkeypatch.setattr(tailor, "get_connection", lambda: conn)
+    monkeypatch.setattr(tailor, "get_jobs_by_stage", lambda **_: [job])
+    monkeypatch.setattr(tailor, "tailor_resume", lambda *args, **kwargs: ("tailored resume", report))
+
+    def _fake_render_model_to_pdf_with_planning(
+        model,
+        output_path: Path,
+        template_name: str = "professional_compact",
+        html_only: bool = False,
+        **_kwargs,
+    ) -> tuple[Path, dict]:
+        del model, template_name, html_only
+        out = Path(output_path)
+        out.write_bytes(b"%PDF-1.4 fake\n")
+        return out, {
+            "template_used": "professional_compact",
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [{"claim": "Java", "coverage_status": "supported", "retained_primary_supporting_evidence_count": 1}],
+            "unsupported_visible_claims_final": [],
+            "weak_visible_claims_final": [],
+            "final_weak_or_unsupported_claim_dispositions": [
+                {
+                    "claim": "Docker",
+                    "coverage_status": "unsupported",
+                    "final_action": "removed",
+                    "reason": "unsupported_no_replacement_no_source_evidence",
+                    "action_history": [
+                        {
+                            "action": "replacement_not_found",
+                            "reason": "no_supported_retained_replacement_available",
+                        },
+                        {
+                            "action": "removed",
+                            "reason": "unsupported_no_replacement_no_source_evidence",
+                        },
+                    ],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "applypilot.scoring.pdf.render_model_to_pdf_with_planning",
+        _fake_render_model_to_pdf_with_planning,
+    )
+
+    result = tailor.run_tailoring(min_score=7, limit=1, validation_mode="normal")
+    assert result["approved"] == 1
+    report_paths = list(tmp_path.glob("*_REPORT.json"))
+    report_data = json.loads(report_paths[0].read_text(encoding="utf-8"))
+    dispositions = report_data["pdf_render_planning"]["final_weak_or_unsupported_claim_dispositions"]
+    docker = next(item for item in dispositions if item.get("claim") == "Docker")
+    expected = "source_keyword_only_no_rendered_primary_evidence"
+    assert docker["reason"] == expected
+    removed_action = next(
+        item
+        for item in docker.get("action_history", [])
+        if isinstance(item, dict) and item.get("action") == "removed"
+    )
+    assert removed_action.get("reason") == expected
+    assert all(
+        "no_source_evidence" not in str(item.get("reason", ""))
+        for item in docker.get("action_history", [])
+        if isinstance(item, dict)
+    )
+
+
 def test_run_tailoring_marks_approved_with_warnings_when_rendered_validator_warnings_exist(
     monkeypatch,
     tmp_path: Path,

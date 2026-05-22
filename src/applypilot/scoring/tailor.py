@@ -1300,10 +1300,20 @@ def _attach_claim_support_provenance(report: dict, *, source_resume_text: str) -
             row = provenance_by_claim_key.get(_normalize_for_provenance_match(claim))
             if not row:
                 row = _fallback_provenance_row(claim)
-            disp["reason"] = _provenance_reason_label(
+            normalized_reason = _provenance_reason_label(
                 row,
                 coverage_status=str(disp.get("coverage_status", row.get("coverage_status", "")) or ""),
             )
+            disp["reason"] = normalized_reason
+            history = disp.get("action_history", [])
+            if isinstance(history, list):
+                for action_item in history:
+                    if not isinstance(action_item, dict):
+                        continue
+                    action_name = str(action_item.get("action", "")).strip().lower()
+                    action_reason = str(action_item.get("reason", "")).strip()
+                    if action_name == "removed" or "no_source_evidence" in action_reason:
+                        action_item["reason"] = normalized_reason
 
     unsupported_skill_removals = planning.get("unsupported_skill_removals", [])
     if isinstance(unsupported_skill_removals, list):
