@@ -679,7 +679,11 @@ def claim_variants(claim: str, *, alias_provider: SkillAliasProvider | None = No
     # Parenthetical decomposition: "AWS (EC2, S3)" -> ["AWS", "EC2", "S3", ...]
     for match in re.finditer(r"\(([^)]+)\)", original):
         inside = match.group(1)
-        parts = [part.strip().strip("() ,;:.") for part in re.split(r"[,;/]", inside) if part.strip()]
+        parts = [
+            part.strip().strip("() ,;:.")
+            for part in re.split(r",|;|\s+/\s+", inside)
+            if part.strip()
+        ]
         for part in parts:
             norm = _normalize_claim_fragment(part)
             if norm and norm.lower() not in {v.lower() for v in variants}:
@@ -692,7 +696,12 @@ def claim_variants(claim: str, *, alias_provider: SkillAliasProvider | None = No
     if base_phrase_norm and base_phrase_norm.lower() not in {v.lower() for v in variants}:
         variants.append(base_phrase_norm)
     # Slash-separated sub-claims for generic grouped claims.
+    # Preserve slash phrases with trailing terms (e.g., "CI/CD Automation",
+    # "A/B Testing", "client/server architecture") as single claims.
     for item in list(variants):
+        raw_item = str(item).strip()
+        if " " in raw_item and " / " not in raw_item:
+            continue
         for sub in re.split(r"\s*/\s*", item):
             sub_norm = _normalize_claim_fragment(sub)
             if sub_norm and sub_norm.lower() not in {v.lower() for v in variants}:

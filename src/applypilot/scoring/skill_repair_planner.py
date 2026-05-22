@@ -364,7 +364,11 @@ class SkillRepairPlanner:
         raw_inside = str(match.group(2)).strip()
         if not parent or not raw_inside:
             return None
-        subclaims = [part.strip().strip("() ,;:.") for part in re.split(r"[,;/]", raw_inside) if part.strip()]
+        subclaims = [
+            part.strip().strip("() ,;:.")
+            for part in re.split(r",|;|\s+/\s+", raw_inside)
+            if part.strip()
+        ]
         subclaims = [claim for claim in subclaims if claim]
         if not subclaims:
             return None

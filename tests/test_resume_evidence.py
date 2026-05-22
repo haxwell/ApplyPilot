@@ -443,6 +443,37 @@ def test_claim_variants_slash_forms_generate_useful_variants_without_noise() -> 
     assert "R" not in ap_ar
 
 
+def test_extract_visible_skill_claims_preserves_slash_phrase_with_following_word() -> None:
+    model = ResumeRenderModel(
+        name="Alex Example",
+        skills=[SkillSection(category="Delivery", value="Java 17-21, CI/CD Automation, GitHub Actions")],
+        experience=[ResumeEntry(company="Acme", title="Engineer", bullets=["Built CI/CD automation workflows."])],
+        projects=[],
+    )
+    prepared = SimpleNamespace(
+        detailed_experience=model.experience,
+        compact_experience=[],
+        projects_to_render=[],
+        projects_mode="hidden",
+        experience_mode="detailed",
+        earlier_experience_mode="compact",
+        summary_mode="hidden",
+        skills_mode="selected",
+        selected_skills_max_lines=1,
+    )
+    report = build_evidence_mapping_report(job_description="Build delivery automation.", model=model, prepared=prepared)
+    claims = [item["claim"] for item in report["claim_coverage"]]
+    assert "CI/CD Automation" in claims
+    assert "Automation" not in claims
+    assert "CI/CD" not in claims
+
+    variants = claim_variants("CI/CD Automation")
+    assert "CI/CD Automation" in variants
+    assert "Automation" not in variants
+    assert "CI" not in variants
+    assert "CD Automation" not in variants
+
+
 def test_claim_coverage_versioned_skill_matches_primary_evidence() -> None:
     model = ResumeRenderModel(
         name="Alex Example",

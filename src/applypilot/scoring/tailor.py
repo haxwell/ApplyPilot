@@ -1323,6 +1323,22 @@ def _attach_claim_support_provenance(report: dict, *, source_resume_text: str) -
             removal["rendered_primary_support_count"] = int(row.get("rendered_primary_support_count", 0) or 0)
             removal["support_provenance_status"] = str(row.get("support_provenance_status", "unsupported"))
 
+    planning_operations = planning.get("planning_operations", [])
+    if isinstance(planning_operations, list):
+        for operation in planning_operations:
+            if not isinstance(operation, dict):
+                continue
+            if str(operation.get("step", "")) != "unsupported_skill_removal":
+                continue
+            claim = str(operation.get("claim", "")).strip()
+            if not claim:
+                continue
+            row = provenance_by_claim_key.get(_normalize_for_provenance_match(claim))
+            if not row:
+                row = _fallback_provenance_row(claim)
+            coverage_status = str(operation.get("coverage_status", row.get("coverage_status", "")) or "")
+            operation["reason"] = _provenance_reason_label(row, coverage_status=coverage_status)
+
     if provenance_risks:
         status = str(report.get("status", ""))
         if status in {"approved", "approved_with_judge_warning"}:
