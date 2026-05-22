@@ -613,7 +613,7 @@ class SkillRepairPlanner:
         # readable grouped output while removing unsupported subclaims.
         for idx, section in enumerate(updated_skills):
             tokens = self._split_skill_tokens_preserving_parentheses(str(section.value))
-            if len(tokens) < 2:
+            if len(tokens) < 1:
                 continue
             next_tokens = list(tokens)
             token_positions: dict[str, list[int]] = {}

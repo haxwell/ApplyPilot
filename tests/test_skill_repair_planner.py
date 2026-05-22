@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 import pytest
 
+from applypilot.resume.evidence import extract_all_skill_claims
 from applypilot.scoring.pdf_render_model import SkillSection
 from applypilot.scoring.pdf_render_model import ResumeRenderModel
 from applypilot.scoring.render_planning_service import RenderPlanningService
@@ -454,3 +455,68 @@ def test_find_usable_supported_replacements_rejects_overflow_and_weak_low_releva
     # Candidate A excluded by prior overflow pair; Candidate B excluded by weak lower relevance guard.
     assert all_supported == ["Candidate A", "Candidate B"]
     assert usable == []
+
+
+def test_grouped_skill_repair_recovers_taxonomy_children_from_retained_evidence() -> None:
+    planner = SkillRepairPlanner()
+    model = ResumeRenderModel(
+        skills=[SkillSection(category="Core", value="AWS EC2")],
+        experience=[
+            SimpleNamespace(
+                title="Engineer",
+                subtitle="Savvato",
+                bullets=[
+                    "Built deployment workflows using AWS EC2, Lambda, Route53, GitHub Actions, and DNS automation.",
+                ],
+            )
+        ],
+    )
+
+    def _coverage_for_claims(**kwargs):
+        claims = kwargs.get("claims", [])
+        out = []
+        for claim in claims:
+            key = str(claim).lower().strip()
+            supported = key in {
+                "aws",
+                "aws ec2",
+                "aws lambda",
+                "aws route53",
+                "ec2",
+                "lambda",
+                "route53",
+            }
+            retained = 1 if supported else 0
+            top = (
+                [
+                    "Savvato: Built deployment workflows using AWS EC2, Lambda, Route53, GitHub Actions, and DNS automation."
+                ]
+                if supported
+                else []
+            )
+            out.append(
+                SimpleNamespace(
+                    claim=str(claim),
+                    coverage_status="supported" if supported else "unsupported",
+                    retained_primary_supporting_evidence_count=retained,
+                    top_supporting_evidence=top,
+                )
+            )
+        return out
+
+    updated_model, repairs, _removed_subclaims, _unresolved = planner._rewrite_compound_skills(  # noqa: SLF001
+        model=model,
+        prepared=object(),
+        build_claim_coverage_for_claims_fn=_coverage_for_claims,
+        candidate_skill_pool=["AWS EC2", "AWS S3", "AWS Lambda", "Route53"],
+        removed_unsupported_claim_keys={"aws s3"},
+    )
+
+    claims = extract_all_skill_claims(updated_model)
+    assert "AWS (EC2, Lambda, Route53)" in claims
+    assert all("S3" not in claim for claim in claims)
+    aws_group = next(claim for claim in claims if claim.startswith("AWS ("))
+    assert "Linux" not in aws_group
+    assert "GitHub Actions" not in aws_group
+    assert "DNS" not in aws_group
+    assert repairs
