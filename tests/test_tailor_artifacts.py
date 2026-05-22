@@ -744,6 +744,86 @@ def test_run_tailoring_relabels_removed_claim_reason_when_source_keyword_exists(
     assert docker["reason"] == "source_keyword_only_no_rendered_primary_evidence"
 
 
+def test_run_tailoring_updates_unsupported_skill_removal_reason_and_provenance(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    conn = _FakeConnection()
+    job = _make_job()
+    report = _approved_report()
+    report["tailored_json"] = {
+        "title": "Senior Engineer",
+        "summary": "Summary",
+        "skills": {"Core": "Java"},
+        "experience": [{"header": "Engineer", "subtitle": "Example | 2020-2024", "bullets": ["Built APIs"]}],
+        "projects": [],
+        "education": "BS",
+    }
+    source_resume = (
+        "Alex Example\n"
+        "Senior Engineer\n"
+        "SUMMARY\n"
+        "Built backend systems.\n"
+        "TECHNICAL SKILLS\n"
+        "Core: AWS S3, Java\n"
+        "EXPERIENCE\n"
+        "Engineer\n"
+        "Example | 2020-2024\n"
+        "- Built Java services.\n"
+    )
+
+    monkeypatch.setattr(tailor, "TAILORED_DIR", tmp_path)
+    monkeypatch.setattr(tailor, "load_profile", lambda: {"personal": {"full_name": "Alex Example"}})
+    monkeypatch.setattr(tailor, "load_resume_text", lambda: source_resume)
+    monkeypatch.setattr(tailor, "get_connection", lambda: conn)
+    monkeypatch.setattr(tailor, "get_jobs_by_stage", lambda **_: [job])
+    monkeypatch.setattr(tailor, "tailor_resume", lambda *args, **kwargs: ("tailored resume", report))
+
+    def _fake_render_model_to_pdf_with_planning(
+        model,
+        output_path: Path,
+        template_name: str = "professional_compact",
+        html_only: bool = False,
+        **_kwargs,
+    ) -> tuple[Path, dict]:
+        del model, template_name, html_only
+        out = Path(output_path)
+        out.write_bytes(b"%PDF-1.4 fake\n")
+        return out, {
+            "template_used": "professional_compact",
+            "allowed_physical_pages": 2,
+            "measured_pages_final": 2,
+            "claim_coverage": [{"claim": "Java", "coverage_status": "supported", "retained_primary_supporting_evidence_count": 1}],
+            "unsupported_visible_claims_final": [],
+            "weak_visible_claims_final": [],
+            "unsupported_skill_removals": [
+                {
+                    "claim": "AWS S3",
+                    "coverage_status": "unsupported",
+                    "kept": True,
+                    "reason": "unsupported_visible_claim_no_supported_replacement_no_source_evidence",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "applypilot.scoring.pdf.render_model_to_pdf_with_planning",
+        _fake_render_model_to_pdf_with_planning,
+    )
+
+    result = tailor.run_tailoring(min_score=7, limit=1, validation_mode="normal")
+    assert result["approved"] == 1
+    report_paths = list(tmp_path.glob("*_REPORT.json"))
+    report_data = json.loads(report_paths[0].read_text(encoding="utf-8"))
+    removals = report_data["pdf_render_planning"]["unsupported_skill_removals"]
+    aws_s3 = next(item for item in removals if item.get("claim") == "AWS S3")
+    assert aws_s3["reason"] == "source_keyword_only_no_rendered_primary_evidence"
+    assert aws_s3["source_keyword_support_count"] >= 1
+    assert aws_s3["source_primary_support_count"] == 0
+    assert aws_s3["rendered_primary_support_count"] == 0
+    assert aws_s3["support_provenance_status"] == "unsupported"
+
+
 def test_run_tailoring_marks_approved_with_warnings_when_rendered_validator_warnings_exist(
     monkeypatch,
     tmp_path: Path,
@@ -859,6 +939,7 @@ def test_run_tailoring_scopes_banned_phrase_warning_to_tailored_json_only(
     report_data = json.loads(report_paths[0].read_text(encoding="utf-8"))
     assert report_data["validator_warnings_tailored_json"] == ["Banned words: adept at"]
     assert report_data["validator_warnings_rendered_resume"] == []
+    assert report_data["status"] == "approved_with_warnings"
 
 
 def test_run_tailoring_falls_back_to_text_pdf_when_structured_render_fails(monkeypatch, tmp_path: Path) -> None:

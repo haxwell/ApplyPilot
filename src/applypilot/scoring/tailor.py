@@ -1103,6 +1103,18 @@ def _apply_final_render_quality_status(report: dict) -> None:
                 "Rendered resume validator warnings are present; review recommended."
             )
 
+    tailored_validator_warnings = report.get("validator_warnings_tailored_json", [])
+    if isinstance(tailored_validator_warnings, list):
+        tailored_validator_warnings = [str(item).strip() for item in tailored_validator_warnings if str(item).strip()]
+    else:
+        tailored_validator_warnings = []
+    if tailored_validator_warnings and str(report.get("status", "")) == "approved":
+        report["status"] = "approved_with_warnings"
+        if not report.get("quality_warning"):
+            report["quality_warning"] = (
+                "Tailored JSON validator warnings are present; review recommended."
+            )
+
 
 def _normalize_for_provenance_match(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]+", " ", str(text).lower())).strip()
@@ -1157,6 +1169,36 @@ def _attach_claim_support_provenance(report: dict, *, source_resume_text: str) -
             if claim_variant_keys & source_variant_keys:
                 count += 1
         return count
+
+    def _fallback_provenance_row(claim: str) -> dict[str, Any]:
+        claim_key = _normalize_for_provenance_match(claim)
+        return {
+            "claim": claim,
+            "coverage_status": "unsupported",
+            "source_resume_keyword_support_count": _source_keyword_support_count(claim),
+            "source_resume_primary_support_count": int(
+                getattr(source_coverage_lookup.get(claim_key), "primary_supporting_evidence_count", 0) or 0
+            ),
+            "rendered_primary_support_count": 0,
+            "support_provenance_status": "unsupported",
+        }
+
+    def _provenance_reason_label(row: dict[str, Any], *, coverage_status: str) -> str:
+        source_kw = int(row.get("source_resume_keyword_support_count", 0) or 0)
+        source_primary = int(row.get("source_resume_primary_support_count", 0) or 0)
+        rendered_primary = int(row.get("rendered_primary_support_count", 0) or 0)
+        prov_status = str(row.get("support_provenance_status", "unsupported"))
+        if coverage_status == "weak_summary_only" and rendered_primary == 0:
+            return "weak_summary_only_no_rendered_primary_evidence"
+        if source_primary > 0 and rendered_primary == 0:
+            return "source_primary_available_but_not_rendered"
+        if source_kw > 0 and rendered_primary == 0:
+            return "source_keyword_only_no_rendered_primary_evidence"
+        if prov_status in {"tailored_only_primary", "rendered_only_untraced"}:
+            return "tailored_only_or_untraced_evidence"
+        if source_kw == 0 and source_primary == 0:
+            return "no_source_evidence"
+        return "no_source_evidence"
 
     provenance_rows: list[dict[str, Any]] = []
     provenance_by_claim_key: dict[str, dict[str, Any]] = {}
@@ -1257,31 +1299,29 @@ def _attach_claim_support_provenance(report: dict, *, source_resume_text: str) -
                 continue
             row = provenance_by_claim_key.get(_normalize_for_provenance_match(claim))
             if not row:
-                # If claim was removed and is no longer in final claim_coverage,
-                # still compute coarse source support from source resume.
-                fallback_row = {
-                    "source_resume_keyword_support_count": _source_keyword_support_count(claim),
-                    "source_resume_primary_support_count": int(
-                        getattr(source_coverage_lookup.get(_normalize_for_provenance_match(claim)), "primary_supporting_evidence_count", 0)
-                        or 0
-                    ),
-                    "rendered_primary_support_count": 0,
-                    "support_provenance_status": "unsupported",
-                }
-                row = fallback_row
-            source_kw = int(row.get("source_resume_keyword_support_count", 0) or 0)
-            source_primary = int(row.get("source_resume_primary_support_count", 0) or 0)
-            rendered_primary = int(row.get("rendered_primary_support_count", 0) or 0)
-            prov_status = str(row.get("support_provenance_status", "unsupported"))
+                row = _fallback_provenance_row(claim)
+            disp["reason"] = _provenance_reason_label(
+                row,
+                coverage_status=str(disp.get("coverage_status", row.get("coverage_status", "")) or ""),
+            )
 
-            if source_primary > 0 and rendered_primary == 0:
-                disp["reason"] = "source_primary_available_but_not_rendered"
-            elif source_kw > 0 and rendered_primary == 0:
-                disp["reason"] = "source_keyword_only_no_rendered_primary_evidence"
-            elif prov_status in {"tailored_only_primary", "rendered_only_untraced"}:
-                disp["reason"] = "tailored_only_or_untraced_evidence"
-            elif source_kw == 0 and source_primary == 0:
-                disp["reason"] = "no_source_evidence"
+    unsupported_skill_removals = planning.get("unsupported_skill_removals", [])
+    if isinstance(unsupported_skill_removals, list):
+        for removal in unsupported_skill_removals:
+            if not isinstance(removal, dict):
+                continue
+            claim = str(removal.get("claim", "")).strip()
+            if not claim:
+                continue
+            row = provenance_by_claim_key.get(_normalize_for_provenance_match(claim))
+            if not row:
+                row = _fallback_provenance_row(claim)
+            coverage_status = str(removal.get("coverage_status", row.get("coverage_status", "")) or "")
+            removal["reason"] = _provenance_reason_label(row, coverage_status=coverage_status)
+            removal["source_keyword_support_count"] = int(row.get("source_resume_keyword_support_count", 0) or 0)
+            removal["source_primary_support_count"] = int(row.get("source_resume_primary_support_count", 0) or 0)
+            removal["rendered_primary_support_count"] = int(row.get("rendered_primary_support_count", 0) or 0)
+            removal["support_provenance_status"] = str(row.get("support_provenance_status", "unsupported"))
 
     if provenance_risks:
         status = str(report.get("status", ""))
